@@ -2953,15 +2953,15 @@ export class ChatView {
     _wechatTranslationConfig(chatId = this.app.currentChat?.id) {
         const chat = this.app.wechatData.getChat(chatId);
         return chat?.translationSettings || { outgoingEnabled: false, outgoingLanguage: 'ja',
-            roleLanguage: '', incomingEnabled: false, readingLanguage: 'zh-CN' };
+            roleLanguage: '', incomingEnabled: false, readingLanguage: 'zh-CN', expandTranslation: true, inputLanguage: 'zh-CN', mixedLanguage: '' };
     }
 
-    async _translateWechatText(source, target) {
+    async _translateWechatText(source, target, declaredSource = '') {
         const text = String(source || '').trim();
         if (!text || !target) return text;
-        const detectedSource = /[ぁ-んァ-ン]/.test(text) ? 'ja'
+        const detectedSource = declaredSource || (/[ぁ-んァ-ン]/.test(text) ? 'ja'
             : /[가-힣]/.test(text) ? 'ko'
-            : /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en';
+            : /[\u4e00-\u9fff]/.test(text) ? 'zh-CN' : 'en');
         if (detectedSource === target) return text;
         const endpoint = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(detectedSource + '|' + target)}`;
         const controller = new AbortController();
@@ -2976,42 +2976,34 @@ export class ChatView {
         } finally { clearTimeout(timeout); }
     }
 
+    // 参考 Electric-Phone 的会话级翻译设置，采用柚月原生设置页而不是输入框弹窗。
     showWechatTranslationSettings() {
         const chat = this.app.currentChat;
         if (!chat) return;
         const previous = this._wechatTranslationConfig(chat.id);
-        const modal = document.createElement('div');
-        modal.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0006;display:flex;justify-content:center;align-items:center;padding:20px;';
         const esc = value => this._escapeHtml(String(value || ''));
-        const langOptions = [['zh-CN','简体中文'],['en','English'],['ja','日本語'],['ko','한국어'],['fr','Français'],['de','Deutsch'],['es','Español']];
-        const options = current => langOptions.map(([value,label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('');
-        modal.innerHTML = `<div style="background:#fff;border-radius:14px;padding:20px;width:min(360px,100%);max-height:80vh;overflow:auto;color:#222;">
-            <h3 style="margin:0 0 14px;">翻译设置</h3>
-            <label style="display:block;margin:10px 0;"><input id="wx-outgoing-toggle" type="checkbox" ${previous.outgoingEnabled ? 'checked' : ''}> 我发送的消息自动译出</label>
-            <label>我发送为 <select id="wx-outgoing-language">${options(previous.outgoingLanguage || 'ja')}</select></label>
-            <label style="display:block;margin:12px 0 6px;">角色输出语言（不改变原角色设定时可留空）</label>
-            <select id="wx-role-language"><option value="">跟随原设定</option>${options(previous.roleLanguage)}</select>
-            <label style="display:block;margin:12px 0 6px;"><input id="wx-incoming-toggle" type="checkbox" ${previous.incomingEnabled ? 'checked' : ''}> 自动翻译收到的角色消息</label>
-            <label>翻译为 <select id="wx-reading-language">${options(previous.readingLanguage || 'zh-CN')}</select></label>
-            <p style="font-size:11px;color:#888;line-height:1.5;">使用 MyMemory 在线翻译，翻译内容会发送给该服务；请求失败时保留原文。</p>
-            <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:16px;"><button data-action="cancel">取消</button><button data-action="save">保存</button></div>
-        </div>`;
-        document.body.appendChild(modal);
-        modal.querySelector('[data-action="cancel"]').onclick = () => modal.remove();
-        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-        modal.querySelector('[data-action="save"]').onclick = () => {
+        const langs = [['zh-CN','普通话·简中'],['zh-TW','繁体中文'],['en','英语 (English)'],['ja','日语 (Japanese)'],['ko','韩语 (Korean)'],['fr','法语'],['de','德语'],['es','西班牙语'],['ru','俄语']];
+        const options = (current, empty = false) => (empty ? '<option value="">跟随角色原设定</option>' : '') + langs.map(([value,label]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`).join('');
+        const row = (title, note, control) => `<label style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 17px;border-bottom:1px solid #f0f0f0;"><span style="min-width:0"><strong style="font-size:15px;font-weight:500">${title}</strong>${note ? `<small style="display:block;color:#999;margin-top:4px;line-height:1.45">${note}</small>` : ''}</span>${control}</label>`;
+        const toggle = (id, value) => `<input type="checkbox" id="${id}" ${value ? 'checked' : ''} style="width:20px;height:20px;flex-shrink:0;accent-color:#4087cd">`;
+        const select = (id, current, empty = false) => `<select id="${id}" style="max-width:48%;min-width:115px;padding:7px;border:1px solid #e7e7e7;border-radius:8px;background:#fff;color:#333">${options(current, empty)}</select>`;
+        const shellBg = this._getChatSettingsShellBackgroundConfig();
+        this.app.phoneShell.setContent(`<div class="${shellBg.appClass}" style="${shellBg.appStyle}"><div class="wechat-header"><div class="wechat-header-left"><button class="wechat-back-btn" id="wx-trans-back"><i class="fa-solid fa-chevron-left"></i></button></div><div class="wechat-header-title">翻译设定</div><div class="wechat-header-right"><button id="wx-trans-save" style="border:0;background:transparent;color:#2582cc;font-size:16px;font-weight:600">完成</button></div></div><div class="wechat-content" style="${shellBg.contentBgStyle};padding:18px 12px 30px;overflow:auto"><section style="background:white;border-radius:15px;overflow:hidden;margin-bottom:16px"><div style="padding:16px 17px 0;font-weight:600">翻译设定 (Translation)</div>${row('自动翻译','收到角色消息后自动生成译文',toggle('wx-incoming-toggle',previous.incomingEnabled))}${row('自动展开翻译','关闭后点击消息下方的翻译按钮再显示译文',toggle('wx-expand-toggle',previous.expandTranslation !== false))}${row('角色输出语言','AI 原文语言',select('wx-role-language',previous.roleLanguage,true))}${row('夹杂第二语言','混合 / 双语角色说话时可参考第二种语言',select('wx-mixed-language',previous.mixedLanguage,true))}${row('翻译为','你阅读的语言',select('wx-reading-language',previous.readingLanguage || 'zh-CN'))}${row('自动译出（我的消息）','发送时翻译为目标语言，保留输入的原文',toggle('wx-outgoing-toggle',previous.outgoingEnabled))}${row('我的输入语言','原文语言',select('wx-input-language',previous.inputLanguage || 'zh-CN'))}${row('我的消息译为','角色将收到该语言的译文',select('wx-outgoing-language',previous.outgoingLanguage || 'ja'))}</section><p style="font-size:12px;color:#8b8b8b;line-height:1.6;margin:0 5px">在线翻译使用 MyMemory 服务，文本会发送至第三方。请求失败会保留原文；服务可能存在速率和长度限制。</p></div></div>`);
+        document.getElementById('wx-trans-back')?.addEventListener('click', () => this.showChatMenu());
+        document.getElementById('wx-trans-save')?.addEventListener('click', () => {
             const target = this.app.wechatData.getChat(chat.id);
-            if (!target) return modal.remove();
+            if (!target) return this.showChatMenu();
+            const v = id => document.getElementById(id)?.value || '';
+            const checked = id => !!document.getElementById(id)?.checked;
             target.translationSettings = {
-                outgoingEnabled: modal.querySelector('#wx-outgoing-toggle').checked,
-                outgoingLanguage: modal.querySelector('#wx-outgoing-language').value,
-                roleLanguage: modal.querySelector('#wx-role-language').value,
-                incomingEnabled: modal.querySelector('#wx-incoming-toggle').checked,
-                readingLanguage: modal.querySelector('#wx-reading-language').value
+                incomingEnabled: checked('wx-incoming-toggle'), expandTranslation: checked('wx-expand-toggle'),
+                roleLanguage: v('wx-role-language'), mixedLanguage: v('wx-mixed-language'),
+                readingLanguage: v('wx-reading-language'), outgoingEnabled: checked('wx-outgoing-toggle'),
+                inputLanguage: v('wx-input-language'), outgoingLanguage: v('wx-outgoing-language')
             };
             this.app.wechatData.saveData();
-            modal.remove();
-        };
+            this.showChatMenu();
+        });
     }
 
     async translatePendingWechatMessages(chatId) {
@@ -3059,7 +3051,7 @@ renderChatRoom(chat) {
                     ${this.renderMessagesWithDateDividers(messages, userInfo)}
                 </div>
 
-                <div style="text-align:right;padding:2px 12px;"><button type="button" id="wechat-translation-settings-btn" style="font-size:11px;border:none;border-radius:15px;padding:4px 9px;background:#eef4ff;color:#5276ad;">🌐 翻译</button></div>
+
                 <!-- 输入区 -->
                 <div class="chat-input-area" style="${inputAreaStyle}">
                     <!-- 表情面板 -->
@@ -4351,7 +4343,8 @@ renderChatRoom(chat) {
                 // 🔥 普通文本消息（引用在气泡外下方显示）
                 messageBody = this.renderTextMessageBubble(msg.content, { isGroupChat });
                 if (msg.translation && msg.translation !== msg.content) {
-                    messageBody += `<div style="border-top:1px dashed #aac5e6;margin-top:3px;padding:5px 8px;background:#e8f2ff;border-radius:8px;max-width:100%;word-break:break-word;font-size:13px;">${this._escapeHtml(msg.translation)}</div>`;
+                    const expanded = this._wechatTranslationConfig(this.app.currentChat?.id).expandTranslation !== false || isMe;
+                    messageBody += `<details class="wechat-translated-message" ${expanded ? 'open' : ''} style="margin-top:4px;background:#e8f2ff;border-radius:8px;max-width:100%;word-break:break-word;font-size:13px;padding:5px 8px"><summary style="color:#66829e;cursor:pointer;list-style:none;text-align:right;font-size:12px">${expanded ? '收起翻译' : '查看翻译'} ▾</summary><div style="border-top:1px dashed #aac5e6;margin-top:5px;padding-top:6px">${this._escapeHtml(msg.translation)}</div></details>`;
                 }
                 break;
         }
@@ -9609,7 +9602,7 @@ renderChatRoom(chat) {
             }
         });
 
-        query('#wechat-translation-settings-btn')?.addEventListener('click', () => this.showWechatTranslationSettings());
+
 
         // 发送按钮 - 智能连发 / 中断发送 / 重试
         // 🔥 终极防抖与多端兼容：彻底解决窄屏失效和连击跳过倒计时问题
@@ -9806,9 +9799,12 @@ renderChatRoom(chat) {
             const chatId = this.app.currentChat?.id;
             const id = button.dataset.messageId;
             if (!chatId || !id) return;
-            const emoji = button.classList.contains('wechat-reaction-chip')
-                ? button.dataset.emoji : window.prompt('贴一个表情：', '🤔');
-            if (!emoji || [...emoji].length > 8) return;
+            if (button.classList.contains('wechat-reaction-add')) {
+                this._showWechatReactionPicker(chatId, id);
+                return;
+            }
+            const emoji = button.dataset.emoji;
+            if (!emoji) return;
             if (this.app.wechatData.setMessageReaction(chatId, id, 'me', emoji)) {
                 this.smartUpdateMessages(this.app.wechatData.getMessages(chatId), this.app.wechatData.getUserInfo());
             }
@@ -10599,7 +10595,7 @@ renderChatRoom(chat) {
             if (this._wechatOutgoingTranslationPending) return;
             if (translationConfig.outgoingEnabled && translationConfig.outgoingLanguage) {
                 this._wechatOutgoingTranslationPending = true;
-                try { outgoingText = await this._translateWechatText(text, translationConfig.outgoingLanguage); }
+                try { outgoingText = await this._translateWechatText(text, translationConfig.outgoingLanguage, translationConfig.inputLanguage); }
                 catch (error) { console.warn('用户消息翻译失败，已发送原文:', error); }
                 finally { this._wechatOutgoingTranslationPending = false; }
             }
@@ -12062,8 +12058,11 @@ renderChatRoom(chat) {
 
         const translationSettings = this._wechatTranslationConfig(targetChat?.id);
         if (translationSettings.roleLanguage) {
+            const languageNames = { 'zh-CN': '简体中文', 'zh-TW': '繁体中文', en: '英语', ja: '日语', ko: '韩语', fr: '法语', de: '德语', es: '西班牙语', ru: '俄语' };
+            const mainLanguage = languageNames[translationSettings.roleLanguage] || translationSettings.roleLanguage;
+            const mixedLanguage = languageNames[translationSettings.mixedLanguage] || '';
             messages.push({ role: 'system', name: 'SYSTEM (微信消息语言)', isPhoneMessage: true,
-                content: `仅当前微信窗口：角色发送的新文字消息以 ${translationSettings.roleLanguage} 为主要输出语言，尽量自然表达；不可据此更改角色身份或剧情设定。` });
+                content: `仅当前微信窗口：角色发送的新文字消息以${mainLanguage}为主要输出语言${mixedLanguage && mixedLanguage !== mainLanguage ? `，在符合角色习惯的情况下可以自然夹杂${mixedLanguage}` : ''}。语言约束只针对微信聊天正文，不改变角色身份、剧情设定或格式指令。` });
         }
         // 🔥🔥🔥 检测是否是群聊
         const isGroupChat = targetChat?.type === 'group';
@@ -13525,6 +13524,26 @@ renderChatRoom(chat) {
 
         this.syncHeaderStatusDot(safeChatId);
     }
+    _showWechatReactionPicker(chatId, messageId) {
+        document.getElementById('wx-reaction-emoji-picker')?.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'wx-reaction-emoji-picker';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:99998;display:flex;align-items:flex-end;justify-content:center';
+        const emojis = ['❤️','🥰','👍','👌','😂','🤔','😭','🎉','😮','😡','😊','💕','🙄','👏','🔥','💔','👀','😴','😢','🙏','🤝','✨','😎','😤'];
+        overlay.innerHTML = `<div style="width:min(100%,450px);padding:18px 16px 32px;background:white;border-radius:22px 22px 0 0;box-shadow:0 -4px 20px #0002"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px"><strong>贴表情</strong><button type="button" data-close style="border:none;background:transparent;font-size:22px;color:#888">×</button></div><div style="display:grid;grid-template-columns:repeat(6,1fr);gap:7px">${emojis.map(emoji => `<button type="button" data-emoji="${emoji}" style="border:none;background:#f6f7fa;border-radius:12px;height:46px;font-size:25px">${emoji}</button>`).join('')}</div></div>`;
+        const close = () => overlay.remove();
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay || event.target.closest('[data-close]')) return close();
+            const button = event.target.closest('[data-emoji]');
+            if (!button) return;
+            if (this.app.wechatData.setMessageReaction(chatId, messageId, 'me', button.dataset.emoji)) {
+                this.smartUpdateMessages(this.app.wechatData.getMessages(chatId), this.app.wechatData.getUserInfo(), { chatId });
+            }
+            close();
+        });
+        document.body.appendChild(overlay);
+    }
+
     // 🔧 显示聊天设置菜单
     showChatMenu() {
         const currentChat = this.app.currentChat || {};
@@ -13547,6 +13566,8 @@ renderChatRoom(chat) {
                 </div>
                 
                 <div class="wechat-content" style="${shellBg.contentBgStyle}">
+                    <div id="wechat-chat-translation-row" style="background:#fff;padding:16px 20px;margin-bottom:10px;cursor:pointer;display:flex;align-items:center;justify-content:space-between"><span><strong style="font-weight:500;font-size:16px">翻译设定</strong><small style="display:block;color:#999;margin-top:4px;font-size:12px">角色语言、消息译出、自动翻译及展开方式</small></span><i class="fa-solid fa-chevron-right" style="color:#c8c8c8"></i></div>
+
                     <!-- 聊天背景 -->
                     <div style="background: #fff; padding: 15px 20px; margin-bottom: 10px; cursor: pointer;" id="set-bg-btn">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -13629,6 +13650,8 @@ renderChatRoom(chat) {
         document.getElementById('back-from-menu')?.addEventListener('click', () => {
             this.app.render();
         });
+
+        document.getElementById('wechat-chat-translation-row')?.addEventListener('click', () => this.showWechatTranslationSettings());
 
         // 设置背景按钮
         document.getElementById('set-bg-btn')?.addEventListener('click', () => {
