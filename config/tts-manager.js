@@ -994,6 +994,11 @@ export class TtsManager {
             try {
                 await this._refreshFishCompatModels();
                 const target = this._resolveFishTarget(apiUrl, safeModel);
+                // 正文朗读深度分析给的每句参数：temperature（情绪张力）、speed（语速）
+                const fx = options.fish && typeof options.fish === 'object' ? options.fish : {};
+                const fxTemp = Number.isFinite(Number(fx.temperature)) && fx.temperature !== null && fx.temperature !== '' ? Math.min(1, Math.max(0.1, Number(fx.temperature))) : null;
+                const fxSpeed = Number.isFinite(Number(fx.speed)) && fx.speed && Number(fx.speed) !== 1 ? Math.min(2, Math.max(0.5, Number(fx.speed))) : null;
+                const hasFx = fxTemp !== null || fxSpeed !== null;
                 const nativeRequest = (url) => this._getRawFetch()(url, {
                     method: 'POST',
                     headers: {
@@ -1006,10 +1011,12 @@ export class TtsManager {
                         text: inputText,
                         reference_id: voice,
                         format: 'mp3',
-                        latency: 'normal'
+                        latency: 'normal',
+                        ...(fxTemp !== null ? { temperature: fxTemp } : {}),
+                        ...(fxSpeed !== null ? { prosody: { speed: fxSpeed, volume: 0 } } : {})
                     })
                 });
-                const compatRequest = (url) => this._getRawFetch()(url, {
+                const compatRequest = (url, extras = hasFx && !this._fishCompatNoFx) => this._getRawFetch()(url, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1021,13 +1028,20 @@ export class TtsManager {
                         input: inputText,
                         voice: voice || '',
                         response_format: 'mp3',
-                        provider: { options: { 'fish-audio': { latency: 'normal' } } }
+                        ...(extras && fxSpeed !== null ? { speed: fxSpeed } : {}),
+                        provider: { options: { 'fish-audio': { latency: 'normal', ...(extras && fxTemp !== null ? { temperature: fxTemp } : {}), ...(extras && fxSpeed !== null ? { prosody: { speed: fxSpeed, volume: 0 } } : {}) } } }
                     })
                 });
                 let response;
                 if (target.mode === 'compat') {
                     try {
                         response = await compatRequest(target.url);
+                        // 兼容接口不认 speed / temperature：去掉再发一次，以后也不再带
+                        if (hasFx && !this._fishCompatNoFx && (response.status === 400 || response.status === 422)) {
+                            this._fishCompatNoFx = true;
+                            console.warn('[TTS] Fish 兼容接口不接受语速/温度参数，已改为不带这些参数');
+                            response = await compatRequest(target.url, false);
+                        }
                     } catch (error) {
                         // 兼容接口连不上（极少见）时，若酒馆开了转发就退回原生接口
                         if (signal?.aborted || timedOut || !target.nativeUrl || !(error instanceof TypeError)) throw error;

@@ -1,7 +1,10 @@
 // 🔊 正文朗读：在酒馆正文里，把「对白符号」里的台词挂上 ▶播放 / ↻重新生成 按钮，用小手机的 TTS（Fish 等）读出来。
 // 只改页面显示，不改聊天记录；引擎、API Key 沿用小手机「设置 → 语音」里的配置。
 
+import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp1';
+
 const STORE_KEY = 'phone-story-voice';
+const DEEP_KEY = 'phone-story-voice-deep';
 const STYLE_ID = 'yz-story-voice-style';
 const DEFAULTS = Object.freeze({
     enabled: true,
@@ -15,9 +18,40 @@ const DEFAULTS = Object.freeze({
     npcFemale: '',
     speakers: [],
     readUser: false,
-    markSpeaker: true
+    markSpeaker: true,
+    analysisMode: 'none', // none = 不分析（正文里的 [[名字|语气]]）；deep = 正文写完后整楼深度分析
+    deepProfile: '',      // 深度分析用哪条连接：'' = 跟随酒馆当前
+    deepTimeout: 150
 });
-const MARK_RE = /\[\[([^\[\]\n]{1,60})\]\][ \t]*[:：]?[ \t]*/g;
+const MARK_RE = /\[\[([^\[\]\n]{1,120})\]\][ \t]*[:：]?[ \t]*/g;
+
+// 模型有时把动作、神态（本该是正文）写进了语气提示里：这种不藏，还原成一句旁白
+const NARR_CUE_RE = /把|将|向|朝|往|察觉|发现|看|望|盯|抬|低头|垂|伸|握|抓|抱|搂|埋|靠|贴|转身|走|退|站|坐|跪|扑|推|拉|摸|抚|捏|咬住|揉|眼|脸|手|指|肩|颈|唇|嘴角|眉|身体|随即|然后|一边|同时/;
+function isNarrCue(cue = '') {
+    const c = String(cue || '').trim();
+    if (!/[\u4e00-\u9fff]/.test(c) || /[a-z]{3,}/i.test(c)) return false;
+    return c.length >= 6 && NARR_CUE_RE.test(c);
+}
+function narrFromMark(name = '', cue = '') {
+    let c = String(cue || '').trim().replace(/[，,、；;。\s]+$/, '');
+    if (name && c.startsWith(name)) c = c.slice(name.length);
+    return `${name}${c}。`;
+}
+function parseMarkBody(body = '') {
+    const parts = String(body).split(/[|｜]/).map(x => x.trim()).filter(Boolean);
+    let head = parts.shift() || '';
+    let cue = '';
+    let g = '';
+    parts.forEach(x => { if (/^(男|女|m|f|male|female)$/i.test(x)) g = /^(男|m|male)$/i.test(x) ? 'm' : 'f'; else cue = cue ? `${cue}，${x}` : x; });
+    const gm = head.match(/^(.+?)\s*(?:\/\s*|[（(]\s*)(男|女|m|f|male|female)\s*[)）]?$/i);
+    if (gm) { head = gm[1].trim(); g = g || (/^(男|m|male)$/i.test(gm[2]) ? 'm' : 'f'); }
+    return { name: head, cue, g };
+}
+// 标记在显示时换成什么：普通标记藏掉；写成动作描写的，还原成旁白
+function markDisplay(body = '') {
+    const { name, cue } = parseMarkBody(body);
+    return isNarrCue(cue) ? narrFromMark(name, cue) : '';
+}
 const PROMPT_KEY = 'yzsv_speaker_mark';
 const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
 
@@ -106,6 +140,151 @@ export class StoryVoice {
         this._genderOf = this._loadGenders();
         this._speakerMemo = new Map();
         this._cueMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
+        this._deepJobs = new Map(); // 正在深度分析的楼层：hash → Promise
+        this._deepErr = new Map();
+    }
+
+    // ---------- 深度分析 ----------
+    _hash(text = '') {
+        let h = 2166136261;
+        const t = String(text);
+        for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); }
+        return (h >>> 0).toString(36) + t.length.toString(36);
+    }
+
+    _deepStore() {
+        if (this._deepCache) return this._deepCache;
+        let obj = {};
+        try { const raw = this.storage?.get?.(DEEP_KEY, false); obj = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
+        this._deepCache = obj && typeof obj === 'object' ? obj : {};
+        return this._deepCache;
+    }
+
+    _deepSave(hash, entry) {
+        const store = this._deepStore();
+        store[hash] = entry;
+        const keys = Object.keys(store);
+        if (keys.length > 80) keys.sort((a, b) => (store[a].at || 0) - (store[b].at || 0)).slice(0, keys.length - 80).forEach(k => delete store[k]);
+        try { this.storage?.set?.(DEEP_KEY, JSON.stringify(store)); } catch (e) { /* 忽略 */ }
+    }
+
+    // 一楼正文（<content> 里、去掉 [[标记]]）的指纹：正文改了就重新分析
+    _deepText(msg) {
+        return this._rawToText(msg?.mes || '');
+    }
+
+    _deepHashOf(msg) {
+        const t = this._deepText(msg).replace(MARK_RE, '').replace(/\s+/g, '');
+        return t ? this._hash(t) : '';
+    }
+
+    _deepEntry(msg) {
+        if (this.getSettings().analysisMode !== 'deep' || !msg) return null;
+        const h = this._deepHashOf(msg);
+        return h ? this._deepStore()[h] || null : null;
+    }
+
+    _deepPending(msg) {
+        const h = msg ? this._deepHashOf(msg) : '';
+        return !!h && this._deepJobs.has(h);
+    }
+
+    // 开始分析某一楼（已经分析过就直接用缓存；force = 重新分析）
+    _startDeep(id, { force = false } = {}) {
+        const s = this.getSettings();
+        if (s.analysisMode !== 'deep' || !s.enabled) return Promise.resolve(null);
+        const ctx = window.SillyTavern?.getContext?.();
+        const msg = ctx?.chat?.[id];
+        if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return Promise.resolve(null);
+        const hash = this._deepHashOf(msg);
+        if (!hash) return Promise.resolve(null);
+        if (!force && this._deepStore()[hash]) return Promise.resolve(this._deepStore()[hash]);
+        if (this._deepJobs.has(hash)) return this._deepJobs.get(hash);
+        const job = (async () => {
+            await this._getWechatData().catch(() => null);
+            const full = this._deepText(msg);
+            const { lines } = this._analyze(full, { id, msg });
+            if (!lines.length) return null;
+            const items = lines.map((r, i) => ({ id: i + 1, start: r.start, text: r.text, r }));
+            const clean = (t) => t.replace(MARK_RE, (all, body) => markDisplay(body));
+            // 编号插进正文，再藏掉 [[标记]]（位置从后往前插不会乱）
+            const story = clean(numberStory(full, items));
+            const speakers = {};
+            items.forEach(it => { if (it.r.marked && it.r.speaker) speakers[it.id] = it.r.speaker; });
+            const roster = [...new Set([...s.speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || '').trim(), String(ctx?.name1 || '').trim()].filter(Boolean))];
+            const prev = (ctx?.chat || []).slice(Math.max(0, id - 3), id).filter(m => m && !m.is_system)
+                .map(m => ({ n: m.name || '', t: clean(this._rawToText(m.mes || '')).replace(/\s+/g, ' ').trim().slice(-700) })).filter(x => x.t).map(x => `${x.n}：${x.t}`).join('\n');
+            const messages = buildDeepMessages({ story, lines: items, roster, userName: String(ctx?.name1 || '').trim(), previous: prev, speakers });
+            this._refreshDeepStatus(id);
+            const raw = await this._callModel(messages, { timeout: (Number(s.deepTimeout) || 150) * 1000 });
+            const parsed = parseDeep(raw, items);
+            if (!parsed) throw new Error('模型没有按格式返回分析结果');
+            const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, lines: {} };
+            items.forEach(it => {
+                const v = parsed.items.get(it.id);
+                if (!v) return;
+                const script = v.script ? applyToneGate(v.script, parsed.tone) : '';
+                out.lines[it.text] = { role: v.role, pace: v.pace, t: v.tension, s: script && script !== it.text ? script : '', why: v.reason };
+            });
+            this._deepSave(hash, out);
+            this._deepErr.delete(hash);
+            return out;
+        })();
+        this._deepJobs.set(hash, job);
+        job.catch(err => {
+            console.warn('[正文朗读] 深度分析失败:', err);
+            this._deepErr.set(hash, String(err?.message || err).slice(0, 120));
+            this._toast('深度分析失败', `${String(err?.message || err).slice(0, 120)}（这一楼先按不分析读）`);
+        }).finally(() => {
+            this._deepJobs.delete(hash);
+            this.processById(id);
+            if (!this._streaming) this._prefetchMessage(id);
+        });
+        return job;
+    }
+
+    _refreshDeepStatus(id) {
+        const el = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
+        if (!el || this._streaming) return;
+        this.processById(id);
+    }
+
+    // 后台调用模型：选了连接配置就走那条，否则跟随酒馆当前的 API
+    async _callModel(messages, { timeout = 150000, maxTokens = 6000 } = {}) {
+        const ctx = window.SillyTavern?.getContext?.();
+        const profile = String(this.getSettings().deepProfile || '');
+        const sys = messages.find(m => m.role === 'system')?.content || '';
+        const user = messages.filter(m => m.role !== 'system').map(m => m.content).join('\n');
+        const run = (async () => {
+            const svc = ctx?.ConnectionManagerRequestService;
+            if (profile && svc?.sendRequest) {
+                const res = await svc.sendRequest(profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false });
+                return typeof res === 'string' ? res : (res?.content ?? res?.choices?.[0]?.message?.content ?? '');
+            }
+            if (typeof ctx?.generateRaw === 'function') {
+                try { return await ctx.generateRaw({ systemPrompt: sys, prompt: user, responseLength: maxTokens }); }
+                catch (e) { return await ctx.generateRaw(user, null, false, false, sys, maxTokens); }
+            }
+            if (typeof ctx?.generateQuietPrompt === 'function') return ctx.generateQuietPrompt(`${sys}\n\n${user}`, false, true);
+            throw new Error('当前酒馆版本不支持后台调用模型');
+        })();
+        let timer;
+        const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`分析超过 ${Math.round(timeout / 1000)} 秒没有完成`)), timeout); });
+        try { return String(await Promise.race([run, limit]) || ''); } finally { clearTimeout(timer); }
+    }
+
+    // 连接管理器里存的连接配置（深度分析可以单独选一条便宜/快的模型）
+    connectionProfiles() {
+        const ctx = window.SillyTavern?.getContext?.();
+        const list = ctx?.extensionSettings?.connectionManager?.profiles;
+        return Array.isArray(list) ? list.filter(p => p?.id).map(p => ({ id: String(p.id), name: String(p.name || p.id) })) : [];
+    }
+
+    // 一句台词的深度分析结果（给按钮和合成用）
+    _deepFor(entry, text) {
+        const v = entry?.lines?.[text];
+        if (!v) return null;
+        return { s: v.s || '', p: v.pace || 'normal', t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '' };
     }
 
     // ---------- 设置 ----------
@@ -199,6 +378,13 @@ export class StoryVoice {
         const name = m[1].trim();
         if (!name || /^(?:他|她|我|你|它|对方|旁白)$/.test(name)) return '';
         if (!this._canonicalName(name) && /^(?:他|她|我|你|它|那|这|对方)/.test(name)) return '';
+        // 「硝子推门进来：」这种是旁白里的动作，不是名字标签：取开头认得的名字，认不出就不算
+        if (!this._canonicalName(name)) {
+            const known = [...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceAliases()].filter(Boolean)
+                .flatMap(n => [n, n.replace(/^家入|^五条|^夏油/, '')]).filter(n => n.length >= 2 && name.startsWith(n)).sort((a, b) => b.length - a.length)[0];
+            if (known && known !== name) return this._canonicalName(known) || known;
+            if (name.length > 4 && /进|来|着|了|起|推|走|看|笑|开口|抬|转|回/.test(name)) return '';
+        }
         return name;
     }
 
@@ -232,8 +418,8 @@ export class StoryVoice {
         btn?.classList.add('is-busy');
         bar.classList.add('is-loading');
         const job = (async () => {
-            const vi = { ...(await this._voiceFor(bar.dataset.speaker || '')), cue: bar.dataset.cue || '' };
-            const urls = await Promise.all(splitSpeech(bar.dataset.text).map(part => this._synthRetry(part, vi, { regen: true })));
+            const { vi, parts } = this._lineJob(await this._voiceFor(bar.dataset.speaker || ''), bar.dataset.text, bar.dataset.cue || '', this._barDeep(bar));
+            const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, { regen: true })));
             return this._joinAudio(urls);
         })();
         bar._regenJob = job;
@@ -341,7 +527,10 @@ export class StoryVoice {
                     this.processById(id);
                     const s = this.getSettings();
                     const msg = chat[id];
-                    if (s.enabled && msg && !msg.is_system) this._prefetchMessage(id);
+                    if (s.enabled && msg && !msg.is_system) {
+                        if (s.analysisMode === 'deep') this._startDeep(id);
+                        else this._prefetchMessage(id);
+                    }
                 }, 250);
             });
         }
@@ -396,16 +585,12 @@ export class StoryVoice {
         for (const m of full.matchAll(MARK_RE)) {
             // [[名字/男]]、[[名字|女]]、[[名字（男）]] 都认：名字 + 性别
             // 也认 [[名字/女|语气]]、[[名字|语气]]：竖线后面是这句话的情绪语气
-            const parts = m[1].split(/[|｜]/).map(x => x.trim()).filter(Boolean);
-            let head = parts.shift() || '';
-            let cue = '';
-            let g = '';
-            parts.forEach(x => { if (/^(男|女|m|f|male|female)$/i.test(x)) g = /^(男|m|male)$/i.test(x) ? 'm' : 'f'; else cue = cue ? `${cue}，${x}` : x; });
-            const gm = head.match(/^(.+?)\s*(?:\/\s*|[（(]\s*)(男|女|m|f|male|female)\s*[)）]?$/i);
-            if (gm) { head = gm[1].trim(); g = g || (/^(男|m|male)$/i.test(gm[2]) ? 'm' : 'f'); }
-            const name = head;
+            const { name, cue: rawCue, g } = parseMarkBody(m[1]);
             if (g && useMemo) this._setGender(name, g);
-            marks.push({ start: m.index, end: m.index + m[0].length, name, cue: cue.slice(0, 40) });
+            // 写成动作描写的提示：显示时还原成旁白；念的时候只取里面的情绪（换成核心情绪词）
+            const narr = isNarrCue(rawCue);
+            const cue = narr ? (this._cueToS1(rawCue) || '') : rawCue.slice(0, 40);
+            marks.push({ start: m.index, end: m.index + m[0].length, name, cue, show: narr ? narrFromMark(name, rawCue) : '' });
         }
 
         const skips = findRanges(full, parsePairs(s.skips), 3000);
@@ -542,7 +727,17 @@ export class StoryVoice {
         }
         const { marks, lines: found } = this._analyze(full, { id, msg, hints, cueHints });
         let lines = found;
-        if (!lines.length) { [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end)); return; }
+        // 深度分析：说话人没标出来时用分析结果；每句挂上分析出的演法
+        const deepOn = s.analysisMode === 'deep' && !live;
+        const deepEntry = deepOn ? this._deepEntry(msg) : null;
+        if (deepEntry) lines.forEach(r => {
+            const d = this._deepFor(deepEntry, r.text);
+            if (!d) return;
+            r.deep = d;
+            const known = (n) => !!(this._findAppSpeaker(n) || this._findWechatVoice(n));
+            if (d.role && (!r.marked || (!known(r.speaker) && known(d.role)))) r.speaker = this._canonicalName(d.role) || d.role;
+        });
+        if (!lines.length) { [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end, mk.show)); return; }
 
         // 记下每句的上下文，↻ 时可以让 AI 重新判断
         this._lineContext = this._lineContext || new Map();
@@ -557,7 +752,7 @@ export class StoryVoice {
             ...marks.map(mk => ({ at: mk.start, kind: 'mark', mk }))
         ].sort((a, b) => b.at - a.at);
         ops.forEach(op => {
-            if (op.kind === 'mark') { this._deleteText(nodes, op.mk.start, op.mk.end); return; }
+            if (op.kind === 'mark') { this._deleteText(nodes, op.mk.start, op.mk.end, op.mk.show); return; }
             const r = op.r;
             const entry = [...nodes].reverse().find(x => x.start <= r.end - 1);
             if (!entry) return;
@@ -568,6 +763,8 @@ export class StoryVoice {
             const override = this.speakerOverrides[this._overrideKey(id, r.index, r.text)];
             bar.dataset.speaker = override || r.speaker;
             if (r.cue) bar.dataset.cue = r.cue;
+            if (r.deep) bar.dataset.deep = JSON.stringify(r.deep);
+            if (r.deep?.why) bar.title = `${r.deep.why}${r.deep.t ? ` · 张力 ${r.deep.t}` : ''}`;
             bar.dataset.manualSpeaker = override ? '1' : '0';
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
@@ -579,24 +776,34 @@ export class StoryVoice {
             range.insertNode(bar);
         });
 
-        if (!live && lines.length > 1) {
+        if (!live && (lines.length > 1 || (deepOn && lines.length))) {
             const all = document.createElement('div');
             all.className = 'yzsv-all';
-            all.innerHTML = `<button type="button" class="yzsv-btn yzsv-playall">▶ 朗读本条全部对白（${lines.length} 句）</button>`;
+            let deepHtml = '';
+            if (deepOn) {
+                const h = this._deepHashOf(msg);
+                const pending = this._deepPending(msg);
+                const err = h ? this._deepErr.get(h) : '';
+                const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(deepEntry.tone || '已分析')}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
+                deepHtml = `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || deepEntry?.arc || '')}">${label}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">${deepEntry ? '重新分析' : '分析'}</button>`}`;
+            }
+            all.innerHTML = `${lines.length > 1 ? `<button type="button" class="yzsv-btn yzsv-playall">▶ 朗读本条全部对白（${lines.length} 句）</button>` : ''}${deepHtml}`;
             box.appendChild(all);
         }
         this._bindBox(box);
     }
 
     // 删掉正文里 [start, end) 这段文字（可能跨多个文字节点）
-    _deleteText(nodes, start, end) {
+    _deleteText(nodes, start, end, insert = '') {
+        let put = !insert;
         nodes.forEach(entry => {
             const len = entry.node.nodeValue.length;
             const a = Math.max(start, entry.start);
             const b = Math.min(end, entry.start + len);
             if (a >= b) return;
             const v = entry.node.nodeValue;
-            entry.node.nodeValue = v.slice(0, a - entry.start) + v.slice(b - entry.start);
+            entry.node.nodeValue = v.slice(0, a - entry.start) + (put ? '' : insert) + v.slice(b - entry.start);
+            put = true;
         });
     }
 
@@ -621,7 +828,7 @@ export class StoryVoice {
             userName ? `用户角色说的话标 [[${userName}]]。` : '',
             s.npcMode === 'npc' ? `下面名单以外的配角、路人、NPC，在名字后面加性别：[[名字/男]] 或 [[名字/女]]（例：[[店员/女]]${qa}……${qb}）。` : '',
             names.length ? `同一角色始终用同一个名字：${names.join('、')}。` : '',
-            s.emotionCue ? `再在名字后面用竖线写上这句话说出口时的语气：[[名字|语气]]。语气要结合当时的情景、人物此刻的心理和两人的关系来判断（是真生气还是嘴硬、是调侃还是心疼、是强装镇定还是快哭了），写成 2~12 个字的表演提示，用和台词相同的语言写，例：[[${names[0] || '角色名'}|からかうように笑って]]${qa}……${qb}、[[某某|ため息まじりに、少し寂しげに]]、中文台词就写 [[某某|压低声音，带着哭腔]]。同一角色每句的语气要跟着剧情变化，不要句句一样。` : '',
+            (s.emotionCue && s.analysisMode !== 'deep') ? `再在名字后面用竖线写上这句话的【声音表演提示】：[[名字|提示]]。提示用英文写 1~2 个短语、逗号隔开，一共不超过 6 个单词，只写这句话【怎么说出口】：情绪和强度、音量、语速、停顿/哽咽、哭腔/颤抖/喘息/笑意/冷笑等。注意：这个标记读者看不见，所以动作、神态、心理、发生了什么都必须照常写在正文旁白里，绝对不能挪进标记（错误：[[某某|察觉到动静，呼吸一滞，把脸埋进你颈窝]]；正确：正文写“他呼吸一滞，把脸埋进你颈窝。”，标记写 [[某某|breathless, trembling whisper]]）。要结合当时的情景、人物此刻真实的心理和两人的关系判断强度：真崩溃就写到崩溃，强装镇定就写 forced calm。例：[[${names[0] || '角色名'}|furious, voice breaking with tears]]${qa}……${qb}、[[某某|teasing, playful laugh]]、[[某某|exhausted sigh, quiet]]、[[某某|panicked, speaking fast]]、[[某某|cold, sneering]]、[[某某|whispering, trembling]]。核心可选词：angry, furious, sad, crying, sobbing, excited, surprised, scared, panicked, desperate, gentle, tender, teasing, laughing, sigh, whisper, shouting, trembling, cold, sneering。同一角色每句的提示要跟着剧情变化。` : '',
             '旁白、动作、心理描写、括号里的译文都不要标；不要解释这个标记，也不要漏标。'
         ].filter(Boolean).join('\n');
         ctx.setExtensionPrompt(PROMPT_KEY, text, types.IN_CHAT ?? 1, 0, false, roles.SYSTEM ?? 0);
@@ -661,6 +868,14 @@ export class StoryVoice {
             e.preventDefault();
             e.stopPropagation();
             this._unlockAudio();
+            if (btn.classList.contains('yzsv-reanalyze')) {
+                const mes = btn.closest('.mes');
+                const mid = Number(mes?.getAttribute('mesid'));
+                const had = !!this._deepEntry(window.SillyTavern?.getContext?.()?.chat?.[mid]);
+                this._startDeep(mid, { force: had });
+                this.processById(mid);
+                return;
+            }
             if (btn.classList.contains('yzsv-playall')) {
                 const mes = btn.closest('.mes');
                 this.playMessage(Number(mes?.getAttribute('mesid')), btn);
@@ -692,12 +907,12 @@ export class StoryVoice {
         if (!this.getSettings().enabled) return;
         this._prefetchQ = this._prefetchQ || [];
         this._prefetchSeen = this._prefetchSeen || new Set();
-        items.forEach(({ speaker, text, cue }) => {
+        items.forEach(({ speaker, text, cue, deep }) => {
             if (!text || !this._hasVoice(speaker)) return;
-            const key = `${speaker}\u0001${text}`;
+            const key = `${speaker}\u0001${text}\u0001${deep ? JSON.stringify(deep) : ''}`;
             if (this._prefetchSeen.has(key)) return;
             this._prefetchSeen.add(key);
-            this._prefetchQ.push({ speaker, text, cue: cue || '' });
+            this._prefetchQ.push({ speaker, text, cue: cue || '', deep: deep || null, key });
         });
         if (this._prefetchSeen.size > 1000) this._prefetchSeen = new Set([...this._prefetchSeen].slice(-500));
         this._pumpPrefetch();
@@ -710,15 +925,15 @@ export class StoryVoice {
             this._prefetchActive += 1;
             (async () => {
                 try {
-                    const vi = { ...(await this._voiceFor(job.speaker)), cue: job.cue || '' };
-                    await Promise.all(splitSpeech(job.text).map(part => this._synth(part, vi)));
+                    const { vi, parts } = this._lineJob(await this._voiceFor(job.speaker), job.text, job.cue, job.deep);
+                    await Promise.all(parts.map(part => this._synth(part, vi)));
                     this._ready = this._ready || new Set();
                     this._ready.add(this._readyKey(job.speaker, job.text));
                     if (this._ready.size > 2000) this._ready = new Set([...this._ready].slice(-1000));
                     if (this._streaming) this._scheduleLive();
                 } catch (err) {
                     console.warn('[正文朗读] 提前生成失败:', err);
-                    this._prefetchSeen?.delete(`${job.speaker}\u0001${job.text}`);
+                    this._prefetchSeen?.delete(job.key);
                 } finally {
                     this._prefetchActive -= 1;
                     this._pumpPrefetch();
@@ -752,7 +967,7 @@ export class StoryVoice {
     _prefetchMessage(id) {
         const el = document.querySelector(`#chat .mes[mesid="${id}"]`);
         const bars = Array.from(el?.querySelectorAll('.mes_text .yzsv-bar') || []);
-        this._prefetchLines(bars.map(b => ({ speaker: b.dataset.speaker || '', text: b.dataset.text || '', cue: b.dataset.cue || '' })));
+        this._prefetchLines(bars.map(b => ({ speaker: b.dataset.speaker || '', text: b.dataset.text || '', cue: b.dataset.cue || '', deep: this._barDeep(b) })));
     }
 
     // 流式生成中：藏掉 [[名字]]；每句台词一说完（引号闭合）就马上开始生成语音
@@ -771,6 +986,15 @@ export class StoryVoice {
             if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return;
             const raw = String(msg.mes || '');
             if (!raw) return;
+            // 深度分析：不边写边生成，等正文闭合（</content>）就整楼分析
+            if (s.analysisMode === 'deep') {
+                if (s.deepProfile && /<\/content>/i.test(raw) && this._deepStartedFor !== `${id}:${this._deepHashOf(msg)}`) {
+                    this._deepStartedFor = `${id}:${this._deepHashOf(msg)}`;
+                    const goDeep = () => this._startDeep(id);
+                    if (this._wxData) goDeep(); else this._getWechatData().catch(() => null).then(goDeep);
+                }
+                return;
+            }
             const go = () => this._prefetchRaw(raw, id, msg);
             if (this._wxData) go();
             else this._getWechatData().catch(() => null).then(go);
@@ -800,7 +1024,7 @@ export class StoryVoice {
         if (!box) return;
         const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
         for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-            if (n.nodeValue && n.nodeValue.includes('[[')) n.nodeValue = n.nodeValue.replace(MARK_RE, '');
+            if (n.nodeValue && n.nodeValue.includes('[[')) n.nodeValue = n.nodeValue.replace(MARK_RE, (all, body) => markDisplay(body));
         }
     }
 
@@ -928,11 +1152,26 @@ export class StoryVoice {
     // 缓存按「平台+音色+文本」区分：联系人音色改了，点 ▶ 就会自动重新生成
     async _synth(text, voiceInfo, { regen = false, signal } = {}) {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
-        const vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
+        let vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
         const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
-        text = this._applyReadings(this._cleanSpeech(text));
-        text = this._withCue(text, vi.cue, vi.provider || provider);
-        const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${text}`;
+        const prov = vi.provider || provider;
+        let fish = null;
+        if (vi.deep) {
+            // 深度分析：标签已经插在台词里；张力 → temperature，语速 → speed
+            text = vi.deep.scripted ? this._applyReadings(this._prepScript(text, prov)) : this._applyReadings(this._cleanSpeech(text));
+            if (prov === 'fish') {
+                const base = 0.7;
+                const t = Number(vi.deep.t) || 0;
+                const temp = t && TENSION_TEMPERATURE[t] !== undefined ? Number((base + TENSION_TEMPERATURE[t]).toFixed(2)) : null;
+                const speed = PACE_SPEED[vi.deep.p] && PACE_SPEED[vi.deep.p] !== 1 ? PACE_SPEED[vi.deep.p] : null;
+                if (temp !== null || speed !== null) fish = { temperature: temp, speed };
+            }
+        } else {
+            text = this._applyReadings(this._cleanSpeech(text));
+            text = this._withCue(text, vi.cue, prov);
+        }
+        vi = fish ? { ...vi, fish } : vi;
+        const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${fish ? JSON.stringify(fish) : ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
         this._inflight = this._inflight || new Map();
         if (!regen && this._inflight.has(key)) return this._inflight.get(key);
@@ -948,6 +1187,7 @@ export class StoryVoice {
         const opts = { voice: vi.voice || undefined, signal };
         if (vi.provider) opts.provider = vi.provider;
         if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
+        if (vi.fish) opts.fish = vi.fish;
         const url = await this.tts.requestTTS(text, opts);
         // 晚回来的旧请求不能盖掉新生成的语音
         if (this._gen.get(key) !== token) return this.cache.get(key) || url;
@@ -976,11 +1216,37 @@ export class StoryVoice {
         t = t.replace(/\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu, '');
         t = t.replace(/[♡♥♪♫★☆◆◇■□●○※]/g, '');
         t = t.replace(/^[\s…‥．.。、，,—―\-~～]+/, '');           // 开头的省略号、破折号不读
-        t = t.replace(/(?:…|‥|\.{3,}|。{2,}|・{3,}){1,}/g, '、');      // 中间的省略号当成短停顿
-        t = t.replace(/[—―]{1,}/g, '、');
+        t = t.replace(/(?:…|‥|\.{3,}|・{3,}){1,}/g, '…');            // 省略号留一个：保留哽咽、迟疑的停顿
+        t = t.replace(/[—―]{2,}/g, '…');
         t = t.replace(/([！!？?])\1+/g, '$1').replace(/([~～])\1+/g, '$1');
         t = t.replace(/、+/g, '、').replace(/、([。！？!?])/g, '$1').replace(/[、\s]+$/, '');
         return t.trim() || String(text || '').trim();
+    }
+
+    // 一句台词要合成的内容：深度分析有演法就念演法（拆段也按演法拆），否则念原文 + 语气
+    _lineJob(voice, text, cue = '', deep = null) {
+        if (deep) {
+            const scripted = !!deep.s;
+            const parts = splitSpeech(scripted ? deep.s : text);
+            return { vi: { ...voice, cue: '', deep: { scripted, t: deep.t, p: deep.p, tone: deep.tone } }, parts };
+        }
+        return { vi: { ...voice, cue: cue || '' }, parts: splitSpeech(text) };
+    }
+
+    _barDeep(bar) {
+        if (this.getSettings().analysisMode !== 'deep' || !bar?.dataset?.deep) return null;
+        try { return JSON.parse(bar.dataset.deep); } catch (e) { return null; }
+    }
+
+    // 深度分析的演法：去掉 emoji，标签按模型换写法（S1 用 (英文)，Drama 去掉），保留 ！！、叠字、语气字
+    _prepScript(text = '', provider = '') {
+        let t = String(text || '');
+        t = t.replace(/\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu, '').replace(/[♡♥♪♫★☆◆◇■□●○※]/g, '');
+        t = t.replace(/[—―]{2,}/g, '…').replace(/(?:…|‥|\.{3,}|・{3,}){2,}/g, '……');
+        if (provider !== 'fish') return t.replace(/\[[a-z ]+\]\s*/g, '').trim();
+        let model = '';
+        try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
+        return scriptForModel(t, model).trim();
     }
 
     // 给 Fish 加语气：S2 / S2.1 用 [自由描述]（和台词同一种语言），S1 只认固定的英文情绪 (tag)
@@ -994,12 +1260,21 @@ export class StoryVoice {
             const tag = this._cueToS1(c);
             return tag ? `(${tag}) ${text}` : text;
         }
-        return `[${c.replace(/[\[\]]/g, '')}] ${text}`;
+        // 拆成最多 2 个短标签：[furious][voice breaking with tears]（官方建议叠 2 个以内，太长太杂会被“稀释”）
+        let tags = c.replace(/[\[\]]/g, '').split(/[,，、;；]|\band\b/).map(x => x.trim()).filter(Boolean);
+        // 旧格式的中文长描述：先换成 Fish 最稳的英文核心情绪词，再留一个短的中文补充
+        if (/[\u3040-\u30ff\u4e00-\u9fff]/.test(c) && !/[a-z]{3,}/i.test(c)) {
+            const core = this._cueToS1(c);
+            const extra = tags.find(x => x.length <= 8);
+            tags = [core, extra].filter(Boolean);
+        }
+        tags = tags.slice(0, 2);
+        return tags.length ? `${tags.map(t => `[${t}]`).join('')} ${text}` : text;
     }
 
     _cueToS1(cue = '') {
         const table = [
-            [/哭|泣|涙|sob|cry/i, 'sobbing'], [/叹|ため息|sigh/i, 'sighing'], [/低语|小声|悄悄|ささや|小声|whisper/i, 'whispering'],
+            [/哭|泣|涙|sob|cry/i, 'sobbing'], [/喘|呼吸.{0,3}(滞|急|乱|停)|屏住?呼吸|倒吸|息を呑|gasp|pant/i, 'gasping'], [/叹|ため息|sigh/i, 'sighing'], [/低语|小声|悄悄|ささや|小声|whisper/i, 'whispering'],
             [/喊|叫|怒鸣|叫ん|shout/i, 'shouting'], [/笑出声|大笑|爆笑|laugh/i, 'laughing'], [/轻笑|くすっ|chuckl/i, 'chuckling'],
             [/暴怒|激怒|furious/i, 'furious'], [/生气|怒|苛立|angry/i, 'angry'], [/不耐烦|イライラ|impatient/i, 'impatient'],
             [/讽刺|嘲|皮肉|sarcas/i, 'sarcastic'], [/轻蔑|鄙视|冷笑|見下|disdain|sneer/i, 'disdainful'], [/调侃|揶揄|からか|戏谑|tease|amus/i, 'amused'],
@@ -1064,14 +1339,31 @@ export class StoryVoice {
         trigger?.classList.add('is-active');
         // 每句台词：长句拆成几段并行合成，合成完拼成一整段再播（不会播到一半断掉）；
         // 播这一句的时候，下一句已经在后台合成
+        // 深度分析还没出结果：等它一下（最多按设置的上限），出来了按分析的演法读
+        if (this.getSettings().analysisMode === 'deep') {
+            const mid = Number(bars[0]?.dataset?.mesid);
+            const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
+            const h = msg ? this._deepHashOf(msg) : '';
+            if (h && this._deepJobs.has(h)) {
+                bars.forEach(b => b.classList.add('is-loading'));
+                this._toast('正在分析情绪', '分析完就开始读');
+                await this._deepJobs.get(h).catch(() => null);
+                bars.forEach(b => b.classList.remove('is-loading'));
+                if (this.playing !== run) return;
+                const fresh = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mid}"] .mes_text .yzsv-bar`));
+                const byKey = new Map(fresh.map(b => [`${b.dataset.line}`, b]));
+                bars = bars.map(b => byKey.get(`${b.dataset.line}`) || b);
+                run.bars = bars;
+            }
+        }
         const queue = [];
         const voiceMemo = new Map();
         for (const bar of bars) {
             const sp = bar.dataset.speaker || '';
             if (!voiceMemo.has(sp)) voiceMemo.set(sp, await this._voiceFor(sp));
             if (this.playing !== run) return;
-            const parts = splitSpeech(bar.dataset.text);
-            if (parts.length) queue.push({ bar, parts, voice: { ...voiceMemo.get(sp), cue: bar.dataset.cue || '' } });
+            const { vi, parts } = this._lineJob(voiceMemo.get(sp), bar.dataset.text, bar.dataset.cue || '', this._barDeep(bar));
+            if (parts.length) queue.push({ bar, parts, voice: vi });
         }
         const jobs = new Array(queue.length);
         const start = (i) => {
@@ -1218,7 +1510,10 @@ export class StoryVoice {
 .yzsv-bar.is-loading .yzsv-play { opacity: .5; }
 .yzsv-bar.is-loading .yzsv-play::after { content: '…'; }
 .yzsv-bar.is-playing .yzsv-play { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
-.yzsv-all { margin-top: 8px; }
+.yzsv-all { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.yzsv-deep { font-size: 12px; opacity: .72; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yzsv-deep.is-busy { animation: yzsvPulse 1.2s ease-in-out infinite; }
+@keyframes yzsvPulse { 0%,100% { opacity: .45; } 50% { opacity: .9; } }
 .yzsv-all .yzsv-btn.is-active { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
 .yzsv-pop { position: fixed; z-index: 100000; background: rgba(32,32,38,.96); color: #f2f2f2; border-radius: 14px; padding: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); font-size: 13px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .yzsv-pop-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; margin-bottom: 10px; }
@@ -1308,8 +1603,28 @@ export class StoryVoiceApp {
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
                         ${sw('markSpeaker', '让模型标出说话人', '写正文时在台词前加 [[角色名]]，显示时自动藏起来')}
-                        ${sw('emotionCue', '按情景读出语气', '让模型给每句台词写上语气（生气、调侃、哽咽……），Fish 按语气来念')}
+                        ${sw('emotionCue', '按情景读出语气', '不分析模式用：让模型给每句台词写上语气，Fish 按语气来念')}
                         ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
+                    </div>
+
+                    <div class="yzsv-sec">情绪分析</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-field"><label>读之前要不要分析</label>
+                            <div class="yzsv-seg">
+                                <button type="button" data-mode="none" class="${s.analysisMode !== 'deep' ? 'is-on' : ''}">不分析</button>
+                                <button type="button" data-mode="deep" class="${s.analysisMode === 'deep' ? 'is-on' : ''}">深度分析</button>
+                            </div>
+                            <input type="hidden" data-k="analysisMode" value="${s.analysisMode === 'deep' ? 'deep' : 'none'}">
+                        </div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">不分析：按正文里模型顺手写的 [[名字|语气]] 读，边写边生成，最快。<br>深度分析：正文写完（&lt;/content&gt; 闭合）后，把整楼交给模型当配音导演，读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。每楼多一次模型调用，分析完才生成语音。</div>
+                        <div class="yzsv-field"><label>深度分析用的连接</label>
+                            <select class="yzsv-input" data-k="deepProfile">
+                                <option value="">跟随酒馆当前的 API</option>
+                                ${this.sv.connectionProfiles().map(p => `<option value="${esc(p.id)}" ${s.deepProfile === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="yzsv-field"><label>单次分析最长等待（秒）</label><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
+                        <div class="yzsv-note">连接在酒馆「连接配置管理」里保存，可以给分析单独选一条快一点的模型。分析结果会缓存，正文没改就不会重复调用；楼层下面可以点「重新分析」。</div>
                     </div>
 
                     <div class="yzsv-sec">对白符号 · 跳过符号</div>
@@ -1366,6 +1681,9 @@ export class StoryVoiceApp {
             readUser: !!val('readUser')?.checked,
             markSpeaker: !!val('markSpeaker')?.checked,
             emotionCue: !!val('emotionCue')?.checked,
+            analysisMode: String(val('analysisMode')?.value || 'none') === 'deep' ? 'deep' : 'none',
+            deepProfile: String(val('deepProfile')?.value || ''),
+            deepTimeout: Math.min(600, Math.max(30, Number(val('deepTimeout')?.value) || 150)),
             quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
             skips: String(val('skips')?.value || '').trim(),
             voice: String(val('voice')?.value || '').trim(),
@@ -1462,6 +1780,14 @@ export class StoryVoiceApp {
         });
         root.querySelectorAll('[data-spk-del]').forEach(bindDel);
         root.querySelectorAll('[data-spk="name"]').forEach(bindName);
+        root.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('is-on', x === b));
+            const h = root.querySelector('[data-k="analysisMode"]');
+            if (h) h.value = b.dataset.mode;
+            this.sv.saveSettings(this._collect());
+            toast('已保存', b.dataset.mode === 'deep' ? '正文写完后先深度分析情绪再朗读' : '不分析，按正文标记直接读');
+        }));
+        root.querySelector('select[data-k="deepProfile"]')?.addEventListener('change', () => this.sv.saveSettings(this._collect()));
         root.querySelectorAll('input.yzsv-input[data-k]').forEach(inp => inp.addEventListener('change', () => this.sv.saveSettings(this._collect())));
         root.querySelector('#yzsv-test')?.addEventListener('click', async () => {
             const s = this.sv.saveSettings(this._collect());
