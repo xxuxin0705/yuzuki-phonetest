@@ -73,6 +73,21 @@ export const OPTION_GROUPS = [
         ['首字结巴', '@stutter-first'], ['光标前一个字叠一下', '@stutter-cursor'], ['首字拖长', '@drag-first'], ['句尾拖长', '@drag-tail'], ['整句打碎', '@shatter']
     ] }
 ];
+// NSFW 模式才出现：成人亲密场景用（SFW 默认不显示）
+export const NSFW_PRESETS = [
+    { label: '暧昧低语', tags: ['whisper', 'breathy'], t: 3, p: 'slow', tail: '~' },
+    { label: '贴耳调情', tags: ['seductive', 'whisper'], t: 3, p: 'slow', tail: '~' },
+    { label: '动情轻喘', tags: ['breathy', 'panting'], t: 3, p: 'slow' },
+    { label: '隐忍', tags: ['holding back', 'breathy'], t: 4, p: 'very_slow', stutter: true },
+    { label: '娇喘', tags: ['moaning softly', 'panting'], t: 4, p: 'slow', stutter: true },
+    { label: '失控', tags: ['moaning', 'panting'], t: 5, p: 'slow', stutter: true },
+    { label: '餍足', tags: ['satisfied', 'breathy'], t: 2, p: 'very_slow', tail: '……' }
+];
+export const NSFW_GROUP = { key: 'nsfw', label: '亲密', items: [
+    ['气声', '[breathy]'], ['轻喘', '[panting softly]'], ['急喘', '[panting]'], ['低吟', '[moaning softly]'], ['呻吟', '[moaning]'], ['低哼', '[groan]'],
+    ['勾人', '[seductive]'], ['隐忍', '[holding back]'], ['颤抖', '[voice trembling]'], ['餍足', '[satisfied]'],
+    ['嗯…', '嗯……'], ['唔…', '唔……'], ['哈啊', '哈啊……'], ['啊~', '啊~'], ['ん…', 'ん……'], ['はぁ', 'はぁ……'], ['あっ', 'あっ……']
+] };
 const PACES = [['very_slow', '1 很慢'], ['slow', '2 慢'], ['normal', '3 正常'], ['fast', '4 快'], ['very_fast', '5 很快']];
 const TENSIONS = [[1, '1 平静'], [2, '2 轻微'], [3, '3 明显'], [4, '4 强烈'], [5, '5 爆发']];
 const isWordCh = (c) => /[\p{L}\p{N}]/u.test(c);
@@ -137,20 +152,32 @@ function injectStyle() {
  * @param {number} mesid
  * @param {string|number} focusLine  打开后滚到这一句
  */
-export function openDeepEditor(sv, mesid, focusLine = null) {
+export function openDeepEditor(sv, mesid, focusLine = null, { single = false } = {}) {
     injectStyle();
     document.querySelectorAll('.yzsv-ed-mask').forEach(n => n.remove());
     const ctx = window.SillyTavern?.getContext?.();
     const msg = ctx?.chat?.[mesid];
-    const entry = sv._deepEntry(msg);
-    if (!entry) { sv._toast('还没有分析', '先点 ▶ 或「分析」让模型分析这一楼'); return; }
-    const bars = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar`));
+    const settings = sv.getSettings();
+    // 三种模式都能逐句调：没有分析结果就新建一份（只存改过的句子）
+    let entry = sv._lineEntry(msg);
+    if (!entry) entry = { at: Date.now(), tone: '', arc: '', lines: {}, manualOnly: true };
+    entry.lines = entry.lines || {};
+    const analyzed = !entry.manualOnly;
+    let bars = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar`));
+    if (single && focusLine !== null) bars = bars.filter(b => String(b.dataset.line) === String(focusLine));
     if (!bars.length) { sv._toast('没有可编辑的台词', '这一楼没有找到挂了按钮的台词'); return; }
+    const presets = settings.nsfw ? [...PRESETS, ...NSFW_PRESETS] : PRESETS;
+    const groups = settings.nsfw ? [...OPTION_GROUPS, NSFW_GROUP] : OPTION_GROUPS;
+    // 简单分析：没改过的句子，用模型写的 [[名字|语气]] 作为初稿
+    const cueScript = (cue, text) => {
+        const tags = String(cue || '').replace(/[\[\]]/g, '').split(/[,，、;；]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
+        return tags.length && settings.analysisMode === 'simple' ? `${tags.map(t => `[${t}]`).join('')} ${text}` : text;
+    };
 
     const lineHtml = (bar, i) => {
         const text = bar.dataset.text || '';
         const v = entry.lines?.[text] || {};
-        const script = v.s || text;
+        const script = v.s || (v.edited ? text : cueScript(bar.dataset.cue, text));
         const t = Number(v.t) || 2;
         const pace = v.pace || 'normal';
         return `
@@ -161,9 +188,9 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
             <textarea class="yzsv-ed-script" rows="2" spellcheck="false">${esc(script)}</textarea>
             <div class="yzsv-ed-set"><span>张力</span><div class="yzsv-ed-seg" data-k="t">${TENSIONS.map(([n, l]) => `<button type="button" data-v="${n}" class="${n === t ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-set"><span>语速</span><div class="yzsv-ed-seg" data-k="pace">${PACES.map(([k, l]) => `<button type="button" data-v="${k}" class="${k === pace ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
-            <div class="yzsv-ed-tabs">${[['preset', '一键演法'], ...OPTION_GROUPS.map(g => [g.key, g.label])].map(([k, l], j) => `<button type="button" data-tab="${k}" class="${(k === 'preset') ? 'is-on' : ''}">${l}</button>`).join('')}</div>
-            <div class="yzsv-ed-chips" data-pane="preset">${PRESETS.map((p, j) => `<button type="button" data-preset="${j}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
-            ${OPTION_GROUPS.map(g => `<div class="yzsv-ed-chips" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
+            <div class="yzsv-ed-tabs">${[['preset', '一键演法'], ...groups.map(g => [g.key, g.label])].map(([k, l], j) => `<button type="button" data-tab="${k}" class="${(k === 'preset') ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+            <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
+            ${groups.map(g => `<div class="yzsv-ed-chips" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
             <div class="yzsv-ed-hint">情绪、声音放在要生效的字前面（光标在哪就插在哪，没点过就插在句首）；一键演法会换掉句首的标签并设好张力和语速。</div>
             <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 按这样生成并播放</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
         </div>`;
@@ -175,12 +202,12 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
         <div class="yzsv-ed" role="dialog">
             <div class="yzsv-ed-head">
                 <button type="button" class="yzsv-ed-close" title="关闭">✕</button>
-                <b>🎭 深度分析结果</b>
-                <div class="row"><select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === (entry.tone || '') ? 'selected' : ''}>${x || '基调'}</option>`).join('')}</select><input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向"></div>
-                <div class="yzsv-ed-tip">张力 1 平静 → 5 崩溃，越高 Fish 起伏越大。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用 Fish 重新生成这一句。</div>
+                <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b>${settings.nsfw ? ' <small style="color:#c0506a">NSFW</small>' : ''}
+                ${analyzed && !single ? `<div class="row"><select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === (entry.tone || '') ? 'selected' : ''}>${x || '基调'}</option>`).join('')}</select><input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向"></div>` : ''}
+                <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高 Fish 起伏越大；语速在播放时直接变快变慢（不用重新生成）。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用 Fish 重新生成这一句。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
-            <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">保存全部</button></div>
+            <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
         </div>`;
     document.body.appendChild(mask);
 
@@ -198,22 +225,27 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
 
     // 存一句：写回分析结果（标记为已改）；说话人改了就记成手动指定
     const saveRow = (row) => {
+        if (!row._dirty) return false; // 没动过的句子不存（保持分析 / 原样）
         const r = read(row);
         const old = entry.lines[r.text] || {};
         const script = r.script && r.script !== r.text ? r.script : '';
         const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, t: r.t, s: script };
         const changed = ['role', 'pace', 't', 's'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
-        if (changed) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
+        if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
+        row._dirty = false;
         const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(r.line)}"]`);
         if (bar && r.speaker && r.speaker !== (bar.dataset.speaker || '')) sv._saveOverride(bar, r.speaker);
-        return changed;
+        return true;
     };
     const saveAll = () => {
         let n = 0;
         mask.querySelectorAll('.yzsv-ed-line').forEach(row => { if (saveRow(row)) n += 1; });
-        entry.tone = mask.querySelector('.yzsv-ed-tone').value;
-        entry.arc = mask.querySelector('.yzsv-ed-arc').value.trim();
-        sv._deepSave(sv._deepHashOf(msg), entry);
+        mask._saved = (mask._saved || 0) + n;
+        const tone = mask.querySelector('.yzsv-ed-tone');
+        const arc = mask.querySelector('.yzsv-ed-arc');
+        if (tone) entry.tone = tone.value;
+        if (arc) entry.arc = arc.value.trim();
+        if (n || analyzed) { entry.at = Date.now(); sv._deepSave(sv._deepHashOf(msg), entry); }
         sv.processById(mesid);
         return n;
     };
@@ -223,6 +255,11 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
         const keep = () => { ta._sel = [ta.selectionStart, ta.selectionEnd]; };
         ['select', 'keyup', 'click', 'input', 'blur'].forEach(ev => ta.addEventListener(ev, keep));
         ta.addEventListener('input', () => { ta._base = null; }); // 手动改过：下次一键演法以改后的为底
+    });
+    // 动过哪句就记哪句（输入、点选项、改说话人）
+    mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
+        row.addEventListener('input', () => { row._dirty = true; });
+        row.addEventListener('click', (e) => { if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play')) row._dirty = true; });
     });
     // 日文台词：语气词默认给日文那组
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
@@ -297,7 +334,8 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
         if (e.target === mask || e.target.closest('.yzsv-ed-close, .yzsv-ed-cancel')) { saveAll(); close(); return; }
         if (e.target.closest('.yzsv-ed-save')) {
             const n = saveAll();
-            sv._toast('已保存', n ? `改了 ${n} 句，点 ▶ 会按新的演法生成` : '没有改动', 'success');
+            const total = mask._saved || 0;
+            sv._toast('已保存', total ? `改了 ${total} 句，点 ▶ 会按新的演法生成` : '没有改动', 'success');
             close();
             return;
         }
@@ -316,7 +354,7 @@ export function openDeepEditor(sv, mesid, focusLine = null) {
         }
         const ta = row.querySelector('.yzsv-ed-script');
         const presetBtn = e.target.closest('[data-preset]');
-        if (presetBtn) { applyPreset(row, ta, PRESETS[Number(presetBtn.dataset.preset)]); return; }
+        if (presetBtn) { applyPreset(row, ta, presets[Number(presetBtn.dataset.preset)]); return; }
         const insBtn = e.target.closest('[data-ins]');
         if (insBtn) {
             const v = insBtn.dataset.ins;
