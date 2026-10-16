@@ -1,8 +1,10 @@
 // 🔊 正文朗读：在酒馆正文里，把「对白符号」里的台词挂上 ▶播放 / ↻重新生成 按钮，用小手机的 TTS（Fish 等）读出来。
 // 只改页面显示，不改聊天记录；引擎、API Key 沿用小手机「设置 → 语音」里的配置。
 
-import { openDeepEditor } from './deep-editor.js?v=20261021-ed3';
-import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp4';
+import { startAmbience, AMBIENCE_LABELS } from './ambience.js?v=20261021-am1';
+import { adaptScript } from './tts-adapt.js?v=20261021-ad1';
+import { openDeepEditor } from './deep-editor.js?v=20261021-ed6';
+import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp6';
 
 const STORE_KEY = 'phone-story-voice';
 const DEEP_KEY = 'phone-story-voice-deep';          // 旧版本存放位置（会自动搬走）
@@ -24,6 +26,9 @@ const DEFAULTS = Object.freeze({
     markSpeaker: true,
     analysisMode: 'simple', // simple = 简单分析（正文里的 [[名字|语气]]）；deep = 整楼深度分析；manual = 手动（自己逐句配）
     nsfw: false,          // SFW（默认）/ NSFW：三种模式都生效
+    ambienceOn: true,     // 播放时垫环境声（深度分析自动判断；简单 / 手动在 🎭 里选）
+    ambienceVol: 30,
+    autoOno: true,        // 简单分析：按语气自动加拟声词（笑→哈哈，哭→呜……）
     deepProfile: '',      // 深度分析用哪条连接：'' = 跟随酒馆当前；'__custom__' = 自己填的 API；其他 = 酒馆连接配置
     deepApiUrl: '',
     deepApiKey: '',
@@ -57,7 +62,17 @@ function parseMarkBody(body = '') {
     return { name: head, cue, g };
 }
 // 标记在显示时换成什么：普通标记藏掉；写成动作描写的，还原成旁白
+// [[环境:cafe]]：简单分析里正文模型标的场景环境声（不是说话人）
+const ENV_BODY_RE = /^\s*(?:环境声?|场景|ambience|amb|scene)\s*[:：|｜/]\s*([a-z]+)\s*$/i;
+const ENV_MARK_RE = /\[\[\s*(?:环境声?|场景|ambience|amb|scene)\s*[:：|｜/]\s*[a-z]+\s*\]\][ \t]*/gi;
+const ENV_KINDS = ['none', 'rain', 'storm', 'wind', 'waves', 'night', 'room', 'fire', 'crowd', 'cafe'];
+function envOfMark(body = '') {
+    const m = String(body).match(ENV_BODY_RE);
+    const k = m ? m[1].toLowerCase() : '';
+    return ENV_KINDS.includes(k) ? k : (m ? 'none' : '');
+}
 function markDisplay(body = '') {
+    if (ENV_BODY_RE.test(body)) return '';
     const { name, cue } = parseMarkBody(body);
     return isNarrCue(cue) ? narrFromMark(name, cue) : '';
 }
@@ -265,16 +280,17 @@ export class StoryVoice {
             const raw = await this._callModel(messages, { timeout: (Number(s.deepTimeout) || 150) * 1000 });
             const parsed = parseDeep(raw, items);
             if (!parsed) throw new Error('模型没有按格式返回分析结果');
-            const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, lines: {} };
+            const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, ambience: parsed.ambience || 'none', lines: {} };
             // 分析之前就手动改过的句子（没点「重新分析」覆盖）保留用户的
             const before = this._deepStore()[hash];
             const keepEdited = before && before.manualOnly ? before.lines || {} : {};
+            if (before?.manualOnly && before.ambienceSet) out.ambience = before.ambience; // 自己选过的环境声保留
             items.forEach(it => {
                 if (keepEdited[it.text]?.edited) { out.lines[it.text] = keepEdited[it.text]; return; }
                 const v = parsed.items.get(it.id);
                 if (!v) return;
                 const script = v.script ? applyToneGate(v.script, parsed.tone, s.nsfw) : '';
-                out.lines[it.text] = { role: v.role, pace: v.pace, t: v.tension, s: script && script !== it.text ? script : '', why: v.reason };
+                out.lines[it.text] = { role: v.role, pace: v.pace, t: v.tension, s: script && script !== it.text ? script : '', why: v.reason, ...(v.amb ? { amb: v.amb } : {}) };
             });
             this._deepSave(hash, out);
             this._deepErr.delete(hash);
@@ -403,10 +419,40 @@ export class StoryVoice {
     }
 
     // 一句台词的深度分析结果（给按钮和合成用）
+    // 这一楼每句台词所处的环境声：从楼层开头的开始，遇到「从这句起换」的句子就换
+    _floorAmbience(mid) {
+        const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
+        const entry = this._lineEntry(msg);
+        const map = new Map();
+        const bars = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mid}"] .mes_text .yzsv-bar`));
+        // 正文里模型标的 [[环境:xx]]（简单分析）：每句取它前面最近的那个
+        const rawAt = new Map();
+        try {
+            if (msg?.mes && /\[\[\s*(?:环境|场景|amb|scene)/i.test(String(msg.mes))) {
+                const { lines, envs } = this._analyze(this._rawToText(msg.mes), { id: mid, msg, useMemo: false });
+                lines.forEach(r => {
+                    let k = '';
+                    (envs || []).forEach(e => { if (e.start < r.start) k = e.kind; });
+                    if (k) rawAt.set(r.text, k);
+                });
+            }
+        } catch (e) { /* 忽略 */ }
+        const deep = !!entry && this.getSettings().analysisMode === 'deep' && !entry.manualOnly;
+        // 优先级：自己在 🎭 里选的 > 深度分析 > 正文标记
+        let cur = (entry && (deep || entry.ambienceSet) && entry.ambience) || '';
+        bars.forEach((b, i) => {
+            const v = entry?.lines?.[b.dataset.text];
+            if (v?.amb && (deep || v.edited || v.ambSet)) cur = v.amb;
+            else if (!deep && rawAt.has(b.dataset.text) && !(i === 0 && entry?.ambienceSet)) cur = rawAt.get(b.dataset.text);
+            map.set(String(b.dataset.line), cur || 'none');
+        });
+        return map;
+    }
+
     _deepFor(entry, text) {
         const v = entry?.lines?.[text];
         if (!v) return null;
-        return { s: v.s || '', p: v.pace || 'normal', t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '' };
+        return { s: v.s || '', p: v.pace || 'normal', t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
     }
 
     // ---------- 设置 ----------
@@ -562,24 +608,41 @@ export class StoryVoice {
                 }
             }
         }
+        // 显示「重新生成中 Ns」，生成完才播（播的就是刚生成的这份）
+        bar.classList.add('is-regen');
+        bar.querySelector('.yzsv-regen-tip')?.remove();
+        const tip = document.createElement('span');
+        tip.className = 'yzsv-regen-tip';
+        bar.appendChild(tip);
+        const t0 = Date.now();
+        const showTip = () => { tip.textContent = `重新生成中 ${Math.floor((Date.now() - t0) / 1000)}s`; };
+        showTip();
+        const ticker = setInterval(showTip, 500);
         const job = (async () => {
             const { vi, parts } = this._lineJob(await this._voiceFor(bar.dataset.speaker || ''), bar.dataset.text, bar.dataset.cue || '', this._barDeep(bar));
             const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, { regen: true })));
             return this._joinAudio(urls);
         })();
         bar._regenJob = job;
+        let urls = null;
         try {
-            await job;
+            urls = await job;
         } catch (err) {
-            this._toast('重新生成失败', String(err?.message || err).slice(0, 120));
+            clearInterval(ticker);
+            tip.textContent = '重新生成失败';
+            setTimeout(() => tip.remove(), 2500);
+            this._toast('重新生成失败', `${String(err?.message || err).slice(0, 120)}（原来的语音没有动）`, 'error');
             return;
         } finally {
             bar._regenJob = null;
             btn?.classList.remove('is-busy');
-            bar.classList.remove('is-loading');
+            bar.classList.remove('is-loading', 'is-regen');
+            clearInterval(ticker);
         }
+        tip.textContent = `已重新生成（${Math.max(1, Math.round((Date.now() - t0) / 1000))}s）`;
+        setTimeout(() => tip.remove(), 2500);
         if (analyzed) this._toast('语音好了 🎧', '深度分析完毕，已按分析的情绪生成，开始播放', 'success');
-        this.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
+        this.playBars([bar], { trigger: bar.querySelector('.yzsv-play'), prepared: { [String(bar.dataset.line)]: urls } });
     }
 
     // 长按 ↻：选说话人
@@ -735,7 +798,15 @@ export class StoryVoice {
         const s = this.getSettings();
         // 模型标的说话人 [[角色名]]：记下来，显示时藏掉
         const marks = [];
+        const envs = [];
         for (const m of full.matchAll(MARK_RE)) {
+            // [[环境:rain]]：场景环境声，不是说话人，藏掉就行
+            const env = envOfMark(m[1]);
+            if (env) {
+                envs.push({ start: m.index, kind: env });
+                marks.push({ start: m.index, end: m.index + m[0].length, name: '', cue: '', show: '', env: true });
+                continue;
+            }
             // [[名字/男]]、[[名字|女]]、[[名字（男）]] 都认：名字 + 性别
             // 也认 [[名字/女|语气]]、[[名字|语气]]：竖线后面是这句话的情绪语气
             const { name, cue: rawCue, g } = parseMarkBody(m[1]);
@@ -770,7 +841,7 @@ export class StoryVoice {
                 if (/^\s*(?:图标|字样|标志|招牌|标牌|牌子|指示牌|几个字|二字|三个字|四个字|这几个字|这行字|的招牌|的牌子|标签)/.test(after)) return false;
                 return true;
             });
-        if (!lines.length) return { marks, lines };
+        if (!lines.length) return { marks, lines, envs };
 
         const defaultSpeaker = String(msg?.name || '').trim();
         const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceAliases()].filter(Boolean))];
@@ -790,7 +861,7 @@ export class StoryVoice {
                 return;
             }
             // 1) 模型标的 [[角色名]]（紧挨在台词前面）
-            const mark = marks.find(mk => mk.end <= r.start && r.start - mk.end <= 2 && !/\S/.test(full.slice(mk.end, r.start)));
+            const mark = marks.find(mk => !mk.env && mk.end <= r.start && !/\S/.test(full.slice(mk.end, r.start).replace(ENV_MARK_RE, '')) && full.slice(mk.end, r.start).replace(ENV_MARK_RE, '').length <= 2);
             if (mark) {
                 r.speaker = this._canonicalName(mark.name) || mark.name;
                 r.cue = mark.cue || '';
@@ -832,7 +903,7 @@ export class StoryVoice {
             if (speaker) lastSpeaker = r.speaker;
             prevEnd = r.end;
         });
-        return { marks, lines };
+        return { marks, lines, envs };
     }
 
     processElement(mesEl, { live = false } = {}) {
@@ -940,7 +1011,15 @@ export class StoryVoice {
                 const h = this._deepHashOf(msg);
                 const pending = this._deepPending(msg);
                 const err = h ? this._deepErr.get(h) : '';
-                const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(deepEntry.tone || '已分析')}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
+                // 环境声的变化：咖啡馆 → 人声嘈杂
+                let ambText = '';
+                if (deepEntry && s.ambienceOn) {
+                    const chain = [deepEntry.ambience || 'none'];
+                    lines.forEach(r => { const a = deepEntry.lines?.[r.text]?.amb; if (a && a !== chain[chain.length - 1]) chain.push(a); });
+                    const names = chain.filter((k, i) => k !== 'none' || i > 0).map(k => k === 'none' ? '安静' : (AMBIENCE_LABELS[k] || k));
+                    if (names.length) ambText = ` · 🌧 ${names.join('→')}`;
+                }
+                const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(deepEntry.tone || '已分析')}${esc(ambText)}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
                 deepHtml = deepEntry && !pending
                     ? `<button type="button" class="yzsv-deep yzsv-deep-open" title="点开查看、修改每句的分析">${label} ›</button><button type="button" class="yzsv-btn yzsv-deep-open">查看 / 编辑</button><button type="button" class="yzsv-btn yzsv-reanalyze">重新分析</button>`
                     : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">分析</button>`}`;
@@ -988,6 +1067,7 @@ export class StoryVoice {
             s.npcMode === 'npc' ? `下面名单以外的配角、路人、NPC，在名字后面加性别：[[名字/男]] 或 [[名字/女]]（例：[[店员/女]]${qa}……${qb}）。` : '',
             names.length ? `同一角色始终用同一个名字：${names.join('、')}。` : '',
             (s.emotionCue && s.analysisMode === 'simple') ? `再在名字后面用竖线写上这句话的【声音表演提示】：[[名字|提示]]。提示用英文写 1~2 个短语、逗号隔开，一共不超过 6 个单词，只写这句话【怎么说出口】：情绪和强度、音量、语速、停顿/哽咽、哭腔/颤抖/喘息/笑意/冷笑等。注意：这个标记读者看不见，所以动作、神态、心理、发生了什么都必须照常写在正文旁白里，绝对不能挪进标记（错误：[[某某|察觉到动静，呼吸一滞，把脸埋进你颈窝]]；正确：正文写“他呼吸一滞，把脸埋进你颈窝。”，标记写 [[某某|breathless, trembling whisper]]）。要结合当时的情景、人物此刻真实的心理和两人的关系判断强度：真崩溃就写到崩溃，强装镇定就写 forced calm。例：[[${names[0] || '角色名'}|furious, voice breaking with tears]]${qa}……${qb}、[[某某|teasing, playful laugh]]、[[某某|exhausted sigh, quiet]]、[[某某|panicked, speaking fast]]、[[某某|cold, sneering]]、[[某某|whispering, trembling]]。核心可选词：angry, furious, sad, crying, sobbing, excited, surprised, scared, panicked, desperate, gentle, tender, teasing, laughing, sigh, whisper, shouting, trembling, cold, sneering。同一角色每句的提示要跟着剧情变化。${s.nsfw ? '（成人亲密场景：只有正文写出了实质亲密接触才可以用 breathy、panting、moaning softly、moaning 这类，按强度递进；只是调情时用 whisper、breathy、seductive。）' : '（不要写 moaning、groan 这类呻吟提示；亲密段落最多 whisper、breathy。）'}` : '',
+            (s.analysisMode === 'simple' && s.ambienceOn) ? '【场景环境声】在每楼第一句台词之前，以及场景变化的地方（走进 / 走出某地、开始下雨、雨停、来到海边……），单独写一个 [[环境:xx]]，xx 只能从 none、rain、storm、wind、waves、night、room、fire、crowd、cafe 里选（none = 安静没有环境声）；场景没变就不要重复写。这个标记读者也看不见。' : '',
             '旁白、动作、心理描写、括号里的译文都不要标；不要解释这个标记，也不要漏标。'
         ].filter(Boolean).join('\n');
         ctx.setExtensionPrompt(PROMPT_KEY, text, types.IN_CHAT ?? 1, 0, false, roles.SYSTEM ?? 0);
@@ -1329,7 +1409,14 @@ export class StoryVoice {
         const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
         const prov = vi.provider || provider;
         let fish = null;
-        if (vi.deep) {
+        let extra = null;
+        if (vi.deep && prov !== 'fish') {
+            // 其他引擎：同一份演法换成它们认的写法（情绪参数 / 语气说明 / 括号音效），见 tts-adapt.js
+            const raw = vi.deep.scripted ? this._prepScript(text, prov, { keepTags: true }) : this._cleanSpeech(text);
+            const a = adaptScript({ provider: prov, model: this._modelOf(prov), script: this._applyReadings(raw), t: Number(vi.deep.t) || 0 });
+            text = a.text;
+            if (Object.keys(a.opts).length) extra = a.opts;
+        } else if (vi.deep) {
             // 深度分析：标签已经插在台词里；张力 → temperature，语速 → speed
             text = vi.deep.scripted ? this._applyReadings(this._prepScript(text, prov)) : this._applyReadings(this._cleanSpeech(text));
             if (prov === 'fish') {
@@ -1339,16 +1426,24 @@ export class StoryVoice {
                 // 语速不交给 Fish（兼容接口会忽略），播放时变速，见 _playUrl
                 if (temp !== null) fish = { temperature: temp };
             }
+        } else if (vi.cue && prov !== 'fish' && this.getSettings().emotionCue) {
+            text = this._autoOno(text, vi.cue);
+            // 简单分析 + 其他引擎：把 [[名字|语气]] 的语气也换成它们认的写法
+            const tags = String(vi.cue).replace(/[\[\]]/g, '').split(/[,，、;；]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
+            const a = adaptScript({ provider: prov, model: this._modelOf(prov), script: `${tags.map(x => `[${x}]`).join('')} ${this._applyReadings(this._cleanSpeech(text))}`, t: 0 });
+            text = a.text;
+            if (Object.keys(a.opts).length) extra = a.opts;
         } else {
-            text = this._applyReadings(this._cleanSpeech(text));
+            text = this._applyReadings(this._cleanSpeech(this._autoOno(text, vi.cue)));
             text = this._withCue(text, vi.cue, prov);
         }
         vi = fish ? { ...vi, fish } : vi;
-        const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${fish ? JSON.stringify(fish) : ''}\u0001${text}`;
+        if (extra) vi = { ...vi, extra };
+        const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${fish ? JSON.stringify(fish) : ''}\u0001${extra ? JSON.stringify(extra) : ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
         this._inflight = this._inflight || new Map();
         if (!regen && this._inflight.has(key)) return this._inflight.get(key);
-        const job = this._synthNow(key, text, vi, signal);
+        const job = this._synthNow(key, text, regen ? { ...vi, _regen: true } : vi, signal);
         this._inflight.set(key, job);
         try { return await job; } finally { if (this._inflight.get(key) === job) this._inflight.delete(key); }
     }
@@ -1361,6 +1456,12 @@ export class StoryVoice {
         if (vi.provider) opts.provider = vi.provider;
         if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
         if (vi.fish) opts.fish = vi.fish;
+        // 重新生成：让 Fish 的随机性稍微变一下，避免接口直接给回一模一样的音频
+        if (vi._regen && (vi.provider || String(this.storage?.get?.('phone-tts-provider') || '')) === 'fish') {
+            const base = Number(opts.fish?.temperature) || 0.7;
+            opts.fish = { ...(opts.fish || {}), temperature: Number(Math.min(0.95, Math.max(0.3, base + (Math.random() * 0.12 - 0.06))).toFixed(2)) };
+        }
+        if (vi.extra) Object.assign(opts, vi.extra);
         const url = await this.tts.requestTTS(text, opts);
         // 晚回来的旧请求不能盖掉新生成的语音
         if (this._gen.get(key) !== token) return this.cache.get(key) || url;
@@ -1412,10 +1513,30 @@ export class StoryVoice {
     }
 
     // 深度分析的演法：去掉 emoji，标签按模型换写法（S1 用 (英文)，Drama 去掉），保留 ！！、叠字、语气字
-    _prepScript(text = '', provider = '') {
+    // 简单分析：按 [[名字|语气]] 自动加一点拟声词（笑 → 哈哈，哭 → 呜……，叹气 → 唉……）
+    _autoOno(text = '', cue = '') {
+        const c = String(cue || '').toLowerCase();
+        if (!c || !this.getSettings().autoOno || this.getSettings().analysisMode !== 'simple') return text;
+        const ja = /[\u3040-\u30ff]/.test(text);
+        const t = String(text);
+        const has = (re) => re.test(t.slice(0, 6));
+        if (/laugh|笑出声|大笑|哈哈/.test(c) && !has(/哈|あは|ははは|ふふ/)) return `${ja ? 'あはは、' : '哈哈，'}${t}`;
+        if (/chuckl|giggl|轻笑|偷笑/.test(c) && !has(/呵|嘿|ふふ|へへ/)) return `${ja ? 'ふふっ、' : '嘿嘿，'}${t}`;
+        if (/sob|cry|哭|泣|tears/.test(c) && !has(/呜|うぅ|ぐす|ひっく/)) return `${ja ? 'うぅ……' : '呜……'}${t}`;
+        if (/sigh|叹/.test(c) && !has(/唉|はぁ/)) return `${ja ? 'はぁ……' : '唉……'}${t}`;
+        if (/sneer|scoff|冷笑|嗤|哼/.test(c) && !has(/哼|ふん|はっ/)) return `${ja ? 'ふん、' : '哼，'}${t}`;
+        return t;
+    }
+
+    _modelOf(provider = '') {
+        try { return String(this.tts?._resolveConfig?.({ provider })?.model || ''); } catch (e) { return ''; }
+    }
+
+    _prepScript(text = '', provider = '', { keepTags = false } = {}) {
         let t = String(text || '');
         t = t.replace(/\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu, '').replace(/[♡♥♪♫★☆◆◇■□●○※]/g, '');
         t = t.replace(/[—―]{2,}/g, '…').replace(/(?:…|‥|\.{3,}|・{3,}){2,}/g, '……');
+        if (keepTags) return t.trim();
         if (provider !== 'fish') return t.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
         let model = '';
         try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
@@ -1487,6 +1608,8 @@ export class StoryVoice {
     stop() {
         const p = this.playing;
         this.playing = null;
+        try { this._amb?.stop(); } catch (e) { /* 忽略 */ }
+        this._amb = null;
         try { this.audio.pause(); } catch (e) { /* 忽略 */ }
         if (p) {
             p.abort?.abort?.();
@@ -1502,7 +1625,7 @@ export class StoryVoice {
         this.playBars(bars, { trigger });
     }
 
-    async playBars(bars, { regen = false, trigger = null } = {}) {
+    async playBars(bars, { regen = false, trigger = null, prepared = null } = {}) {
         const same = this.playing && this.playing.trigger === trigger && trigger;
         this.stop();
         if (same) return; // 再点一次 = 停止
@@ -1548,9 +1671,20 @@ export class StoryVoice {
         const start = (i) => {
             if (i >= queue.length || jobs[i]) return;
             const q = queue[i];
-            jobs[i] = Promise.all(q.parts.map(part => this._synthRetry(part, q.voice, { regen, signal: abort.signal })))
+            // 刚重新生成好的：直接用那份，不再去缓存里找（保证播的是新的）
+            const ready = prepared?.[String(q.bar.dataset.line)];
+            jobs[i] = ready ? Promise.resolve(ready) : Promise.all(q.parts.map(part => this._synthRetry(part, q.voice, { regen, signal: abort.signal })))
                 .then(urls => this._joinAudio(urls));
             jobs[i].catch(() => {});
+        };
+        // 环境声：每句播之前看它所在的场景（这一楼开头的 + 中途换场景的那句起换），换了就交叉淡入淡出
+        let ambMap = null;
+        try { ambMap = this.getSettings().ambienceOn ? this._floorAmbience(Number(bars[0]?.dataset?.mesid)) : null; } catch (e) { ambMap = null; }
+        const setAmb = (kind) => {
+            const k = kind && kind !== 'none' ? kind : '';
+            if ((this._amb?.kind || '') === k) return;
+            try { this._amb?.stop(1.2); } catch (e) { /* 忽略 */ }
+            this._amb = k ? startAmbience(k, (Number(this.getSettings().ambienceVol) || 30) / 100) : null;
         };
         try {
             start(0); start(1);
@@ -1563,6 +1697,7 @@ export class StoryVoice {
                 start(i + 1); start(i + 2);
                 if (this.playing !== run) return;
                 q.bar.classList.remove('is-loading');
+                if (ambMap) setAmb(ambMap.get(String(q.bar.dataset.line)));
                 q.bar.classList.add('is-playing');
                 for (const url of urls) {
                     if (this.playing !== run) return;
@@ -1777,6 +1912,11 @@ export class StoryVoice {
 select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #999 50%), linear-gradient(135deg, #999 50%, transparent 50%); background-position: calc(100% - 16px) 17px, calc(100% - 11px) 17px; background-size: 5px 5px; background-repeat: no-repeat; text-overflow: ellipsis; }
 .yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden] { display: none !important; }
 .yzsv-cfg { font-size: .7em; }
+.yzsv-range { width: 100%; accent-color: #a18cd1; }
+.yzsv-regen-tip { font-size: .72em; opacity: .85; margin-left: 4px; padding: 1px 7px; border-radius: 999px; background: rgba(161,140,209,.25); white-space: nowrap; }
+.yzsv-bar.is-regen .yzsv-regen { animation: yzsvSpin 1s linear infinite; }
+@keyframes yzsvSpin { to { transform: rotate(360deg); } }
+.yzsv-bar.is-regen .yzsv-play { opacity: .35; pointer-events: none; }
 .yzsv-cfg.is-edited { background: rgba(161,140,209,.35); border-color: rgba(161,140,209,.7); opacity: 1; }
 .yzsv-key { display: flex; gap: 8px; align-items: center; }
 .yzsv-key .yzsv-input { flex: 1; min-width: 0; }
@@ -1848,6 +1988,9 @@ export class StoryVoiceApp {
                         <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写台词时顺手标上 [[名字|语气]]，边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
                         <label class="yzsv-row" style="padding:6px 0 12px;"><span>NSFW 模式<small>默认 SFW。打开后三种模式都放开成人亲密场景的演法（喘息、低吟、呻吟），编辑面板多出「亲密」选项；只在正文真的写到时才用</small></span><span class="yzsv-switch"><input type="checkbox" data-k="nsfw" ${s.nsfw ? 'checked' : ''}><i></i></span></label>
+                        <label class="yzsv-row" style="padding:0 0 10px;"><span>环境声<small>播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析按正文场景自动选；简单 / 手动在 🎭 里给这一楼选</small></span><span class="yzsv-switch"><input type="checkbox" data-k="ambienceOn" ${s.ambienceOn ? 'checked' : ''}><i></i></span></label>
+                        <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
+                        <label class="yzsv-row" style="padding:0 0 10px;"><span>自动加拟声词<small>简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加</small></span><span class="yzsv-switch"><input type="checkbox" data-k="autoOno" ${s.autoOno ? 'checked' : ''}><i></i></span></label>
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
                         <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
                         <div class="yzsv-field"><label>什么时候分析</label>
@@ -1941,6 +2084,9 @@ export class StoryVoiceApp {
             emotionCue: !!val('emotionCue')?.checked,
             analysisMode: ['simple', 'deep', 'manual'].includes(String(val('analysisMode')?.value)) ? String(val('analysisMode').value) : 'simple',
             nsfw: !!val('nsfw')?.checked,
+            ambienceOn: !!val('ambienceOn')?.checked,
+            autoOno: !!val('autoOno')?.checked,
+            ambienceVol: Math.min(80, Math.max(5, Number(val('ambienceVol')?.value) || 30)),
             deepProfile: String(val('deepProfile')?.value || ''),
             deepApiUrl: String(val('deepApiUrl')?.value || '').trim(),
             deepApiKey: String(val('deepApiKey')?.value || '').trim(),
@@ -2054,6 +2200,9 @@ export class StoryVoiceApp {
             this.sv.saveSettings(this._collect());
             toast('已保存', { deep: '深度分析：交给副 API 逐句分析情绪', simple: '简单分析：按正文里的 [[名字|语气]] 读', manual: '手动：自己逐句配情绪' }[b.dataset.mode] || '');
         }));
+        const range = root.querySelector('input[data-k="ambienceVol"]');
+        range?.addEventListener('input', () => { const v = root.querySelector('.yzsv-ambv'); if (v) v.textContent = range.value; });
+        range?.addEventListener('change', () => this.sv.saveSettings(this._collect()));
         root.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-auto]').forEach(x => x.classList.toggle('is-on', x === b));
             const h = root.querySelector('[data-k="deepAuto"]');

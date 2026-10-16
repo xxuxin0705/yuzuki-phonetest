@@ -922,7 +922,9 @@ export class TtsManager {
         }
 
         if (provider.startsWith('minimax')) {
-            const response = await fetch(apiUrl, {
+            // 正文朗读给的情绪（happy / sad / angry / fearful / disgusted / surprised / calm）
+            const mmEmotion = String(options.minimax?.emotion || '').trim();
+            const mmRequest = (withEmotion) => fetch(apiUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -935,16 +937,22 @@ export class TtsManager {
                     stream: false,
                     language_boost: this._resolveMiniMaxLanguageBoost(options.languageBoost),
                     output_format: 'hex',
-                    voice_setting: { voice_id: voice || 'female-shaonv', speed: 1.0, vol: 1.0, pitch: 0 },
+                    voice_setting: { voice_id: voice || 'female-shaonv', speed: 1.0, vol: 1.0, pitch: 0, ...(withEmotion && mmEmotion ? { emotion: mmEmotion } : {}) },
                     audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3', channel: 1 }
                 })
             });
-            const responseText = await response.text().catch(() => '');
-            let resData = null;
-            try {
-                resData = JSON.parse(responseText || '{}');
-            } catch (_e) {
-                resData = null;
+            const mmRead = async (res) => {
+                const text = await res.text().catch(() => '');
+                let data = null;
+                try { data = JSON.parse(text || '{}'); } catch (_e) { data = null; }
+                return { text, data };
+            };
+            let response = await mmRequest(true);
+            let { text: responseText, data: resData } = await mmRead(response);
+            // 这个模型不认这个情绪：去掉情绪再来一次
+            if (mmEmotion && (!response.ok || resData?.base_resp?.status_code !== 0)) {
+                response = await mmRequest(false);
+                ({ text: responseText, data: resData } = await mmRead(response));
             }
             const minimaxError = resData?.base_resp?.status_msg
                 || resData?.error?.message
@@ -1281,7 +1289,10 @@ export class TtsManager {
                         sample_rate: 24000
                     },
                     additions: JSON.stringify({
-                        context_texts: []
+                        // 豆包语音合成 2.0 支持用一句话指定语气（正文朗读给的演法）
+                        context_texts: (Array.isArray(options.contextTexts) && /2\.0|seed-tts-2|icl-2|tts-2/i.test(String(effectiveResourceId || '')))
+                            ? options.contextTexts.map(String).filter(Boolean).slice(0, 3)
+                            : []
                     })
                 }
             };
@@ -1375,7 +1386,9 @@ export class TtsManager {
             body: JSON.stringify({
                 model: model || 'tts-1',
                 input: inputText,
-                voice: voice || 'alloy'
+                voice: voice || 'alloy',
+                // gpt-4o-mini-tts 这类模型认 instructions（语气说明）；tts-1 不认就不带
+                ...(options.instructions && /gpt-4o|mini-tts/i.test(String(model || '')) ? { instructions: String(options.instructions).slice(0, 600) } : {})
             })
         });
         if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);

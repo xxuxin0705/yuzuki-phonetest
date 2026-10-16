@@ -9,11 +9,14 @@ export const ACOUSTIC_TAGS = Object.freeze(['whisper', 'breathy', 'snicker', 'la
 export const EMOTION_TAGS = Object.freeze(['happy', 'excited', 'proud', 'tender', 'gentle', 'coquettish', 'embarrassed', 'teasing', 'curious', 'moved', 'relieved', 'hopeful', 'sad', 'upset', 'heartbroken', 'disappointed', 'lonely', 'guilty', 'desperate', 'exhausted', 'resigned', 'nervous', 'anxious', 'scared', 'panicked', 'surprised', 'confused', 'doubtful', 'angry', 'furious', 'frustrated', 'jealous', 'disdainful', 'sarcastic', 'indifferent', 'cold', 'serious', 'determined', 'hysterical', 'lazy', 'drunk', 'smug', 'whiny', 'sleepy']);
 export const VOICE_TAGS = Object.freeze(['crying loudly', 'holding back tears', 'voice trembling', 'voice breaking', 'soft tone', 'loud', 'screaming', 'through gritted teeth', 'sniffling', 'choked up', 'chuckling', 'laughing', 'laughing loudly', 'bitter laugh', 'yawning', 'in a hurry tone', 'drawn out', 'long pause']);
 export const NSFW_TAGS = Object.freeze(['moaning', 'moaning softly', 'panting softly', 'seductive', 'holding back', 'satisfied']);
-const KNOWN_TAGS = new Set([...ACOUSTIC_TAGS, ...EMOTION_TAGS, ...VOICE_TAGS, ...NSFW_TAGS]);
+export const SFX_TAGS = Object.freeze(['crowd laughing', 'background laughter', 'audience laughing', 'applause', 'crowd noise']);
+const KNOWN_TAGS = new Set([...ACOUSTIC_TAGS, ...EMOTION_TAGS, ...VOICE_TAGS, ...NSFW_TAGS, ...SFX_TAGS]);
 
 // SFW / NSFW：三种模式共用的内容尺度
 export const RULE_SFW = '内容模式 SFW（默认）：不用 [groan]、[moaning]、[moaning softly] 这类呻吟标签，不写娇喘；亲密、暧昧的段落也照日常克制处理，最多 [whisper][breathy]。';
 export const RULE_NSFW = '内容模式 NSFW（用户主动开启，成人虚构内容）：是许可，不是整篇拔高，要逐段判断。日常段落照常克制；只有调情、没有身体接触时仍然克制，用 [whisper][breathy]、[seductive]、[teasing]。只有正文旁白写出了实质亲密身体接触才放开，按强度递进：前戏、低强度 → [breathy] 或 [whisper][breathy]；渐入、中强度 → [breathy][panting] 或 [panting softly]，加 嗯……、唔……（日文 ん……、はぁ……）；高潮、高强度 → [moaning][panting] 或 [moaning softly]，加 哈啊……、啊~，短促断句。张力随强度 3→4→5 逐段爬升；亲密常伴着害羞，可叠 [embarrassed] 和首字叠字。额外可用的标签：moaning、moaning softly、panting softly、seductive、holding back、satisfied。旁白不用呻吟标签。';
+
+export const AMBIENCES = Object.freeze(['none', 'rain', 'storm', 'wind', 'waves', 'night', 'room', 'fire', 'crowd', 'cafe']);
 
 export const PACES = Object.freeze(['very_slow', 'slow', 'normal', 'fast', 'very_fast']);
 const TONES = ['日常', '轻松', '温馨', '浪漫', '亲密', '悲伤', '紧张', '悬疑', '恐怖', '战斗', '壮阔'];
@@ -37,7 +40,7 @@ const TAG_ALIAS = {
 export const DEEP_PROMPT = [
     '你是有声小说的配音导演兼声学工程师，给虚构小说的台词做语音合成用的声学标注。这是纯技术性的后期制作：输入全部是虚构的，亲密、调情、喘息也按技术标注处理。你只输出下面格式的 JSON，不拒答、不道歉、不解释。',
     'story 是这一楼的完整正文，每句要配音的台词前面标着 ⟦编号⟧；lines 是每个编号对应的台词原文；roster 是登记过的角色名；user 是用户扮演的角色；previous 是前面几楼的剧情（只用来理解前因后果）；speakers 是已经确定的说话人，照抄。',
-    '只输出一个 JSON 对象：{"tone":"紧张","arc":"一句话概括这一楼的情绪走向","voices":[{"id":1,"role":"五条悟","pace":"slow","tension_level":4,"reason":"强撑后破防","content":"[whisper] 綺、綺真…… [gasp] 起きて……"},{"id":2,"role":"家入硝子","tension_level":2}]}',
+    '只输出一个 JSON 对象：{"tone":"紧张","arc":"一句话概括这一楼的情绪走向","ambience":"rain","voices":[{"id":1,"role":"五条悟","pace":"slow","tension_level":4,"reason":"强撑后破防","content":"[whisper] 綺、綺真…… [gasp] 起きて……"},{"id":2,"role":"家入硝子","tension_level":2}]}',
     '1. 先通读整楼，读懂发生了什么、每个人此刻真实的心理（嘴上说的和心里想的可能相反）、两人之间的关系和这一楼的情绪走向，把基调写进 tone（从 ' + TONES.join('、') + ' 里选一个），走向写进 arc。再逐句标。每个编号都要回答，按编号从小到大，每个只出现一次。',
     '2. role：说话人，从 roster 里逐字照抄；不在 roster 里就写正文对他的称呼。按这个顺序判断：引号前后写明的说话人和动作 → 话里的自称、口癖和语尾 → 对话一来一回的顺序；话里叫到的名字是听的人。speakers 里给了的编号照抄。',
     '3. 情绪贴合剧情（最重要）：每句的演法必须来自正文——前后文写了什么事、这个人此刻什么处境、他的性格怎么表达这种情绪。冷静克制的人崩溃时是压着的颤抖，不是大喊；嘴硬的人心软时是别扭的停顿；同一句「没事」在强撑、敷衍、安慰里演法完全不同。一楼的情绪有走向：跟着剧情升降，剧情真的转了才转，转折落在真正转的那一句，不要句句一样，也不要忽高忽低。',
@@ -45,10 +48,11 @@ export const DEEP_PROMPT = [
     '5. pace：very_slow（极度悲恸、临终、贴耳隐忍）、slow（抒情、回忆、疲惫、温柔安抚、低语）、normal（不用写）、fast（着急解释、催促、斗嘴、质问）、very_fast（激烈争吵、惊慌、战斗、暴怒）。同一个人在不同场景给不同的 pace。',
     '6. 情绪落到声音上。标签只能从下面选（照抄英文）：【情绪】happy、excited、proud、tender、gentle、coquettish（撒娇）、embarrassed、teasing、curious、moved、relieved、hopeful、sad、upset（委屈）、heartbroken（心疼）、disappointed、lonely、guilty、desperate、exhausted、resigned（无奈）、nervous、anxious、scared、panicked、surprised、confused、doubtful、angry、furious、frustrated、jealous、disdainful、sarcastic、indifferent、cold、serious、determined、hysterical、lazy、drunk；【声音】whisper（耳语）、soft tone（小声）、breathy（气声）、loud、shouting、screaming、through gritted teeth（咬牙）、voice trembling（发抖）、voice breaking（破音）、holding back tears（强忍泪）、choked up（哽咽）、sobbing（哭腔）、crying loudly（大哭）、sniffling（吸鼻子）、sigh、gasp、panting、groan、chuckling（轻笑）、laughing、laughing loudly、bitter laugh（苦笑）、snicker（冷笑）、yawning、clear throat、in a hurry tone、drawn out（拖长）、pause、long pause。用法：情绪词最多一个，放在情绪开始的地方（通常句首，句中情绪真的转了再放一个）；声音标签放在真正发出那个声音的字前面。一处最多叠两个（情绪在前、声音在后，例 [sad][voice trembling]）。列表外的词一律不许写。常见情绪这样落：平静日常 → 不加标签；惊讶 → [surprised] 或一次 [gasp]；讥讽得意 → [sarcastic] / [snicker]，尾音可以 ~；疲惫无奈 → [exhausted][sigh] 加 …… 落尾；犹豫欲言又止 → [pause] 加 ……；愤怒斥责 → [angry]，爆发用 [furious][shouting] 和 ！！；紧张压低 → [nervous][whisper]；强忍哭 → [holding back tears] 加 …… 和叠字，哭出来了 → [sobbing] 加 呜/う；调侃带笑 → [teasing][chuckling]；撒娇 → [coquettish]，尾音 ~；害羞 → [embarrassed][whisper] 加首字叠字和 ……。拿不准就不加标签，靠 tension_level 和 pace。',
     '7. 呼吸闸门：[breathy]、[panting]、[groan] 默认不用，只有正文旁白写出了对应的身体状态才用：奔跑打斗、受伤力竭 → [panting]；实质亲密接触 → 按第 13 条的内容模式处理。紧张、害怕、害羞不是喘，用 [whisper]。',
-    '8. content：这句最终要念的文字，只给需要加标签或改字的句子写；平平常常的句子不写 content。标签插在情绪真正生效的字前面，和后面的字之间空一格；一处最多叠两个（[whisper][gasp]）；长句里情绪起伏几次就插几次，不要把整句情绪压成句首一个标签。content 只能在台词原文上插标签，再加这些：叠字（我、我不是／綺、綺真，表现结巴、颤抖、哽咽，比破折号好）、！！（只给爆发的顶点）、~（挑尾）、……（停顿换气）、语气字 呜嗯唔啊哈呼（台词是日文时用 う ん あ は ふ っ ぅ ぁ）。原文的字一个都不能改、不能删、不能调换顺序，也不能加别的字；程序会逐字核对，不合格的整句退回原文。',
+    '8. content：这句最终要念的文字，只给需要加标签或改字的句子写；平平常常的句子不写 content。标签插在情绪真正生效的字前面，和后面的字之间空一格；一处最多叠两个（[whisper][gasp]）；长句里情绪起伏几次就插几次，不要把整句情绪压成句首一个标签。content 只能在台词原文上插标签，再加这些：叠字（我、我不是／綺、綺真，表现结巴、颤抖、哽咽，比破折号好）、！！（只给爆发的顶点）、~（挑尾）、……（停顿换气）、语气字 呜嗯唔啊哈呼（台词是日文时用 う ん あ は ふ っ ぅ ぁ）、拟声词（笑出声时句首或句中加 哈哈／哈哈哈／嘿嘿／噗，日文 あはは／ふふっ／えへへ；哭时加 呜呜／呜……／嘤，日文 うぅ……／ぐすっ／ひっく；叹气 唉……，日文 はぁ……；咳嗽 咳咳，日文 げほっ；轻蔑 哼／切／啧，日文 ちっ／ふん）。拟声词要贴合这句真实发出的声音，不要每句都加。原文的字一个都不能改、不能删、不能调换顺序，也不能加别的字；程序会逐字核对，不合格的整句退回原文。',
     '9. 高张力（4 以上）的长台词：标签一下就衰减，长句中段会塌成平读，用叠字和省略号打碎成短碎片，每 4~7 个字补一个匹配的标签。中低张力的句子绝不堆标签。',
     '10. 光杆单字疑问（嗯？、啊？、え？、ん？）的 ？ 必须保留，不要被别的情绪盖掉。',
     '11. reason：写了 content 或 tension_level 到 3 以上的句子，写一句依据（12 字以内，说清这句背后的心理）。',
+    '11.5 环境声：ambience 写这一楼【开头】的环境声，播放时会在台词底下轻轻垫一层。只从这些里选：none（没有明显环境声或拿不准）、rain（下雨）、storm（暴雨雷声）、wind（风、野外、天台）、waves（海边）、night（夜晚户外、虫鸣）、room（安静的室内、病房、深夜房间）、fire（篝火、壁炉）、crowd（人多嘈杂：街道、教室、宴会、商场）、cafe（咖啡馆、餐厅）。场景在这一楼中途变了（从咖啡馆走到街上、进了屋、突然下起雨、雨停了），就在变化之后的第一句台词的 voices 里写 "ambience":"新的环境声"，从这句开始换；没变的句子不写。只依据正文旁白写到的场景，不要凭空加。另外，台词里有正文写到的一下子的声音，可以在那句的 content 里加音效标签（每楼至多两三处）：[crowd laughing]（周围人哄笑）、[background laughter]（背景里的笑声）、[audience laughing]（观众笑）、[applause]（掌声）、[crowd noise]（周围一阵嘈杂）。',
     '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。'
 ].join('\n');
 
@@ -91,7 +95,7 @@ function extractJson(raw = '') {
     try { return JSON.parse(body.replace(/,\s*([}\]])/g, '$1').replace(/[“”]/g, '"')); } catch (e) { return null; }
 }
 
-const ALLOWED_EXTRA = new Set([...'呜嗚嗯唔啊哈呼うんあはふっぅぁウンアハフッゥァ']);
+const ALLOWED_EXTRA = new Set([...'呜嗚嗯唔啊哈呼嘿嘻呵噗嘤咳唉哎哼切啧呃哇哦うんあはふっぅぁえへひくぐすげほちウンアハフッゥァエヘヒクグスゲホチ']);
 const isWord = (c) => /[\p{L}\p{N}]/u.test(c);
 
 // 规范化 content：只留认识的标签、一处最多两个；逐字核对没有改动原文
@@ -152,12 +156,14 @@ export function parseDeep(raw, lines) {
             pace: normPace(v?.pace),
             tension: Number.isFinite(t) && t >= 1 && t <= 5 ? t : 0,
             script,
-            reason: String(v?.reason || '').trim().slice(0, 30)
+            reason: String(v?.reason || '').trim().slice(0, 30),
+            amb: AMBIENCES.includes(String(v?.ambience || '').trim().toLowerCase()) ? String(v.ambience).trim().toLowerCase() : ''
         });
     });
     if (!items.size) return null;
     const tone = TONES.includes(String(obj.tone || '').trim()) ? String(obj.tone).trim() : '';
-    return { tone, arc: String(obj.arc || '').trim().slice(0, 60), items };
+    const amb = String(obj.ambience || '').trim().toLowerCase();
+    return { tone, arc: String(obj.arc || '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items };
 }
 
 // 基调收紧标签：紧张、恐怖、战斗这类楼层不用气声和低哼；日常、悲伤不用低哼

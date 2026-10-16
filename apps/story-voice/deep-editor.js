@@ -2,6 +2,8 @@
 // 点楼层下面的「🎭 …」打开：逐句看模型给的说话人、张力、语速、演法（带标签的台词）和理由，
 // 可以直接改；改完点 ▶ 就按改后的演法单独调用一次 Fish 生成（不会再调用分析模型）。
 
+import { AMBIENCE_LABELS, startAmbience } from './ambience.js?v=20261021-am1';
+
 const STYLE_ID = 'yzsv-editor-style';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -18,8 +20,16 @@ export const PRESETS = [
     { label: '害羞结巴', tags: ['embarrassed', 'whisper'], t: 3, p: 'normal', stutter: true },
     { label: '委屈', tags: ['upset', 'voice trembling'], t: 3, p: 'slow' },
     { label: '强忍哭', tags: ['whisper', 'holding back tears'], t: 4, p: 'slow', stutter: true },
-    { label: '哭着说', tags: ['sobbing'], t: 4, p: 'slow', stutter: true },
-    { label: '崩溃大哭', tags: ['crying loudly', 'hysterical'], t: 5, p: 'slow', stutter: true },
+    { label: '哭着说', tags: ['sobbing'], t: 4, p: 'slow', stutter: true, pre: ['呜……', 'うぅ……'] },
+    { label: '抽泣', tags: ['sobbing', 'sniffling'], t: 4, p: 'slow', pre: ['呜、呜呜……', 'ひっく……ぐすっ……'] },
+    { label: '崩溃大哭', tags: ['crying loudly', 'hysterical'], t: 5, p: 'slow', stutter: true, pre: ['呜哇……', 'うわぁ……'] },
+    { label: '大笑', tags: ['laughing loudly'], t: 3, p: 'normal', pre: ['哈哈哈哈，', 'あはははっ、'] },
+    { label: '笑着说', tags: ['laughing'], t: 2, p: 'normal', pre: ['哈哈，', 'あはは、'] },
+    { label: '偷笑', tags: ['chuckling'], t: 2, p: 'normal', pre: ['嘿嘿，', 'ふふっ、'] },
+    { label: '苦笑', tags: ['bitter laugh'], t: 2, p: 'slow', pre: ['呵……', 'はは……'] },
+    { label: '嗤笑', tags: ['disdainful', 'snicker'], t: 2, p: 'normal', pre: ['哼，', 'はっ、'] },
+    { label: '长叹', tags: ['sigh'], t: 2, p: 'slow', pre: ['唉……', 'はぁ……'] },
+    { label: '咳嗽', tags: ['clear throat'], t: 2, p: 'normal', pre: ['咳咳，', 'げほっ、'] },
     { label: '心疼', tags: ['heartbroken', 'soft tone'], t: 3, p: 'slow' },
     { label: '疲惫叹气', tags: ['exhausted', 'sigh'], t: 2, p: 'slow' },
     { label: '无奈', tags: ['resigned', 'sigh'], t: 2, p: 'slow' },
@@ -57,6 +67,12 @@ export const OPTION_GROUPS = [
         ['轻笑', '[chuckling]'], ['笑出声', '[laughing]'], ['大笑', '[laughing loudly]'], ['冷笑', '[snicker]'], ['苦笑', '[bitter laugh]'], ['打哈欠', '[yawning]'],
         ['清嗓', '[clear throat]'], ['低哼', '[groan]'], ['急促', '[in a hurry tone]'], ['拖长音', '[drawn out]']
     ] },
+    { key: 'ono', label: '拟声/音效', items: [
+        ['哈哈', '哈哈，'], ['哈哈哈', '哈哈哈哈，'], ['嘿嘿', '嘿嘿，'], ['嘻嘻', '嘻嘻，'], ['呵呵', '呵呵，'], ['噗', '噗——'], ['呜呜', '呜呜……'], ['呜哇', '呜哇……'],
+        ['嘤', '嘤……'], ['抽噎', '呜、呜……'], ['唉', '唉……'], ['咳咳', '咳咳，'], ['啧', '啧，'], ['哼', '哼，'], ['哇', '哇——'], ['哎呀', '哎呀，'],
+        ['あはは', 'あはは、'], ['ふふっ', 'ふふっ、'], ['えへへ', 'えへへ、'], ['くすくす', 'くすくす……'], ['ひっく', 'ひっく……'], ['ぐすっ', 'ぐすっ……'], ['うわぁ', 'うわぁ……'], ['げほっ', 'げほっ、'],
+        ['🔊人群笑声', '[crowd laughing]'], ['🔊背景笑声', '[background laughter]'], ['🔊掌声', '[applause]'], ['🔊人群嘈杂', '[crowd noise]'], ['🔊观众哄笑', '[audience laughing]']
+    ] },
     { key: 'pause', label: '停顿/标点', items: [
         ['短停顿', '[pause]'], ['长停顿', '[long pause]'], ['……', '……'], ['…', '…'], ['、', '、'], ['！', '！'], ['！！', '！！'],
         ['？', '？'], ['？！', '？！'], ['~', '~'], ['～？', '~？'], ['っ', 'っ'], ['——', '……']
@@ -81,8 +97,14 @@ export const NSFW_PRESETS = [
     { label: '隐忍', tags: ['holding back', 'breathy'], t: 4, p: 'very_slow', stutter: true },
     { label: '娇喘', tags: ['moaning softly', 'panting'], t: 4, p: 'slow', stutter: true },
     { label: '失控', tags: ['moaning', 'panting'], t: 5, p: 'slow', stutter: true },
-    { label: '餍足', tags: ['satisfied', 'breathy'], t: 2, p: 'very_slow', tail: '……' }
-];
+    { label: '餍足', tags: ['satisfied', 'breathy'], t: 2, p: 'very_slow', tail: '……' },
+    { label: '耳边轻笑', tags: ['whisper', 'chuckling'], t: 3, p: 'slow', pre: ['呵……', 'ふふ……'] },
+    { label: '撒娇讨饶', tags: ['coquettish', 'breathy'], t: 3, p: 'slow', stutter: true, tail: '~' },
+    { label: '羞耻难耐', tags: ['embarrassed', 'panting softly'], t: 4, p: 'slow', stutter: true, pre: ['唔……', 'んっ……'] },
+    { label: '压抑低吟', tags: ['holding back', 'moaning softly'], t: 4, p: 'very_slow', pre: ['嗯……', 'ん……'] },
+    { label: '断断续续', tags: ['panting', 'voice trembling'], t: 4, p: 'slow', shatter: true },
+    { label: '事后温存', tags: ['tender', 'breathy'], t: 2, p: 'very_slow', tail: '……' }
+].map(p => ({ ...p, nsfw: true }));
 export const NSFW_GROUP = { key: 'nsfw', label: '亲密', items: [
     ['气声', '[breathy]'], ['轻喘', '[panting softly]'], ['急喘', '[panting]'], ['低吟', '[moaning softly]'], ['呻吟', '[moaning]'], ['低哼', '[groan]'],
     ['勾人', '[seductive]'], ['隐忍', '[holding back]'], ['颤抖', '[voice trembling]'], ['餍足', '[satisfied]'],
@@ -117,17 +139,25 @@ function injectStyle() {
 .yzsv-ed-spk { flex: 1; min-width: 0; border: 1px solid transparent; background: transparent; font-weight: 600; font-size: 14px; color: #333; border-radius: 8px; padding: 3px 6px; font-family: inherit; }
 .yzsv-ed-spk:focus { border-color: #d8d0ee; background: #faf9fe; outline: none; }
 .yzsv-ed-why { font-size: 12px; color: #8a6fc0; margin: 4px 0 0; }
+.yzsv-ed-lineamb { margin: 0 0 6px; font-size: 12px; color: #888; }
+.yzsv-ed-lineamb select { padding: 3px 6px; font-size: 12px; }
 .yzsv-ed-orig { font-size: 12px; color: #999; margin: 6px 0; line-height: 1.5; word-break: break-all; }
 .yzsv-ed-script { width: 100%; box-sizing: border-box; min-height: 58px; border: 1px solid #e3e3ea; border-radius: 10px; padding: 8px 10px; font-size: 14px; line-height: 1.55; background: #fbfbfd; color: #222; resize: vertical; font-family: inherit; }
 .yzsv-ed-script:focus { outline: none; border-color: #a18cd1; background: #fff; }
 .yzsv-ed-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 2px; }
 .yzsv-ed-chips button { border: 1px solid #e0daf1; background: #f6f3fd; color: #6b54a8; border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer; font-family: inherit; }
-.yzsv-ed-tabs { display: flex; gap: 4px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
+.yzsv-ed-tabs { display: flex; flex-wrap: wrap; gap: 4px 4px; margin-top: 10px; }
 .yzsv-ed-tabs::-webkit-scrollbar { display: none; }
 .yzsv-ed-tabs button { flex: 0 0 auto; border: 0; background: transparent; color: #888; font-size: 12.5px; padding: 4px 8px; border-radius: 8px; cursor: pointer; font-family: inherit; }
 .yzsv-ed-tabs button.is-on { background: #efeaf9; color: #6b54a8; font-weight: 600; }
 .yzsv-ed-chips[hidden] { display: none !important; }
 .yzsv-ed-chips button[data-preset] { background: #fff4f0; border-color: #f4d9cf; color: #b0603f; }
+.yzsv-ed-chips button[data-preset].is-nsfw, .yzsv-ed-chips.is-nsfw button { background: #fdeef3; border-color: #f2bfd0; color: #c0396b; }
+.yzsv-ed-chips button[data-preset].is-nsfw::before, .yzsv-ed-tabs button[data-tab="nsfw"]::before { content: '🔞'; font-size: 10px; margin-right: 2px; }
+.yzsv-ed-tabs button[data-tab="nsfw"] { color: #c0396b; }
+.yzsv-ed-tabs button[data-tab="nsfw"].is-on { background: #fdeef3; }
+.yzsv-ed-amb { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12.5px; color: #666; }
+.yzsv-ed-amb select { border: 1px solid #e3e3ea; border-radius: 9px; padding: 5px 8px; font-size: 13px; background: #f8f8fb; color: #222; font-family: inherit; }
 .yzsv-ed-hint { font-size: 11px; color: #aaa; margin-top: 4px; line-height: 1.45; }
 .yzsv-ed-set { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .yzsv-ed-set > span { font-size: 12px; color: #888; width: 34px; flex: 0 0 34px; }
@@ -137,7 +167,7 @@ function injectStyle() {
 .yzsv-ed-acts { display: flex; gap: 8px; margin-top: 10px; }
 .yzsv-ed-acts button { border: 0; border-radius: 9px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
 .yzsv-ed-play { background: #a18cd1; color: #fff; }
-.yzsv-ed-play.is-busy { opacity: .6; }
+.yzsv-ed-play.is-busy { background: #8a7bb0; }
 .yzsv-ed-reset { background: #f1f1f5; color: #666; }
 .yzsv-ed-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e6e6ee; background: #fff; display: flex; gap: 8px; }
 .yzsv-ed-foot button { flex: 1; border: 0; border-radius: 11px; padding: 10px; font-size: 14px; cursor: pointer; font-family: inherit; }
@@ -167,7 +197,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     if (single && focusLine !== null) bars = bars.filter(b => String(b.dataset.line) === String(focusLine));
     if (!bars.length) { sv._toast('没有可编辑的台词', '这一楼没有找到挂了按钮的台词'); return; }
     const presets = settings.nsfw ? [...PRESETS, ...NSFW_PRESETS] : PRESETS;
-    const groups = settings.nsfw ? [...OPTION_GROUPS, NSFW_GROUP] : OPTION_GROUPS;
+    // 顺序：情绪、声音、拟声/音效、停顿、叠字、（亲密）、语气词放最后
+    const lang = OPTION_GROUPS.filter(g => g.key === 'zh' || g.key === 'ja');
+    const groups = [...OPTION_GROUPS.filter(g => g.key !== 'zh' && g.key !== 'ja'), ...(settings.nsfw ? [NSFW_GROUP] : []), ...lang];
     // 简单分析：没改过的句子，用模型写的 [[名字|语气]] 作为初稿
     const cueScript = (cue, text) => {
         const tags = String(cue || '').replace(/[\[\]]/g, '').split(/[,，、;；]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
@@ -185,12 +217,13 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-top"><span class="yzsv-ed-no">#${i + 1}</span><input class="yzsv-ed-spk" value="${esc(bar.dataset.speaker || v.role || '')}" title="说话人（改了会按这个人的音色读）"></div>
             ${v.why ? `<div class="yzsv-ed-why">💭 ${esc(v.why)}</div>` : ''}
             <div class="yzsv-ed-orig">原文：${esc(text)}</div>
+            <div class="yzsv-ed-amb yzsv-ed-lineamb">🌧 从这句起换环境声<select class="yzsv-ed-lineambsel"><option value="">不变（接着上一句）</option>${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (v.amb || '') ? 'selected' : ''}>${k === 'none' ? '停掉环境声' : l}</option>`).join('')}</select></div>
             <textarea class="yzsv-ed-script" rows="2" spellcheck="false">${esc(script)}</textarea>
             <div class="yzsv-ed-set"><span>张力</span><div class="yzsv-ed-seg" data-k="t">${TENSIONS.map(([n, l]) => `<button type="button" data-v="${n}" class="${n === t ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-set"><span>语速</span><div class="yzsv-ed-seg" data-k="pace">${PACES.map(([k, l]) => `<button type="button" data-v="${k}" class="${k === pace ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-tabs">${[['preset', '一键演法'], ...groups.map(g => [g.key, g.label])].map(([k, l], j) => `<button type="button" data-tab="${k}" class="${(k === 'preset') ? 'is-on' : ''}">${l}</button>`).join('')}</div>
-            <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
-            ${groups.map(g => `<div class="yzsv-ed-chips" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
+            <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" class="${p.nsfw ? 'is-nsfw' : ''}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
+            ${groups.map(g => `<div class="yzsv-ed-chips${g.key === 'nsfw' ? ' is-nsfw' : ''}" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
             <div class="yzsv-ed-hint">情绪、声音放在要生效的字前面（光标在哪就插在哪，没点过就插在句首）；一键演法会换掉句首的标签并设好张力和语速。</div>
             <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 按这样生成并播放</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
         </div>`;
@@ -204,7 +237,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <button type="button" class="yzsv-ed-close" title="关闭">✕</button>
                 <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b>${settings.nsfw ? ' <small style="color:#c0506a">NSFW</small>' : ''}
                 ${analyzed && !single ? `<div class="row"><select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === (entry.tone || '') ? 'selected' : ''}>${x || '基调'}</option>`).join('')}</select><input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向"></div>` : ''}
-                <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高 Fish 起伏越大；语速在播放时直接变快变慢（不用重新生成）。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用 Fish 重新生成这一句。</div>
+                <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
+                <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。Fish 原样用这些标签，MiniMax、OpenAI、豆包、MiMo、IndexTTS 会自动换成它们认的情绪写法。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用语音接口重新生成这一句（不会再调用分析模型），生成中再点一下可以取消。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
@@ -218,6 +252,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             line: row.dataset.line,
             speaker: row.querySelector('.yzsv-ed-spk').value.trim(),
             script: row.querySelector('.yzsv-ed-script').value.replace(/\s*\n\s*/g, ' ').trim(),
+            amb: row.querySelector('.yzsv-ed-lineambsel')?.value || '',
             t: Number(seg('t')) || 2,
             pace: seg('pace') || 'normal'
         };
@@ -229,8 +264,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const r = read(row);
         const old = entry.lines[r.text] || {};
         const script = r.script && r.script !== r.text ? r.script : '';
-        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, t: r.t, s: script };
-        const changed = ['role', 'pace', 't', 's'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
+        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, t: r.t, s: script, amb: r.amb, ambSet: true };
+        if (!r.amb) delete next.amb;
+        const changed = ['role', 'pace', 't', 's', 'amb'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
         if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
         row._dirty = false;
         const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(r.line)}"]`);
@@ -241,6 +277,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         let n = 0;
         mask.querySelectorAll('.yzsv-ed-line').forEach(row => { if (saveRow(row)) n += 1; });
         mask._saved = (mask._saved || 0) + n;
+        const amb = mask.querySelector('.yzsv-ed-ambsel');
+        if (amb && amb.value !== (entry.ambience || 'none')) { entry.ambience = amb.value; entry.ambienceSet = true; n += 1; }
         const tone = mask.querySelector('.yzsv-ed-tone');
         const arc = mask.querySelector('.yzsv-ed-arc');
         if (tone) entry.tone = tone.value;
@@ -323,13 +361,21 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             if (i >= 0 && !(v[i + 1] === '、' && v[i + 2] === v[i])) transform(ta, 'stutter-first', true);
         }
         if (p.tail) ta.value = ta.value.replace(/[。．.！!~～]*\s*$/, '') + p.tail;
+        if (p.shatter) transform(ta, 'shatter', true);
+        if (p.pre) {
+            const pre = /[\u3040-\u30ff]/.test(row.dataset.text || '') ? p.pre[1] : p.pre[0];
+            const v2 = ta.value;
+            const at = leadEnd(v2);
+            ta.value = v2.slice(0, at) + pre + v2.slice(at);
+        }
         const setSeg = (k, val) => row.querySelectorAll(`.yzsv-ed-seg[data-k="${k}"] button`).forEach(b => b.classList.toggle('is-on', String(b.dataset.v) === String(val)));
         setSeg('t', p.t);
         setSeg('pace', p.p);
         ta._sel = null;
     };
 
-    const close = () => mask.remove();
+    let trial = null;
+    const close = () => { trial?.stop(); mask.remove(); };
     mask.addEventListener('click', async (e) => {
         if (e.target === mask || e.target.closest('.yzsv-ed-close, .yzsv-ed-cancel')) { saveAll(); close(); return; }
         if (e.target.closest('.yzsv-ed-save')) {
@@ -337,6 +383,16 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             const total = mask._saved || 0;
             sv._toast('已保存', total ? `改了 ${total} 句，点 ▶ 会按新的演法生成` : '没有改动', 'success');
             close();
+            return;
+        }
+        if (e.target.closest('.yzsv-ed-ambtry')) {
+            const b = e.target.closest('.yzsv-ed-ambtry');
+            if (trial) { trial.stop(); trial = null; b.textContent = '试听'; return; }
+            const kind = mask.querySelector('.yzsv-ed-ambsel').value;
+            if (kind === 'none') return;
+            trial = startAmbience(kind, (Number(settings.ambienceVol) || 30) / 100);
+            b.textContent = '停止';
+            setTimeout(() => { if (trial) { trial.stop(); trial = null; b.textContent = '试听'; } }, 6000);
             return;
         }
         const row = e.target.closest('.yzsv-ed-line');
@@ -369,19 +425,38 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         }
         const play = e.target.closest('.yzsv-ed-play');
         if (play) {
-            if (play.classList.contains('is-busy')) return;
+            // 生成中 / 播放中再点一下 = 取消
+            if (play.classList.contains('is-busy')) {
+                play._cancelled = true;
+                play._run = (play._run || 0) + 1; // 让旧的那次结束时不再动按钮
+                sv.stop();
+                clearInterval(play._tick);
+                play.classList.remove('is-busy');
+                play.textContent = '▶ 按这样生成并播放';
+                sv._toast('已取消', '这句没有继续生成 / 播放');
+                return;
+            }
             sv._unlockAudio();
             saveAll();
             const line = row.dataset.line;
-            const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(line)}"]`);
+            const findBar = () => document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(line)}"]`);
+            const bar = findBar();
             if (!bar) { sv._toast('找不到这一句', '正文可能刷新了，关掉再打开试试'); return; }
             play.classList.add('is-busy');
-            play.textContent = '生成中…';
+            play._cancelled = false;
+            const run = (play._run = (play._run || 0) + 1);
+            const label = () => { play.textContent = findBar()?.classList.contains('is-playing') ? '■ 播放中（点一下停止）' : '■ 生成中…（点一下取消）'; };
+            label();
+            clearInterval(play._tick);
+            play._tick = setInterval(label, 250);
             try {
                 await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
             } finally {
-                play.classList.remove('is-busy');
-                play.textContent = '▶ 按这样生成并播放';
+                if (play._run === run) {
+                    clearInterval(play._tick);
+                    play.classList.remove('is-busy');
+                    play.textContent = '▶ 按这样生成并播放';
+                }
             }
         }
     });
