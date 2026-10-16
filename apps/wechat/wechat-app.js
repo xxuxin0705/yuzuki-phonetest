@@ -12,7 +12,7 @@
 // 微信APP主程序
 import { ChatView } from './chat-view.js?v=20261021-m12';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261021-m11';
+import { MomentsView } from './moments-view.js?v=20261021-m14';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
@@ -353,6 +353,17 @@ export class WechatApp {
             try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
             this.phoneShell?.showNotification?.('已保存', realName ? `正文里的「${realName}」会用我的音色` : '已清空真实姓名', '✅');
         });
+    }
+
+    // 底部标签跟着界面风格走：微信=微信/通讯录，QQ=消息/联系人，LINE=聊天/联系人
+    _tabLabels() {
+        const st = this.getWechatSkin?.() || {};
+        const skin = ['qq', 'line'].includes(st.skin) ? st.skin : (['qq', 'line'].includes(st.moments) ? st.moments : 'wechat');
+        return ({
+            wechat: { chats: '微信', contacts: '通讯录' },
+            qq: { chats: '消息', contacts: '联系人' },
+            line: { chats: '聊天', contacts: '联系人' }
+        })[skin];
     }
 
     getWechatSkin() {
@@ -7198,7 +7209,7 @@ export class WechatApp {
                 `;
             }
             if (this.currentView === 'discover') return '';
-            return '微信';
+            return this._tabLabels().chats;
         };
 
         const getMusicListenIndicator = () => {
@@ -7322,12 +7333,12 @@ export class WechatApp {
                     <div class="wechat-tabbar">
                         <div class="wechat-tab ${this.currentView === 'chats' ? 'active' : ''}" data-view="chats">
                             <i class="fa-solid fa-comment"></i>
-                            <span>微信</span>
+                            <span>${this._tabLabels().chats}</span>
                             ${unreadCount > 0 ? `<span class="tab-badge">${unreadCount}</span>` : ''}
                         </div>
                         <div class="wechat-tab ${this.currentView === 'contacts' ? 'active' : ''}" data-view="contacts">
                             <i class="fa-solid fa-address-book"></i>
-                            <span>通讯录</span>
+                            <span>${this._tabLabels().contacts}</span>
                         </div>
                         <div class="wechat-tab ${this.currentView === 'discover' ? 'active' : ''}" data-view="discover">
                             <svg class="wechat-moments-tab-icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

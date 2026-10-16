@@ -79,6 +79,11 @@ export class MomentsView {
         `;
     }
 
+    // 当前风格下“朋友圈”叫什么：微信=朋友圈，QQ=空间，LINE=动态
+    _momentsLabel() {
+        return ({ qq: '空间', line: '动态' })[this._getMomentsSkin()] || '朋友圈';
+    }
+
     _getMomentsSkin() {
         const attr = document.documentElement.getAttribute('data-wx-moments');
         if (['wechat', 'qq', 'line'].includes(attr)) return attr;
@@ -462,7 +467,7 @@ export class MomentsView {
             return { main: this._renderEmojiText(trans.on || mine ? body : (zh || body), size), fold: '' };
         }
         this._ensureTransToggleBound();
-        const startZh = !!trans.autoExpand;
+        const startZh = false; // 默认显示译文（外语），点「查看翻译」才显示中文
         const main = `<span class="mtx${startZh ? ' is-zh' : ''}"><span class="mtx-o">${this._renderEmojiText(body, size)}</span><span class="mtx-z">${this._renderEmojiText(zh, size)}</span><button type="button" class="mtx-btn">${startZh ? '查看原文' : '查看翻译'}</button></span>`;
         return { main, fold: '' };
     }
@@ -803,6 +808,7 @@ export class MomentsView {
         // 🔥 点击其他区域移除内嵌输入框
         this._root().querySelector('.moments-page')?.addEventListener('click', (e) => {
             if (!e.target.closest('.inline-comment-box') &&
+                !e.target.closest('[data-mz-act="comment"]') &&
                 !e.target.closest('.action-popup') &&
                 !e.target.closest('.comment-row')) {
                 this._root().querySelectorAll('.inline-comment-box').forEach(el => el.remove());
@@ -2648,6 +2654,23 @@ export class MomentsView {
         const moment = this.app.wechatData.getMoment(momentId);
         if (!moment) return;
 
+        // LINE（ins）帖子：整条重画（点赞心形、Liked by 都要变）
+        const insEls = Array.from(document.querySelectorAll(`.ins-post[data-moment-id="${CSS.escape ? CSS.escape(String(momentId)) : momentId}"]`));
+        if (insEls.length) {
+            insEls.forEach(el => {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = this._renderInsPostHtml(moment).trim();
+                const fresh = tmp.firstElementChild;
+                if (!fresh) return;
+                el.replaceWith(fresh);
+                fresh.querySelectorAll('[data-moment-profile]').forEach(n => n.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.openMomentsProfile(n.dataset.momentProfile);
+                }));
+            });
+            return;
+        }
+
         const momentEl = this._root().querySelector(`.moment-item[data-moment-id="${momentId}"]`);
         if (!momentEl) return;
 
@@ -3336,7 +3359,7 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
         this.isLoading = true;
         this.syncMomentsPullIndicator('loading');
         this._setGenerateBusy(true);
-        this.app.phoneShell.showNotification('朋友圈', '正在生成朋友圈…', '✨');
+        this.app.phoneShell.showNotification(this._momentsLabel(), `正在生成${this._momentsLabel()}…`, '✨');
 
         try {
             // 获取联系人列表
@@ -3455,10 +3478,28 @@ ${memoryLines.slice(0, 10).join('\n')}
                 // 新生成的放在最前面，旧朋友圈全部保留（每个人的朋友圈都能看到历史动态）
                 void preservedMoments;
                 this.app.wechatData.data.moments = [...newMoments, ...existingMoments];
-                this.app.phoneShell.showNotification('朋友圈', `新增 ${newMoments.length} 条朋友圈`, '✅');
-                this.app.wechatData.saveData();
+                this.app.phoneShell.showNotification(this._momentsLabel(), `新增 ${newMoments.length} 条${this._momentsLabel()}`, '✅');
+                // 先等保存写进存储再刷新：刷新时会从存储重新读一遍数据，没写完就会把新动态“读丢”
+                try { if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.app.wechatData; } catch (e) { /* 忽略 */ }
+                try { await this.app.wechatData.saveData(); } catch (e) { /* 忽略 */ }
                 this.syncMomentsPullIndicator('success');
                 this.app.render();
+                // 生成期间酒馆可能触发别的模块用旧数据回存，把新动态冲掉：稍后检查一遍，丢了就补回去
+                const newIds = new Set(newMoments.map(m => m.id));
+                const ensure = async () => {
+                    const live = this.app.wechatData;
+                    try { live.data = live.loadData(); } catch (e) { /* 忽略 */ }
+                    const list = Array.isArray(live.data?.moments) ? live.data.moments : [];
+                    const have = new Set(list.map(m => m?.id));
+                    const missing = newMoments.filter(m => !have.has(m.id));
+                    if (!missing.length) return;
+                    live.data.moments = [...missing, ...list.filter(m => !newIds.has(m?.id))];
+                    try { if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = live; } catch (e) { /* 忽略 */ }
+                    try { await live.saveData(); } catch (e) { /* 忽略 */ }
+                    if (this.app.currentView === 'discover' && !this.app.currentChat) this.app.render();
+                };
+                setTimeout(ensure, 800);
+                setTimeout(ensure, 2500);
             } else {
                 this.syncMomentsPullIndicator('error');
                 this.app.phoneShell.showNotification('朋友圈', '这次没有生成出内容，再试一次吧', '⚠️');
@@ -3495,7 +3536,7 @@ ${memoryLines.slice(0, 10).join('\n')}
         let onlySelected = false;
         const mask = this._mountMomentSheet(`
             <div class="moment-dialog moment-gen-dialog" role="dialog">
-                <div class="moment-dialog-title">生成朋友圈</div>
+                <div class="moment-dialog-title">生成${this._momentsLabel()}</div>
                 <div class="moment-gen-label">生成条数</div>
                 <div class="moment-gen-count">${[1, 2, 3, 4, 5, 6, 8, 10].map(n => `<button type="button" data-count="${n}" class="${n === count ? 'is-on' : ''}">${n}</button>`).join('')}</div>
                 <div class="moment-gen-label">必定出现的人 <small>不选 = 随机</small></div>
