@@ -10,13 +10,13 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m12';
+import { ChatView } from './chat-view.js?v=20261021-m16';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261021-m15';
+import { MomentsView } from './moments-view.js?v=20261021-m17';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m11';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -3976,6 +3976,8 @@ export class WechatApp {
 .mtx .mtx-z { display: none; }
 .mtx.is-zh .mtx-o { display: none; }
 .mtx.is-zh .mtx-z { display: inline; }
+.mc-del { color: #c27a7a; }
+.inline-comment-lang { flex: 0 0 auto; max-width: 108px; height: 30px; border: 1px solid #e6e6e6; border-radius: 8px; background: #fafafa; color: #576b95; font-size: 11.5px; padding: 0 4px; margin: 0 4px; font-family: inherit; }
 .mc-reply { display: inline; border: 0; background: none; padding: 0 0 0 8px; margin: 0; color: #8e8e8e; font-size: .78em; line-height: inherit; cursor: pointer; white-space: nowrap; font-family: inherit; }
 .mtx-btn { display: inline; border: 0; background: none; padding: 0 0 0 6px; margin: 0; color: #576b95; font-size: .78em; line-height: inherit; cursor: pointer; white-space: nowrap; vertical-align: baseline; font-family: inherit; }
 .moment-edit-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -10211,6 +10213,34 @@ export class WechatApp {
                     ">打开头像管理器</button>
                 </div>
 
+                <!-- 朋友圈 · 我的评论翻译 -->
+                ${(() => {
+                    const pref = userInfo?.momentsCommentLang === undefined || userInfo?.momentsCommentLang === null ? 'auto' : String(userInfo.momentsCommentLang);
+                    const on = pref !== '';
+                    const langs = transLangOptions.filter(o => o.value !== 'zh-CN');
+                    return `
+                <div style="background: #fff; border-radius: 12px; margin: 15px; padding: 15px;">
+                    <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px;">朋友圈 · 我的评论翻译</div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                        <div style="min-width: 0;">
+                            <div style="font-size: 14px; color: #222;">翻译我发的评论 / 回复</div>
+                            <div style="font-size: 12px; color: #888; line-height: 1.45; margin-top: 4px;">开启后，评论发出去显示译文，后面的「查看翻译」能看回中文</div>
+                        </div>
+                        <label class="toggle-switch" style="flex: 0 0 auto;">
+                            <input type="checkbox" id="wechat-moments-comment-trans" ${on ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div id="wechat-moments-comment-lang-row" style="display: ${on ? 'flex' : 'none'}; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px;">
+                        <div style="font-size: 14px; color: #222;">翻译成</div>
+                        <select id="wechat-moments-comment-lang" style="max-width: 60%; padding: 6px 8px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa; font-size: 13px; color: #222;">
+                            <option value="auto" ${pref === 'auto' || pref === '' ? 'selected' : ''}>跟随对方私聊的翻译设置</option>
+                            ${langs.map(o => `<option value="${o.value}" ${pref === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+                        </select>
+                    </div>
+                </div>`;
+                })()}
+
                 <!-- 外观背景设置 -->
                 <div style="background: #fff; border-radius: 12px; margin: 15px; padding: 15px;">
                     <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px;">
@@ -10608,6 +10638,17 @@ export class WechatApp {
             renderCssSelect(fallbackProfile?.id || '');
             this.phoneShell.showNotification('已删除预设', profile.name, '✅');
         });
+
+        // 朋友圈 · 我的评论翻译
+        const saveMomentsCommentLang = () => {
+            const on = !!document.getElementById('wechat-moments-comment-trans')?.checked;
+            const lang = String(document.getElementById('wechat-moments-comment-lang')?.value || 'auto');
+            const row = document.getElementById('wechat-moments-comment-lang-row');
+            if (row) row.style.display = on ? 'flex' : 'none';
+            this.wechatData.updateUserInfo({ momentsCommentLang: on ? lang : '' });
+        };
+        document.getElementById('wechat-moments-comment-trans')?.addEventListener('change', saveMomentsCommentLang);
+        document.getElementById('wechat-moments-comment-lang')?.addEventListener('change', saveMomentsCommentLang);
 
         document.getElementById('wechat-use-worldbook')?.addEventListener('change', async (e) => {
             const enabled = !!e.target.checked;

@@ -8,7 +8,7 @@ const DEFAULTS = Object.freeze({
     quotes: '「」, 『』, “”',
     skips: '（）, ()',
     voice: '',
-    npcMode: 'only',      // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
+    npcMode: 'npc',       // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
     npcMale: '',
     npcFemale: '',
     speakers: [],
@@ -414,12 +414,25 @@ export class StoryVoice {
             });
             text = text.replace(/\s+/g, ' ').trim();
             return { ...r, text };
-        }).filter(r => /[\p{L}\p{N}]/u.test(r.text));
+        }).filter(r => /[\p{L}\p{N}]/u.test(r.text))
+            // 引号里其实是招牌、标题、名字（“B1F 食品フロア”图标、写着“营业中”），不是有人在说话
+            .filter(r => {
+                if (r.text.length > 30) return true;
+                const before = full.slice(Math.max(0, r.start - 8), r.start);
+                const after = full.slice(r.end, r.end + 8);
+                if (/(?:的|叫|叫做|名叫|写着|写有|印着|标着|画着|上书|题着|名为|名字是|标题是)\s*$/.test(before)) return false;
+                if (/^\s*(?:图标|字样|标志|招牌|标牌|牌子|指示牌|几个字|二字|三个字|四个字|这几个字|这行字|的招牌|的牌子|标签)/.test(after)) return false;
+                return true;
+            });
         if (!lines.length) return { marks, lines };
 
         const defaultSpeaker = String(msg?.name || '').trim();
         const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceAliases()].filter(Boolean))];
         let prevEnd = 0;
+        // 这条消息的“角色名”如果是角色卡名（比如「xx模拟器」）、自己又没配音色，就不拿它当说话人，
+        // 没标说话人的台词改为沿用上一句认出来的人
+        const defaultIsPerson = !!defaultSpeaker && (!!this._findAppSpeaker(defaultSpeaker) || !!this._findWechatVoice(defaultSpeaker));
+        let lastSpeaker = '';
         lines.forEach((r, i) => {
             r.index = i;
             // 0) 台词正前方写着「名字 [时间]：」「名字：」这种标签（群聊记录、对话体），最可靠
@@ -427,7 +440,7 @@ export class StoryVoice {
             if (label) {
                 r.speaker = this._canonicalName(label) || label;
                 r.marked = true;
-                prevEnd = r.end;
+                prevEnd = r.end; lastSpeaker = r.speaker;
                 return;
             }
             // 1) 模型标的 [[角色名]]（紧挨在台词前面）
@@ -437,7 +450,7 @@ export class StoryVoice {
                 r.marked = true;
                 if (useMemo) this._speakerMemo.set(`${id}:${i}:${r.text}`, r.speaker);
                 if (this._speakerMemo.size > 2000) this._speakerMemo.delete(this._speakerMemo.keys().next().value);
-                prevEnd = r.end;
+                prevEnd = r.end; lastSpeaker = r.speaker;
                 return;
             }
             // 1.5) 之前处理时模型标过（标记已经藏掉了），或者聊天记录原文里标过
@@ -445,7 +458,7 @@ export class StoryVoice {
             if (memo) {
                 r.speaker = memo;
                 r.marked = true;
-                prevEnd = r.end;
+                prevEnd = r.end; lastSpeaker = r.speaker;
                 return;
             }
             // 2) 没标：这句台词前面最近出现的已登记角色名，再没有就用这条消息的角色
@@ -465,7 +478,9 @@ export class StoryVoice {
                 });
                 if (candidate) speaker = candidate;
             }
-            r.speaker = (speaker && (this._canonicalName(speaker) || speaker)) || defaultSpeaker;
+            r.speaker = (speaker && (this._canonicalName(speaker) || speaker))
+                || (!defaultIsPerson && lastSpeaker && r.start - prevEnd < 600 ? lastSpeaker : defaultSpeaker);
+            if (speaker) lastSpeaker = r.speaker;
             prevEnd = r.end;
         });
         return { marks, lines };

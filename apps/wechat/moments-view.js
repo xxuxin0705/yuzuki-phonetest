@@ -10,6 +10,7 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 import { ImageCropper } from '../settings/image-cropper.js';
+import { uploadPhoneDataUrl, deletePhoneImage } from './image-store.js?v=20261020-m2';
 import { applyPhoneTagFilter } from '../../config/tag-filter.js';
 import {
     extractImagePromptItems,
@@ -137,7 +138,7 @@ export class MomentsView {
     }
 
     // ins 推文：头像+名字 → 大图 → 赞/评论/分享 → 赞数 → 配文 → 评论 → 时间
-    _renderInsPostHtml(moment) {
+    _renderInsPostHtml(moment, { inProfile = false } = {}) {
         const self = this._isSelfMoment(moment);
         const info = this.app.wechatData.getUserInfo() || {};
         const avatar = self ? (info.avatar || moment.avatar || '😊') : (this.getContactAvatar(moment.name) || moment.avatar || '👤');
@@ -165,10 +166,10 @@ export class MomentsView {
                 <div class="ins-acts">
                     <button type="button" data-mz-act="like" data-moment-id="${mid}" class="${liked ? 'is-on' : ''}" aria-label="Like">${heart}</button>
                     <button type="button" data-mz-act="comment" data-moment-id="${mid}" aria-label="Comment">${bubble}</button>
-                    ${this._isMomentShareable(moment) ? `<button type="button" data-mz-act="share" data-moment-id="${mid}" aria-label="Share">${plane}</button>` : ''}
                     <span class="ins-acts-gap"></span>
+                    ${this._isMomentShareable(moment) ? `<button type="button" class="ins-sub" data-mz-act="share" data-moment-id="${mid}" aria-label="Share" title="Share"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3 10 13.5M21 3l-6.5 18-4.5-7.5L2.5 9z"/></svg></button>` : ''}
                     ${this._isPrivateMoment(moment) ? '' : `<button type="button" class="ins-sub" data-mz-act="ai" data-moment-id="${mid}" aria-label="Friends react" title="Friends react"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 15 9"/><path d="m14 4 1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/><path d="m19 12 .6 1.2 1.2.6-1.2.6-.6 1.2-.6-1.2-1.2-.6 1.2-.6z"/></svg></button>`}
-                    <button type="button" class="ins-sub${pinned ? ' is-on' : ''}" data-mz-act="pin" data-moment-id="${mid}" aria-label="${pinned ? 'Unpin' : 'Pin'}" title="${pinned ? 'Unpin' : 'Pin'}"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3.5h6l-1 5 3.5 3.5h-11L10 8.5z"/><path d="M12 12v8.5"/></svg></button>
+                    ${self || inProfile ? `<button type="button" class="ins-sub${pinned ? ' is-on' : ''}" data-mz-act="pin" data-moment-id="${mid}" aria-label="${pinned ? 'Unpin' : 'Pin'}" title="${pinned ? 'Unpin' : 'Pin'}"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3.5h6l-1 5 3.5 3.5h-11L10 8.5z"/><path d="M12 12v8.5"/></svg></button>` : ''}
                     <button type="button" class="ins-sub" data-mz-act="edit" data-moment-id="${mid}" aria-label="Edit" title="Edit"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg></button>
                     <button type="button" class="ins-sub" data-mz-act="delete" data-moment-id="${mid}" aria-label="Delete" title="Delete"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h15"/><path d="M9 6.5V4.5h6v2"/><path d="M6.5 6.5 7.5 20h9l1-13.5"/><path d="M10 10.5v6M14 10.5v6"/></svg></button>
                 </div>
@@ -254,7 +255,8 @@ export class MomentsView {
             posts: pick(p.posts, String(list.length)),
             likes: pick(p.likes, String(likes)),
             following: pick(p.following, String(self ? (data.getContacts?.() || []).length : 40 + (h % 260))),
-            followers: pick(p.followers, String(self ? (data.getContacts?.() || []).length : 120 + (h % 4800)))
+            followers: pick(p.followers, String(self ? (data.getContacts?.() || []).length : 120 + (h % 4800))),
+            cover: String(p.cover || '')
         };
     }
 
@@ -270,19 +272,21 @@ export class MomentsView {
         const stat = (field, label) => `<div data-ins-edit="${field}" role="button" tabindex="0"><b>${this._escapeHtml(d[field])}</b><span>${label}</span></div>`;
         const body = `
             <div class="moments-page is-profile ins-profile-page" style="background:#fff;">
-                <div class="ins-pf">
+                <div class="ins-pf${d.cover ? ' has-cover' : ''}"${d.cover ? ` style="--ins-cover:url('${this._escapeAttr(d.cover)}')"` : ''}>
+                    ${d.cover ? '<div class="ins-pf-cover"></div>' : ''}
+                    <button type="button" class="ins-pf-cover-btn" data-ins-cover aria-label="背景图" title="${d.cover ? '更换 / 移除背景图' : '上传背景图'}"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8.5 8"/></svg></button>
+                    <input type="file" accept="image/*" data-ins-cover-file hidden>
                     <div class="ins-pf-avatar">${this.app.renderAvatar(d.avatar, d.self ? '😊' : '👤', d.name)}</div>
                     <div class="ins-pf-name" data-ins-edit="name" role="button" tabindex="0">${this._escapeHtml(d.name)}</div>
                     <div class="ins-pf-sign" data-ins-edit="sign" role="button" tabindex="0">${this._escapeHtml(d.sign || 'Add bio')}</div>
                     <div class="ins-pf-stats">${stat('posts', 'Posts')}${stat('likes', 'Likes')}${stat('following', 'Following')}${stat('followers', 'Followers')}</div>
-                    <div class="ins-pf-hint">Tap name, bio or numbers to edit</div>
                     ${d.self ? `<div class="ins-pf-btns"><button type="button" data-mz-act="post"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M12 8v8M8 12h8"/></svg> New post</button></div>` : ''}
                 </div>
                 <div class="ins-pf-tabs">
                     <button type="button" class="${view === 'grid' ? 'active' : ''}" data-ins-view="grid" aria-label="宫格"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/></svg></button>
                     <button type="button" class="${view === 'list' ? 'active' : ''}" data-ins-view="list" aria-label="列表"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h14"/></svg></button>
                 </div>
-                ${!d.list.length ? `<div class="ins-empty">${d.self ? 'No posts yet' : 'No posts yet'}</div>` : (view === 'grid' ? `<div class="ins-grid">${tiles}</div>` : `<div class="moments-feed">${d.list.map(m => this._renderInsPostHtml(m)).join('')}</div>`)}
+                ${!d.list.length ? `<div class="ins-empty">${d.self ? 'No posts yet' : 'No posts yet'}</div>` : (view === 'grid' ? `<div class="ins-grid">${tiles}</div>` : `<div class="moments-feed">${d.list.map(m => this._renderInsPostHtml(m, { inProfile: true })).join('')}</div>`)}
             </div>`;
         const reopen = () => this.showInsProfilePage(key);
         this._showSubPage(this._renderSubPageShell(body, { title: '' }), 'wechat-moments-ins-profile', reopen);
@@ -296,6 +300,76 @@ export class MomentsView {
             e.stopPropagation();
             this._editInsProfileField(d.key, el.dataset.insEdit, d[el.dataset.insEdit], reopen);
         }));
+        // 🖼️ 主页背景图：存到小手机自己的图片文件夹（不进酒馆全局背景）
+        const fileInput = root.querySelector('[data-ins-cover-file]');
+        root.querySelector('[data-ins-cover]')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!d.cover) { fileInput?.click(); return; }
+            const mask = this._mountMomentSheet(`
+                <div class="moment-dialog" role="dialog">
+                    <div class="moment-dialog-title">主页背景图</div>
+                    <div class="moment-dialog-actions">
+                        <button type="button" data-cover-del>移除</button>
+                        <button type="button" data-sheet-close>取消</button>
+                        <button type="button" class="is-primary" data-cover-new>更换</button>
+                    </div>
+                </div>`);
+            mask.querySelector('[data-cover-new]')?.addEventListener('click', () => { mask.remove(); fileInput?.click(); });
+            mask.querySelector('[data-cover-del]')?.addEventListener('click', () => {
+                mask.remove();
+                this._setInsCover(d.key, '', d.cover).then(reopen);
+            });
+        });
+        fileInput?.addEventListener('change', async () => {
+            const file = fileInput.files?.[0];
+            fileInput.value = '';
+            if (!file) return;
+            try {
+                this.app.phoneShell?.showNotification?.('背景图', '正在保存…', '🖼️');
+                const dataUrl = await this._shrinkImageFile(file, 1080);
+                const path = await uploadPhoneDataUrl(dataUrl, 'ins_cover');
+                await this._setInsCover(d.key, path, d.cover);
+                reopen();
+            } catch (err) {
+                console.warn('⚠️ 主页背景图保存失败:', err);
+                this.app.phoneShell?.showNotification?.('背景图', '保存失败，请换一张图试试', '❌');
+            }
+        });
+    }
+
+    async _setInsCover(key, path, oldPath = '') {
+        const store = this._userInfoStore();
+        if (!store.momentsInsProfiles || typeof store.momentsInsProfiles !== 'object') store.momentsInsProfiles = {};
+        const p = { ...(store.momentsInsProfiles[key] || {}) };
+        if (path) p.cover = path; else delete p.cover;
+        store.momentsInsProfiles[key] = p;
+        await this.app.wechatData.saveData();
+        if (oldPath && oldPath !== path) {
+            try { await deletePhoneImage(oldPath, { skipIfReferenced: false }); } catch (e) { /* 忽略 */ }
+        }
+    }
+
+    // 图片缩到合适大小再存（手机拍的原图太大）
+    _shrinkImageFile(file, maxSide = 1080) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
+            reader.onload = () => {
+                const img = new Image();
+                img.onerror = () => reject(new Error('图片格式不支持'));
+                img.onload = () => {
+                    const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+                    const w = Math.max(1, Math.round(img.width * scale));
+                    const h = Math.max(1, Math.round(img.height * scale));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w; canvas.height = h;
+                    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                    resolve(canvas.toDataURL('image/jpeg', 0.86));
+                };
+                img.src = String(reader.result || '');
+            };
+            reader.readAsDataURL(file);
+        });
     }
 
     _editInsProfileField(key, field, current, done) {
@@ -339,6 +413,13 @@ export class MomentsView {
                 this.showMomentDetailPage(open.dataset.mzOpen, null);
                 return;
             }
+            const delBtn = e.target.closest('.mc-del');
+            if (delBtn) {
+                e.stopPropagation();
+                const row = delBtn.closest('.comment-row');
+                if (row) this._confirmDeleteMyComment(row.dataset.momentId, Number(row.dataset.commentIdx));
+                return;
+            }
             const replyBtn = e.target.closest('.mc-reply');
             if (replyBtn) {
                 const row = replyBtn.closest('.comment-row');
@@ -374,7 +455,7 @@ export class MomentsView {
             if (act === 'share') {
                 const m = this.app.wechatData.getMoment(id);
                 if (this._isMomentShareable(m)) return this.showShareMomentSheet(id);
-                this.app.phoneShell?.showNotification?.('提示', '只有自己的公开动态可以分享', 'ℹ️');
+                this.app.phoneShell?.showNotification?.('提示', '私密或设了可见范围的动态不能分享', 'ℹ️');
             }
         });
     }
@@ -682,7 +763,7 @@ export class MomentsView {
                                 <span class="comment-author">${this._escapeHtml(this._displayName(comment.name))}</span>
                                 ${comment.visibleReplyTo ? `<span class="comment-reply">回复</span><span class="comment-author">${this._escapeHtml(this._displayName(comment.visibleReplyTo))}</span>` : ''}
                                 <span class="comment-colon">：</span>
-                                ${(() => { const t = this._renderTranslatableText(comment.name, comment.text, { size: 15, inline: true }); return `<span class="comment-content">${t.main}</span>${t.fold}`; })()}${this._isSelfName(comment.name) ? '' : '<button type="button" class="mc-reply">回复</button>'}
+                                ${(() => { const t = this._renderTranslatableText(comment.name, comment.text, { size: 15, inline: true }); return `<span class="comment-content">${t.main}</span>${t.fold}`; })()}${this._isSelfName(comment.name) ? '<button type="button" class="mc-reply mc-del">删除</button>' : '<button type="button" class="mc-reply">回复</button>'}
                             </div>
                         `).join('')}
                     </div>
@@ -814,7 +895,7 @@ export class MomentsView {
         this._root().querySelectorAll('.comment-row').forEach(row => {
             row.addEventListener('click', (e) => {
                 // 只有点「回复」才回复，误触评论不再弹输入框
-                if (!e.target.closest('.mc-reply')) return;
+                if (!e.target.closest('.mc-reply') || e.target.closest('.mc-del')) return;
                 e.stopPropagation();
                 e.preventDefault();
                 const momentId = row.dataset.momentId;
@@ -1921,7 +2002,8 @@ export class MomentsView {
             ['comment', 'fa-regular fa-comment', '评论'],
             this._isMomentShareable(moment) ? ['share', 'fa-solid fa-share-nodes', '分享'] : null,
             this._isPrivateMoment(moment) ? null : ['ai', 'fa-solid fa-wand-magic-sparkles', '好友互动'],
-            ['pin', 'fa-solid fa-thumbtack', this._isPinned(momentId) ? '取消置顶' : '置顶'],
+            // 主列表里只能置顶自己的；别人的要进 TA 的朋友圈里置顶
+            (isMine || this._currentPage) ? ['pin', 'fa-solid fa-thumbtack', this._isPinned(momentId) ? '取消置顶' : '置顶'] : null,
             ['edit', 'fa-solid fa-pen', '编辑'],
             ['delete', 'fa-regular fa-trash-can', '删除']
         ].filter(Boolean);
@@ -2009,7 +2091,8 @@ export class MomentsView {
 
     // 只有公开的朋友圈可以分享
     _isMomentShareable(moment) {
-        return !!moment && this._isSelfMoment(moment) && this._momentVisibilityType(moment) === 'public';
+        // 公开的动态（自己的、好友的）都能转发；自己设了私密或指定可见范围的不能
+        return !!moment && this._momentVisibilityType(moment) === 'public';
     }
 
     // 置顶：自己的放 momentsPinned，角色的按名字放 momentsPinnedMap
@@ -2447,7 +2530,7 @@ export class MomentsView {
         const moment = this.app.wechatData.getMoment(momentId);
         if (!moment) return;
         if (!this._isMomentShareable(moment)) {
-            this.app.phoneShell.showNotification('无法分享', '只有自己发的公开朋友圈可以转发', '🔒');
+            this.app.phoneShell.showNotification('无法分享', '私密或设了可见范围的动态不能转发', '🔒');
             return;
         }
         const chats = (this.app.wechatData.getChatList?.() || []).filter(c => c && c.id);
@@ -2678,7 +2761,7 @@ export class MomentsView {
         if (insEls.length) {
             insEls.forEach(el => {
                 const tmp = document.createElement('div');
-                tmp.innerHTML = this._renderInsPostHtml(moment).trim();
+                tmp.innerHTML = this._renderInsPostHtml(moment, { inProfile: !!el.closest('.ins-profile-page') }).trim();
                 const fresh = tmp.firstElementChild;
                 if (!fresh) return;
                 el.replaceWith(fresh);
@@ -2731,7 +2814,7 @@ export class MomentsView {
         if (newInteractionsEl) {
             newInteractionsEl.querySelectorAll('.comment-row').forEach(row => {
                 row.addEventListener('click', (e) => {
-                    if (!e.target.closest('.mc-reply')) return;
+                    if (!e.target.closest('.mc-reply') || e.target.closest('.mc-del')) return;
                     e.stopPropagation();
                     e.preventDefault();
                     const rowMomentId = row.dataset.momentId;
@@ -2807,6 +2890,32 @@ export class MomentsView {
         inputBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    // 🗑️ 删除我自己的评论
+    _confirmDeleteMyComment(momentId, idx) {
+        const moment = this.app.wechatData.getMoment(momentId);
+        const c = moment?.commentList?.[idx];
+        if (!c || !this._isSelfName(c.name)) return;
+        const mask = this._mountMomentSheet(`
+            <div class="moment-dialog" role="dialog">
+                <div class="moment-dialog-title">删除这条评论？</div>
+                <div class="moment-dialog-sub">${this._escapeHtml(String(c.text || '').replace(/\s*\[\s*翻译\s*[:：][^\]]*\]\s*$/, '').slice(0, 60))}</div>
+                <div class="moment-dialog-actions">
+                    <button type="button" data-sheet-close>取消</button>
+                    <button type="button" class="is-primary" data-ok>删除</button>
+                </div>
+            </div>`);
+        mask.querySelector('[data-ok]')?.addEventListener('click', () => {
+            const live = this.app.wechatData.getMoment(momentId);
+            const list = live?.commentList || [];
+            const i = list[idx] && list[idx].text === c.text ? idx : list.findIndex(x => x && x.name === c.name && x.text === c.text);
+            if (i >= 0) list.splice(i, 1);
+            if (live) live.comments = list.length;
+            this.app.wechatData.saveData();
+            mask.remove();
+            this._rerender();
+        });
+    }
+
     // ✨ 好友互动：有我还没被回应的评论/回复，就让大家回应这些；没有就围绕这条动态互动
     _triggerFriendsReact(momentId) {
         const moment = this.app.wechatData.getMoment(momentId);
@@ -2827,15 +2936,29 @@ export class MomentsView {
         this.triggerAIReaction(momentId, 'comment', text, replyTo).catch(() => {});
     }
 
+    // 我的评论要不要翻译：''=不翻译，'auto'=跟随对方私聊的「自动翻译我发出的消息」，其他=固定翻成这种语言
+    _myCommentLangPref() {
+        const v = this.app.wechatData.getUserInfo()?.momentsCommentLang;
+        return v === undefined || v === null ? 'auto' : String(v);
+    }
+
     // 🌐 我的评论：对方（被回复的人，没有就是发帖人）私聊里开了「自动翻译我发出的消息」，
     //   就把评论翻成对应语言显示，「查看翻译」能看回中文原文
     _translateMyComment(moment, commentObj, replyTo = null) {
         try {
-            const target = String(replyTo || (this._isSelfMoment(moment) ? '' : moment?.name) || '').trim();
-            if (!target || this._isSelfName(target)) return;
-            const t = this.app.wechatData.getMemberTranslationSettings?.(target) || {};
-            const lang = String(t.translateOutTo || '').trim();
-            if (!t.autoTranslateOut || !lang || lang === 'zh-CN') return;
+            const pref = this._myCommentLangPref();
+            if (!pref) return;
+            let lang = '';
+            if (pref === 'auto') {
+                const target = String(replyTo || (this._isSelfMoment(moment) ? '' : moment?.name) || '').trim();
+                if (!target || this._isSelfName(target)) return;
+                const t = this.app.wechatData.getMemberTranslationSettings?.(target) || {};
+                if (!t.autoTranslateOut) return;
+                lang = String(t.translateOutTo || '').trim();
+            } else {
+                lang = pref;
+            }
+            if (!lang || lang === 'zh-CN') return;
             const translator = this.app.chatView?._translateTextViaProvider?.bind(this.app.chatView);
             if (!translator) return;
             const original = String(commentObj.text || '').trim();

@@ -309,7 +309,7 @@ html[data-wx-moments="line"] .wechat-app:is(:has(.moments-page.mz-skin-line), :h
 html[data-wx-moments="line"] .wechat-app:is(:has(.moments-page.mz-skin-line), :has(.ins-profile-page)) > .wechat-header.moments-header-overlay .wechat-header-title-text { opacity: 0 !important; }
 html[data-wx-moments="line"] .ins-top { padding: 10px 16px 6px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f0f0; }
 html[data-wx-moments="line"] .ins-logo { font-size: 24px; font-weight: 700; letter-spacing: 1px; color: #111; font-family: "Brush Script MT", "Snell Roundhand", "Segoe Script", cursive, serif; }
-html[data-wx-moments="line"] .ins-me { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; background: #f2f2f2; font-size: 15px; }
+html[data-wx-moments="line"] .ins-me { width: 32px; height: 32px; border-radius: 50%; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; background: #f2f2f2; font-size: 15px; box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px #e4405f; margin-right: 4px; }
 html[data-wx-moments="line"] .ins-me > *, html[data-wx-moments="line"] .ins-me img { width: 100% !important; height: 100% !important; object-fit: cover; border-radius: 50% !important; }
 html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff !important; }
 .ins-post { position: relative; display: block !important; padding: 0 0 14px !important; margin: 0 !important; border: 0 !important; border-radius: 0 !important; border-bottom: 1px solid #f2f2f2 !important; background: #fff !important; box-shadow: none !important; backdrop-filter: none !important; }
@@ -349,7 +349,14 @@ html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff
 .ins-time { padding: 6px 14px 0; font-size: 11px; color: #999; letter-spacing: .2px; }
 
 /* ins 个人主页：头像在最上面 → 名字 → 签名 → 动态 / 获赞 / 关注 / 粉丝 */
-.ins-pf { padding: 20px 20px 14px; text-align: center; background: #fff; }
+.ins-pf { position: relative; padding: 20px 20px 14px; text-align: center; background: #fff; overflow: hidden; }
+.ins-pf > *:not(.ins-pf-cover):not(input) { position: relative; z-index: 1; }
+.ins-pf-cover { position: absolute !important; z-index: 0 !important; left: 0; right: 0; top: 0; height: 270px; background: var(--ins-cover) center / cover no-repeat; -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.92) 35%, rgba(0,0,0,.45) 68%, transparent 100%); mask-image: linear-gradient(to bottom, #000 0%, rgba(0,0,0,.92) 35%, rgba(0,0,0,.45) 68%, transparent 100%); }
+.ins-pf.has-cover { padding-top: 96px; }
+.ins-pf.has-cover .ins-pf-name { text-shadow: 0 0 10px rgba(255,255,255,.95), 0 0 2px #fff; }
+.ins-pf.has-cover .ins-pf-sign { text-shadow: 0 0 8px rgba(255,255,255,.95); color: #444; }
+.ins-pf-cover-btn { position: absolute !important; top: 10px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 50%; background: rgba(255,255,255,.78); color: #333; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 1px 6px rgba(0,0,0,.12); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.ins-pf.has-cover .ins-pf-stats { background: rgba(255,255,255,.72); border-radius: 14px; border: 0; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 .ins-pf-avatar { width: 92px; height: 92px; margin: 0 auto; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #f2f2f2; font-size: 38px; box-shadow: 0 0 0 3px #fff, 0 0 0 5px #e4405f; }
 .ins-pf-avatar > *, .ins-pf-avatar img { width: 100% !important; height: 100% !important; object-fit: cover; border-radius: 50% !important; }
 .ins-pf-name { margin-top: 16px; font-size: 18px; font-weight: 700; color: #111; cursor: pointer; word-break: break-word; }
