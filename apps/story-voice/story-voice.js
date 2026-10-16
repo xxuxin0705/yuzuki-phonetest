@@ -218,7 +218,7 @@ export class StoryVoice {
             items.forEach(it => { if (it.r.marked && it.r.speaker) speakers[it.id] = it.r.speaker; });
             const roster = [...new Set([...s.speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || '').trim(), String(ctx?.name1 || '').trim()].filter(Boolean))];
             const prev = (ctx?.chat || []).slice(Math.max(0, id - 3), id).filter(m => m && !m.is_system)
-                .map(m => ({ n: m.name || '', t: clean(this._rawToText(m.mes || '')).replace(/\s+/g, ' ').trim().slice(-700) })).filter(x => x.t).map(x => `${x.n}：${x.t}`).join('\n');
+                .map(m => ({ n: m.name || '', t: clean(this._rawToText(m.mes || '')).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() })).filter(x => x.t).map(x => `【${x.n}】\n${x.t}`).join('\n\n');
             const messages = buildDeepMessages({ story, lines: items, roster, userName: String(ctx?.name1 || '').trim(), previous: prev, speakers });
             this._refreshDeepStatus(id);
             const raw = await this._callModel(messages, { timeout: (Number(s.deepTimeout) || 150) * 1000 });
@@ -239,11 +239,11 @@ export class StoryVoice {
         job.catch(err => {
             console.warn('[正文朗读] 深度分析失败:', err);
             this._deepErr.set(hash, String(err?.message || err).slice(0, 120));
-            this._toast('深度分析失败', `${String(err?.message || err).slice(0, 120)}（这一楼先按不分析读）`);
+            this._toast('深度分析失败', `${String(err?.message || err).slice(0, 120)}（这一楼先按不分析读）`, 'error');
         }).finally(() => {
             this._deepJobs.delete(hash);
             this.processById(id);
-            if (!this._streaming && this.getSettings().deepAuto) this._prefetchMessage(id);
+            if (this.getSettings().deepAuto && this._deepStore()[hash]) setTimeout(() => this._prefetchAfterDeep(id).catch(() => null), 60);
         });
         return job;
     }
@@ -531,7 +531,7 @@ export class StoryVoice {
             btn?.classList.remove('is-busy');
             bar.classList.remove('is-loading');
         }
-        if (analyzed) this._toast('语音好了 🎧', '已按分析的情绪生成，开始播放');
+        if (analyzed) this._toast('语音好了 🎧', '深度分析完毕，已按分析的情绪生成，开始播放', 'success');
         this.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
     }
 
@@ -1044,7 +1044,10 @@ export class StoryVoice {
     // 原文（可能带思考、<content> 标签和 HTML）→ 纯文字；生成到一半也能用
     _rawToText(raw) {
         let t = String(raw || '');
-        t = t.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/<think(?:ing)?>[\s\S]*$/i, '');
+        // 思考过程不读也不发：<think>、<thinking>、<reasoning>、<cot>、<思考>、<思维链> 等（没写完的也去掉）
+        const TH = '(?:think|thinking|reasoning|cot|thought|thoughts|思考|思维链|思维|内心分析)';
+        t = t.replace(new RegExp(`<${TH}>[\\s\\S]*?<\\/${TH}>`, 'gi'), '').replace(new RegExp(`<${TH}>[\\s\\S]*$`, 'i'), '');
+        t = t.replace(/^[\s\S]*?<\/think(?:ing)?>/i, ''); // 只有结尾 </think> 的（开头标签被预设吃掉了）
         const open = t.search(/<content>/i);
         if (open >= 0) {
             t = t.slice(open + 9);
@@ -1485,7 +1488,7 @@ export class StoryVoice {
                 const q = queue[i];
                 q.bar.classList.add('is-loading');
                 const urls = await jobs[i];
-                if (announce) { announce = false; this._toast('语音好了 🎧', '已按分析的情绪生成，开始播放'); }
+                if (announce) { announce = false; this._toast('语音好了 🎧', '深度分析完毕，已按分析的情绪生成，开始播放', 'success'); }
                 start(i + 1); start(i + 2);
                 if (this.playing !== run) return;
                 q.bar.classList.remove('is-loading');
@@ -1583,10 +1586,38 @@ export class StoryVoice {
         });
     }
 
-    _toast(title, text) {
+    // 提示：小手机收起来时也要看得到，所以优先用酒馆自己的弹窗
+    _toast(title, text, kind = 'info') {
+        if (window.toastr) {
+            const fn = window.toastr[kind] || window.toastr.info;
+            try { fn.call(window.toastr, text, title, { timeOut: kind === 'error' ? 6000 : 3500 }); return; } catch (e) { /* 换下面的 */ }
+        }
         if (this.phoneShell?.showNotification) this.phoneShell.showNotification(title, text, '🔊');
-        else if (window.toastr) window.toastr.warning(text, title);
         else console.warn(title, text);
+    }
+
+    // 每轮自动分析：分析完把这一楼的语音全部生成好，再提示一次
+    async _prefetchAfterDeep(id) {
+        const el = document.querySelector(`#chat .mes[mesid="${id}"]`);
+        const bars = Array.from(el?.querySelectorAll('.mes_text .yzsv-bar') || []);
+        if (!bars.length) return;
+        this._toast('深度分析完毕', `正在生成 ${bars.length} 句语音…`, 'info');
+        const items = [];
+        for (const b of bars) {
+            const { vi, parts } = this._lineJob(await this._voiceFor(b.dataset.speaker || ''), b.dataset.text, b.dataset.cue || '', this._barDeep(b));
+            items.push({ vi, parts, b });
+        }
+        let ok = 0, fail = 0, i = 0;
+        const worker = async () => {
+            while (i < items.length) {
+                const it = items[i++];
+                try { await Promise.all(it.parts.map(part => this._synthRetry(part, it.vi, {}))); ok += 1; }
+                catch (e) { fail += 1; console.warn('[正文朗读] 生成失败:', e); }
+            }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+        if (ok) this._toast('语音好了 🎧', `第 ${id} 楼 ${ok} 句已按分析的情绪生成${fail ? `，${fail} 句失败` : ''}，点 ▶ 就能听`, 'success');
+        else this._toast('语音生成失败', '这一楼的语音都没生成成功，点 ▶ 会再试', 'error');
     }
 
     async test(voice = '') {
