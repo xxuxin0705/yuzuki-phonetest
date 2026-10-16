@@ -135,6 +135,112 @@ export class StoryVoice {
         this.playBars([bar], { regen: true });
     }
 
+    // 台词正前方的「名字 [02:22]：」「名字：」「名字说：」
+    _labelBefore(full, start) {
+        const before = full.slice(Math.max(0, start - 60), start);
+        const m = before.match(/(?:^|[\n。！？!?」』”）)\]])\s*([^\s\n:：「『“（(\[\]【】，,。]{1,12}?)\s*(?:[\[［(（【]\s*\d{1,2}[:：]\d{2}(?:[:：]\d{2})?\s*[\]］)）】])?\s*(?:说道|说|问道|问|道|喊道|喊)?\s*[:：]\s*$/);
+        if (!m) return '';
+        const name = m[1].trim();
+        if (!name || /^(?:他|她|我|你|它|对方|旁白)$/.test(name)) return '';
+        if (!this._canonicalName(name) && /^(?:他|她|我|你|它|那|这|对方)/.test(name)) return '';
+        return name;
+    }
+
+    // 「硝子」「家入」「家入硝子」都对到登记的同一个角色
+    _canonicalName(name = '') {
+        const n = String(name || '').trim();
+        if (!n) return '';
+        const list = this.getSettings().speakers.map(x => x.name).filter(Boolean);
+        return list.find(x => x === n)
+            || list.find(x => x.length >= 2 && n.length >= 2 && (x.includes(n) || n.includes(x)))
+            || '';
+    }
+
+    _saveOverride(bar, name) {
+        const key = this._overrideKey(bar.dataset.mesid, bar.dataset.line, bar.dataset.text);
+        if (name) this.speakerOverrides[key] = name; else delete this.speakerOverrides[key];
+        const keys = Object.keys(this.speakerOverrides);
+        if (keys.length > 500) keys.slice(0, keys.length - 500).forEach(k => delete this.speakerOverrides[k]);
+        try { this.storage?.set?.('phone-story-voice-overrides', JSON.stringify(this.speakerOverrides)); } catch (e) { /* 忽略 */ }
+        bar.dataset.speaker = name || bar.dataset.speaker;
+        bar.querySelector('.yzsv-play')?.setAttribute('title', `播放（${bar.dataset.speaker || '默认音色'}）`);
+    }
+
+    // ↻：选说话人 / 让 AI 重新判断，然后重新生成
+    _openRegenMenu(bar, btn) {
+        document.querySelectorAll('.yzsv-pop').forEach(n => n.remove());
+        const names = this.getSettings().speakers.map(x => x.name).filter(Boolean);
+        const cur = bar.dataset.speaker || '';
+        const pop = document.createElement('div');
+        pop.className = 'yzsv-pop';
+        pop.innerHTML = `
+            <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '默认音色')}</span></div>
+            <button type="button" class="yzsv-pop-ai" data-act="ai">✨ 让 AI 重新判断</button>
+            ${names.length ? `<div class="yzsv-pop-names">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty">在「朗读」App 里登记角色音色后，这里可以直接选人</div>'}
+            <button type="button" class="yzsv-pop-same" data-act="same">保持「${esc(cur || '默认音色')}」，只重新生成语音</button>`;
+        document.body.appendChild(pop);
+        const r = btn.getBoundingClientRect();
+        const w = Math.min(280, window.innerWidth - 16);
+        pop.style.width = `${w}px`;
+        pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+        const below = r.bottom + 8;
+        pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 8) : below}px`;
+        const close = () => { pop.remove(); document.removeEventListener('pointerdown', outside, true); };
+        const outside = (e) => { if (!pop.contains(e.target)) close(); };
+        setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+        pop.addEventListener('click', async (e) => {
+            const b = e.target.closest('button');
+            if (!b) return;
+            e.stopPropagation();
+            if (b.dataset.name) {
+                close();
+                this._saveOverride(bar, b.dataset.name);
+                this.playBars([bar], { regen: true });
+                return;
+            }
+            if (b.dataset.act === 'same') {
+                close();
+                this.playBars([bar], { regen: true });
+                return;
+            }
+            if (b.dataset.act === 'ai') {
+                b.disabled = true;
+                b.textContent = '✨ AI 判断中…';
+                try {
+                    const who = await this._askSpeaker(bar);
+                    close();
+                    if (!who) { this._toast('没判断出来', '可以直接点下面的名字指定'); return; }
+                    this._saveOverride(bar, who);
+                    this._toast('重新识别', `这句判断为：${who}`);
+                    this.playBars([bar], { regen: true });
+                } catch (err) {
+                    b.disabled = false;
+                    b.textContent = '✨ 让 AI 重新判断';
+                    this._toast('AI 判断失败', String(err?.message || err).slice(0, 120));
+                }
+            }
+        });
+    }
+
+    async _askSpeaker(bar) {
+        const ctx = window.SillyTavern?.getContext?.();
+        const context = this._lineContext?.get(`${bar.dataset.mesid}:${bar.dataset.line}`) || `【${bar.dataset.text}】`;
+        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), String(ctx?.name2 || ''), String(ctx?.name1 || '')].filter(Boolean))];
+        const prompt = `下面是一段小说正文，判断用【】括起来的那句台词是谁说出口的。\n只输出说话人的名字，不要解释。${names.length ? `尽量从这些名字里选：${names.join('、')}。` : ''}\n\n正文：\n${context}`;
+        let out = '';
+        if (typeof ctx?.generateRaw === 'function') {
+            try { out = await ctx.generateRaw({ prompt, responseLength: 30 }); }
+            catch (e) { out = await ctx.generateRaw(prompt, null, false, false, '', 30); }
+        } else if (typeof ctx?.generateQuietPrompt === 'function') {
+            out = await ctx.generateQuietPrompt(prompt, false, true);
+        } else {
+            throw new Error('当前酒馆版本不支持后台调用模型');
+        }
+        const text = String(out || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim().split(/\n/)[0].replace(/[「」『』“”"'【】\[\]：:。.!！\s]/g, '');
+        if (!text) return '';
+        return this._canonicalName(text) || names.find(n => text.includes(n)) || text.slice(0, 12);
+    }
+
     // ---------- 酒馆挂钩 ----------
     install() {
         if (this._installed) return;
@@ -249,12 +355,20 @@ export class StoryVoice {
         const speakerNames = s.speakers.map(x => x.name).filter(Boolean);
         let prevEnd = 0;
         lines.forEach((r, i) => {
+            r.index = i;
+            // 0) 台词正前方写着「名字 [时间]：」「名字：」这种标签（群聊记录、对话体），最可靠
+            const label = this._labelBefore(full, r.start);
+            if (label) {
+                r.speaker = this._canonicalName(label) || label;
+                r.marked = true;
+                prevEnd = r.end;
+                return;
+            }
             // 1) 模型标的 [[角色名]]（紧挨在台词前面）
             const mark = marks.find(mk => mk.end <= r.start && r.start - mk.end <= 2 && !/\S/.test(full.slice(mk.end, r.start)));
             if (mark) {
-                r.speaker = mark.name;
+                r.speaker = this._canonicalName(mark.name) || mark.name;
                 r.marked = true;
-                r.index = i;
                 prevEnd = r.end;
                 return;
             }
@@ -276,9 +390,10 @@ export class StoryVoice {
                 if (candidate) speaker = candidate;
             }
             r.speaker = speaker || defaultSpeaker;
-            r.index = i;
             prevEnd = r.end;
         });
+        // 记下每句的上下文，↻ 时可以让 AI 重新判断
+        this._lineContext = this._lineContext || new Map();
 
         // 从后往前改（插按钮、藏标记），前面的位置不会被打乱
         const ops = [
@@ -299,7 +414,8 @@ export class StoryVoice {
             bar.dataset.manualSpeaker = override ? '1' : '0';
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
-            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-speaker" title="指定这句台词的说话人">👤${esc(bar.dataset.speaker || '选择角色')}</button><button type="button" class="yzsv-btn yzsv-play" title="播放这句：${esc(r.speaker || '默认音色')}${r.marked ? '' : '（自动判断）'}">▶ 播放</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成这句语音">↻</button>`;
+            this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 260), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 80));
+            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新识别说话人并重新生成">↻</button>`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -367,15 +483,17 @@ export class StoryVoice {
             }
             const bar = btn.closest('.yzsv-bar');
             if (!bar) return;
-            if (btn.classList.contains('yzsv-speaker')) { this._chooseSpeaker(bar); return; }
-            this.playBars([bar], { regen: btn.classList.contains('yzsv-regen'), trigger: btn });
+            if (btn.classList.contains('yzsv-regen')) { this._openRegenMenu(bar, btn); return; }
+            this.playBars([bar], { trigger: btn });
         }, true);
     }
 
     // ---------- 合成与播放 ----------
     _voiceFor(speaker = '') {
         const s = this.getSettings();
-        const hit = s.speakers.find(x => x.name && x.voice && (x.name === speaker || speaker.includes(x.name)));
+        const sp = String(speaker || '').trim();
+        const hit = s.speakers.find(x => x.name && x.voice && x.name === sp)
+            || s.speakers.find(x => x.name && x.voice && sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)));
         return hit?.voice || s.voice || '';
     }
 
@@ -421,28 +539,35 @@ export class StoryVoice {
         const run = { bars, trigger, abort };
         this.playing = run;
         trigger?.classList.add('is-active');
+        // 把要读的内容排成一串小段，提前并行合成（同时最多 3 段），播放时下一段已经准备好，不会一卡一卡
+        const queue = [];
+        bars.forEach(bar => {
+            const voice = this._voiceFor(bar.dataset.speaker);
+            splitSpeech(bar.dataset.text).forEach((part, i, arr) => queue.push({ bar, part, voice, last: i === arr.length - 1 }));
+        });
+        const jobs = new Array(queue.length);
+        let started = 0;
+        const startMore = (upTo) => {
+            while (started < queue.length && started <= upTo) {
+                const q = queue[started];
+                jobs[started] = this._synth(q.part, q.voice, { regen, signal: abort.signal });
+                jobs[started].catch(() => {});
+                started += 1;
+            }
+        };
         try {
-            // 每句拆成较短的独立请求；逐段播完，不依赖长文本 TTS 的截断行为。
-            for (const bar of bars) {
+            startMore(2);
+            for (let i = 0; i < queue.length; i++) {
                 if (this.playing !== run) return;
-                bar.classList.add('is-loading');
-                const parts = splitSpeech(bar.dataset.text);
-                const voice = this._voiceFor(bar.dataset.speaker);
-                for (const part of parts) {
-                    if (this.playing !== run) return;
-                    const url = await this._synth(part, voice, { regen, signal: abort.signal });
-                    if (this.playing !== run) return;
-                    bar.classList.remove('is-loading');
-                    bar.classList.add('is-playing');
-                    this.audio.src = url;
-                    await new Promise((resolve, reject) => {
-                        this.audio.onended = resolve;
-                        this.audio.onerror = () => reject(new Error('音频播放失败'));
-                        this.audio.play().catch(reject);
-                    });
-                    bar.classList.remove('is-playing');
-                }
-                bar.classList.remove('is-loading', 'is-playing');
+                const q = queue[i];
+                q.bar.classList.add('is-loading');
+                const url = await jobs[i];
+                startMore(i + 3);
+                if (this.playing !== run) return;
+                q.bar.classList.remove('is-loading');
+                q.bar.classList.add('is-playing');
+                await this._playUrl(url, run);
+                if (q.last) q.bar.classList.remove('is-playing');
             }
         } catch (err) {
             if (abort.signal.aborted || err?.name === 'AbortError') return;
@@ -451,6 +576,24 @@ export class StoryVoice {
         } finally {
             if (this.playing === run) this.stop();
         }
+    }
+
+    // 播一段：等音频缓冲好再开始，结束后才进入下一段
+    _playUrl(url, run) {
+        return new Promise((resolve, reject) => {
+            const a = this.audio;
+            const done = () => { cleanup(); resolve(); };
+            const fail = () => { cleanup(); reject(new Error('音频播放失败')); };
+            const cleanup = () => { a.onended = null; a.onerror = null; };
+            a.onended = done;
+            a.onerror = fail;
+            a.preload = 'auto';
+            a.src = url;
+            const go = () => { if (this.playing !== run) { cleanup(); resolve(); return; } a.play().catch(err => { cleanup(); reject(err); }); };
+            if (a.readyState >= 3) go();
+            else a.addEventListener('canplaythrough', go, { once: true });
+            a.load();
+        });
     }
 
     _toast(title, text) {
@@ -476,30 +619,64 @@ export class StoryVoice {
         const st = document.createElement('style');
         st.id = STYLE_ID;
         st.textContent = `
-.yzsv-bar { display: inline-flex; align-items: center; gap: 4px; margin: 0 4px; vertical-align: middle; white-space: nowrap; }
-.yzsv-btn { border: 1px solid rgba(255,255,255,.18); background: rgba(127,127,127,.16); color: inherit; opacity: .8; border-radius: 999px; padding: 1px 9px; font-size: .78em; line-height: 1.6; cursor: pointer; font-family: inherit; }
+.yzsv-bar { display: inline-flex; align-items: center; gap: 3px; margin: 0 3px; vertical-align: middle; white-space: nowrap; }
+.yzsv-btn { border: 1px solid rgba(255,255,255,.18); background: rgba(127,127,127,.16); color: inherit; opacity: .8; border-radius: 999px; padding: 0 8px; min-width: 26px; height: 22px; font-size: .75em; line-height: 20px; cursor: pointer; font-family: inherit; }
 .yzsv-btn:hover { opacity: 1; }
 .yzsv-regen { padding: 1px 7px; }
-.yzsv-speaker { max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yzsv-bar.is-loading .yzsv-play { opacity: .5; }
 .yzsv-bar.is-loading .yzsv-play::after { content: '…'; }
 .yzsv-bar.is-playing .yzsv-play { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
 .yzsv-all { margin-top: 8px; }
 .yzsv-all .yzsv-btn.is-active { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
-.yzsv-app { padding: 14px 14px 30px; font-size: 13px; color: #222; }
-.yzsv-card { background: #fff; border-radius: 14px; padding: 14px; margin-bottom: 12px; }
-.yzsv-card h4 { margin: 0 0 10px; font-size: 14px; }
-.yzsv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.yzsv-pop { position: fixed; z-index: 100000; background: rgba(32,32,38,.96); color: #f2f2f2; border-radius: 14px; padding: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); font-size: 13px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.yzsv-pop-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; margin-bottom: 10px; }
+.yzsv-pop-title span { font-weight: 400; font-size: 11px; opacity: .6; }
+.yzsv-pop button { font-family: inherit; cursor: pointer; }
+.yzsv-pop-ai { width: 100%; border: 0; border-radius: 10px; padding: 9px; background: linear-gradient(135deg, #7f7fd5, #86a8e7); color: #fff; font-size: 13px; }
+.yzsv-pop-ai:disabled { opacity: .7; }
+.yzsv-pop-names { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.yzsv-pop-names button { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: inherit; border-radius: 999px; padding: 5px 12px; font-size: 12.5px; }
+.yzsv-pop-names button.is-on { background: rgba(134,168,231,.35); border-color: rgba(134,168,231,.8); }
+.yzsv-pop-empty { margin-top: 10px; font-size: 11.5px; opacity: .6; line-height: 1.5; }
+.yzsv-pop-same { width: 100%; margin-top: 10px; border: 0; background: transparent; color: inherit; opacity: .7; font-size: 12px; padding: 4px; }
+
+/* ---- 朗读 App ---- */
+.yzsv-page { position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; background: linear-gradient(180deg, #f3f0ff 0%, #f6f6fa 220px, #f6f6fa 100%); color: #222; overflow: hidden; font-size: 13px; box-sizing: border-box; }
+.yzsv-head { flex: 0 0 auto; height: 68px; padding: 32px 10px 0; box-sizing: border-box; display: flex; align-items: center; gap: 4px; }
+.yzsv-back { width: 34px; height: 34px; border: 0; background: transparent; color: #222; font-size: 16px; cursor: pointer; border-radius: 50%; }
+.yzsv-head-title { flex: 1; text-align: center; font-size: 15px; font-weight: 600; margin-right: 38px; }
+.yzsv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 6px 14px 40px; box-sizing: border-box; }
+.yzsv-hero { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: 18px; background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%); color: #fff; box-shadow: 0 8px 22px rgba(161,140,209,.35); margin-bottom: 16px; }
+.yzsv-hero-icon { flex: 0 0 46px; height: 46px; border-radius: 14px; background: rgba(255,255,255,.25); display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.yzsv-hero b { display: block; font-size: 16px; }
+.yzsv-hero small { display: block; margin-top: 3px; font-size: 11.5px; opacity: .9; }
+.yzsv-sec { font-size: 12px; color: #8a8a99; margin: 0 6px 6px; font-weight: 600; letter-spacing: .5px; }
+.yzsv-card { background: #fff; border-radius: 16px; padding: 4px 14px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.yzsv-card.pad { padding: 14px; }
+.yzsv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f1f1f4; cursor: pointer; }
 .yzsv-row:last-child { border-bottom: 0; }
-.yzsv-row small, .yzsv-note { display: block; color: #8b8b8b; font-size: 11px; line-height: 1.5; margin-top: 3px; }
-.yzsv-input { width: 100%; box-sizing: border-box; border: 1px solid #e6e6e6; border-radius: 9px; padding: 8px 10px; font-size: 13px; background: #fafafa; color: #222; }
-.yzsv-field { margin-bottom: 10px; }
-.yzsv-field label { display: block; font-size: 12px; color: #555; margin-bottom: 5px; }
-.yzsv-spk { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; margin-bottom: 6px; }
-.yzsv-mini { border: 0; background: #f0f0f0; border-radius: 8px; padding: 7px 10px; font-size: 12px; color: #333; cursor: pointer; }
-.yzsv-mini.is-primary { background: #07c160; color: #fff; }
-.yzsv-mini.is-danger { color: #e53935; }
-.yzsv-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.yzsv-row > span:first-child { flex: 1; min-width: 0; font-size: 14px; }
+.yzsv-row small, .yzsv-note { display: block; color: #9a9aa6; font-size: 11px; line-height: 1.5; margin-top: 3px; font-weight: 400; }
+.yzsv-switch { position: relative; flex: 0 0 44px; width: 44px; height: 26px; }
+.yzsv-switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.yzsv-switch i { position: absolute; inset: 0; border-radius: 13px; background: #e2e2e8; transition: background .2s; pointer-events: none; }
+.yzsv-switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .2s; }
+.yzsv-switch input:checked + i { background: #a18cd1; }
+.yzsv-switch input:checked + i::after { transform: translateX(18px); }
+.yzsv-field { margin-bottom: 12px; }
+.yzsv-field:last-child { margin-bottom: 0; }
+.yzsv-field label { display: block; font-size: 12.5px; color: #555; margin-bottom: 6px; font-weight: 600; }
+.yzsv-input { width: 100%; box-sizing: border-box; border: 1px solid #ececf2; border-radius: 11px; padding: 9px 11px; font-size: 13px; background: #f8f8fb; color: #222; outline: none; }
+.yzsv-input:focus { border-color: #a18cd1; background: #fff; }
+.yzsv-spk { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 12px; background: #f8f8fb; margin-bottom: 8px; }
+.yzsv-spk-av { flex: 0 0 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #a18cd1, #fbc2eb); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+.yzsv-spk .yzsv-input { background: #fff; padding: 7px 9px; }
+.yzsv-spk .yzsv-input[data-spk="name"] { flex: 0 0 34%; }
+.yzsv-spk-del { flex: 0 0 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: #c9c9d3; font-size: 15px; cursor: pointer; }
+.yzsv-mini { border: 0; background: #f1f0f7; border-radius: 10px; padding: 9px 12px; font-size: 12.5px; color: #444; cursor: pointer; font-family: inherit; }
+.yzsv-mini.is-primary { background: #a18cd1; color: #fff; font-weight: 600; }
+.yzsv-mini.is-wide { width: 100%; border: 1.5px dashed #d9d4ec; background: transparent; color: #8a7bbf; }
+.yzsv-btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
 `;
         document.head.appendChild(st);
     }
@@ -515,41 +692,51 @@ export class StoryVoiceApp {
     render() {
         const s = this.sv.getSettings();
         const spk = s.speakers.length ? s.speakers : [{ name: '', voice: '' }];
+        const sw = (k, title, desc) => `<label class="yzsv-row"><span>${title}<small>${desc}</small></span><span class="yzsv-switch"><input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}><i></i></span></label>`;
+        const row = (x) => `<div class="yzsv-spk"><span class="yzsv-spk-av">${esc((x.name || '?').slice(0, 1))}</span><input class="yzsv-input" data-spk="name" placeholder="角色名" value="${esc(x.name)}"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID" value="${esc(x.voice)}"><button type="button" class="yzsv-spk-del" data-spk-del title="删除">✕</button></div>`;
+        const count = s.speakers.filter(x => x.name && x.voice).length;
         const html = `
-            <div class="wechat-app" style="background:#f2f2f7;">
-                <div class="wechat-header" style="background:#f2f2f7;">
-                    <div class="wechat-header-left"><button class="wechat-back-btn" id="yzsv-back" type="button"><i class="fa-solid fa-chevron-left"></i></button></div>
-                    <div class="wechat-header-title">正文朗读</div>
-                    <div class="wechat-header-right"></div>
+            <div class="yzsv-page">
+                <div class="yzsv-head">
+                    <button class="yzsv-back" id="yzsv-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
+                    <div class="yzsv-head-title">正文朗读</div>
                 </div>
-                <div class="wechat-content" style="background:#f2f2f7;">
-                    <div class="yzsv-app">
-                        <div class="yzsv-card">
-                            <label class="yzsv-row"><span>启用正文朗读<small>酒馆正文里，对白符号中的台词后面会出现 ▶播放 / ↻重新生成</small></span><input type="checkbox" data-k="enabled" ${s.enabled ? 'checked' : ''}></label>
-                            <label class="yzsv-row"><span>让模型标出说话人<small>写正文时在台词前加 [[角色名]]，显示时自动藏起来，按这个名字配音色；没标的句子再自动判断</small></span><input type="checkbox" data-k="markSpeaker" ${s.markSpeaker ? 'checked' : ''}></label>
-                            <label class="yzsv-row"><span>新回复自动朗读<small>角色回复生成完后，自动按顺序读出全部对白</small></span><input type="checkbox" data-k="autoPlay" ${s.autoPlay ? 'checked' : ''}></label>
-                            <label class="yzsv-row"><span>也读我的消息<small>默认只读角色的回复</small></span><input type="checkbox" data-k="readUser" ${s.readUser ? 'checked' : ''}></label>
+                <div class="yzsv-body">
+                    <div class="yzsv-hero">
+                        <div class="yzsv-hero-icon">🔊</div>
+                        <div><b>${s.enabled ? '朗读已开启' : '朗读已关闭'}</b><small>角色音色 ${count} 个 · 对白符号 ${esc(s.quotes || '未设置')}</small></div>
+                    </div>
+
+                    <div class="yzsv-sec">基础</div>
+                    <div class="yzsv-card">
+                        ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
+                        ${sw('markSpeaker', '让模型标出说话人', '写正文时在台词前加 [[角色名]]，显示时自动藏起来')}
+                        ${sw('autoPlay', '新回复自动朗读', '回复生成完后按顺序读出全部对白')}
+                        ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
+                    </div>
+
+                    <div class="yzsv-sec">对白符号 · 跳过符号</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-field"><label>对白符号（这些符号里的是台词）</label><input class="yzsv-input" data-k="quotes" value="${esc(s.quotes)}"></div>
+                        <div class="yzsv-field"><label>跳过符号（这些符号里的不读）</label><input class="yzsv-input" data-k="skips" value="${esc(s.skips)}"></div>
+                        <div class="yzsv-note">成对写，逗号分隔；开合各一个字符写在一起（「」），多字符或相同字符中间空一格（** **）。台词在引号里、译文在括号里：对白填 “”，跳过填 （）。</div>
+                    </div>
+
+                    <div class="yzsv-sec">音色</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="Fish 的 reference_id，留空用「设置 → 语音」的音色"></div>
+                        <div class="yzsv-field"><label>角色音色</label>
+                            <div id="yzsv-spk-list">${spk.map(row).join('')}</div>
+                            <button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button>
+                            <div class="yzsv-note">名字写全名或常用称呼都行（家入硝子 / 硝子 会自动对上）。识别错了就点正文里的 ↻，可以直接选人或让 AI 重新判断。</div>
                         </div>
-                        <div class="yzsv-card">
-                            <h4>对白符号 · 跳过符号</h4>
-                            <div class="yzsv-field"><label>对白符号（这些符号里的是台词）</label><input class="yzsv-input" data-k="quotes" value="${esc(s.quotes)}"></div>
-                            <div class="yzsv-field"><label>跳过符号（这些符号里的不读）</label><input class="yzsv-input" data-k="skips" value="${esc(s.skips)}"></div>
-                            <div class="yzsv-note">符号成对写，逗号分隔；开合各一个字符时写在一起（「」），多字符或相同字符之间空一格（** **）。比如台词写在引号里、译文写在括号里：对白符号填 “”，跳过符号填 （）。</div>
-                        </div>
-                        <div class="yzsv-card">
-                            <h4>音色</h4>
-                            <div class="yzsv-field"><label>默认音色（Fish 填 reference_id，留空用「设置 → 语音」里的音色）</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="例如 7f92f8afb8ec43bf81429cc1c9199cb1"></div>
-                            <label style="display:block;font-size:12px;color:#555;margin:4px 0 6px;">角色音色（名字要和模型标的说话人一致，比如 五条悟；你自己的角色也可以加一个）</label>
-                            <div id="yzsv-spk-list">${spk.map((x, i) => `<div class="yzsv-spk" data-i="${i}"><input class="yzsv-input" data-spk="name" placeholder="角色名" value="${esc(x.name)}"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID" value="${esc(x.voice)}"><button type="button" class="yzsv-mini is-danger" data-spk-del="${i}">删除</button></div>`).join('')}</div>
-                            <div class="yzsv-btns">
-                                <button type="button" class="yzsv-mini" id="yzsv-spk-add">＋ 添加角色</button>
-                                <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
-                                <button type="button" class="yzsv-mini" id="yzsv-test">试听默认音色</button>
-                                <button type="button" class="yzsv-mini" id="yzsv-clear">清除语音缓存</button>
-                            </div>
-                            <div class="yzsv-note">引擎、API 地址和 Key 用的是小手机「设置 → 语音」里的配置（选 Fish Audio 就用 Fish）。每句语音生成后会缓存，再点播放不重复扣费；点 ↻ 才会重新生成。</div>
+                        <div class="yzsv-btns">
+                            <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
+                            <button type="button" class="yzsv-mini" id="yzsv-test">试听</button>
+                            <button type="button" class="yzsv-mini" id="yzsv-clear">清缓存</button>
                         </div>
                     </div>
+                    <div class="yzsv-note" style="margin:0 6px;">引擎、API 地址和 Key 用的是小手机「设置 → 语音」里的配置。每句语音生成后会缓存，再点 ▶ 不会重复扣费。</div>
                 </div>
             </div>`;
         this.phoneShell.setContent(html, 'story-voice');
@@ -586,7 +773,11 @@ export class StoryVoiceApp {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();
             else window.dispatchEvent(new CustomEvent('phone:goHome'));
         });
-        root.querySelectorAll('input[type=checkbox][data-k]').forEach(cb => cb.addEventListener('change', () => this.sv.saveSettings(this._collect())));
+        root.querySelectorAll('input[type=checkbox][data-k]').forEach(cb => cb.addEventListener('change', () => {
+            const s = this.sv.saveSettings(this._collect());
+            const hero = root.querySelector('.yzsv-hero b');
+            if (hero) hero.textContent = s.enabled ? '朗读已开启' : '朗读已关闭';
+        }));
         root.querySelector('#yzsv-save')?.addEventListener('click', () => {
             const s = this.sv.saveSettings(this._collect());
             toast('已保存', `对白符号 ${s.quotes || '（空）'}，角色音色 ${s.speakers.length} 个`, '✅');
@@ -598,11 +789,18 @@ export class StoryVoiceApp {
         root.querySelector('#yzsv-spk-add')?.addEventListener('click', () => {
             const list = root.querySelector('#yzsv-spk-list');
             if (!list) return;
-            list.insertAdjacentHTML('beforeend', '<div class="yzsv-spk"><input class="yzsv-input" data-spk="name" placeholder="角色名"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID"><button type="button" class="yzsv-mini is-danger" data-spk-del>删除</button></div>');
+            list.insertAdjacentHTML('beforeend', '<div class="yzsv-spk"><span class="yzsv-spk-av">?</span><input class="yzsv-input" data-spk="name" placeholder="角色名"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID"><button type="button" class="yzsv-spk-del" data-spk-del title="删除">✕</button></div>');
             bindDel(list.lastElementChild.querySelector('[data-spk-del]'));
+            bindName(list.lastElementChild.querySelector('[data-spk="name"]'));
             list.lastElementChild.querySelector('input')?.focus();
         });
+        const bindName = (input) => input?.addEventListener('input', () => {
+            const av = input.closest('.yzsv-spk')?.querySelector('.yzsv-spk-av');
+            if (av) av.textContent = (input.value.trim() || '?').slice(0, 1);
+        });
         root.querySelectorAll('[data-spk-del]').forEach(bindDel);
+        root.querySelectorAll('[data-spk="name"]').forEach(bindName);
+        root.querySelectorAll('input.yzsv-input[data-k]').forEach(inp => inp.addEventListener('change', () => this.sv.saveSettings(this._collect())));
         root.querySelector('#yzsv-test')?.addEventListener('click', async () => {
             const s = this.sv.saveSettings(this._collect());
             try {
