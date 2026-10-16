@@ -10,14 +10,14 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m6';
+import { ChatView } from './chat-view.js?v=20261021-m7';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261020-m2';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
 import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261020-m2';
-import { renderAliasChips, bindAliasChips, setAliasFixed } from './alias-chips.js?v=20261021-a2';
+import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
 import { formatWechatChatListTime } from './chat-list-time.js?v=20260717-wechat-list-time';
@@ -292,6 +292,10 @@ export class WechatApp {
                         <div class="wce-label">别名<small>正文里对我的其他叫法；点一下可以改，× 删除。酒馆里的用户名也会自动比对</small></div>
                         <div data-myvoice-alias-wrap>${renderAliasChips({ key: 'my-alias', fixed: String(info.realName || '').trim(), fixedLabel: '真实姓名', fixedEmpty: '先在上面填真实姓名', aliases: info.voiceAliases || [], placeholder: '添加别名，例如：小七' })}</div>
                     </div>
+                    <div class="wce-field">
+                        <div class="wce-label">名字读音<small>正文朗读时把名字换成这个读音再念，比如「九月七 → くがつなな」</small></div>
+                        ${renderReadingPairs({ key: 'my-reading', readings: info.nameReadings || [] })}
+                    </div>
                 </div>`;
     }
 
@@ -327,7 +331,12 @@ export class WechatApp {
             try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
             this.phoneShell?.showNotification?.('已保存', '我的音色已更新', '✅');
         };
-        panel.querySelectorAll('select, input[data-myvoice-voice]').forEach(el => el.addEventListener('change', save));
+        panel.querySelectorAll('select[data-myvoice], input[data-myvoice-voice]').forEach(el => el.addEventListener('change', save));
+        bindReadingPairs(panel.querySelector('[data-yzrd="my-reading"]'), (nameReadings) => {
+            this.wechatData.updateUserInfo({ nameReadings });
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.wechatData;
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
+        });
         bindAliasChips(panel.querySelector('[data-yzac="my-alias"]'), (voiceAliases) => {
             this.wechatData.updateUserInfo({ voiceAliases });
             if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.wechatData;

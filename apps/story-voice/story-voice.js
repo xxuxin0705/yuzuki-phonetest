@@ -72,6 +72,21 @@ function findRanges(text, pairs, maxLen = 1200) {
     return ranges.sort((a, b) => a.start - b.start || b.end - a.end);
 }
 
+function encodeWav(pcm, rate) {
+    const buf = new ArrayBuffer(44 + pcm.length * 2);
+    const v = new DataView(buf);
+    const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) {
+        const x = Math.max(-1, Math.min(1, pcm[i]));
+        v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+}
+
 export class StoryVoice {
     constructor({ storage, ttsManager, phoneShell } = {}) {
         this.storage = storage;
@@ -168,24 +183,62 @@ export class StoryVoice {
     }
 
     // ↻：先让 AI 快速判断这句是谁说的，再按那个人的音色重新生成
-    async _regen(bar, btn) {
-        if (btn.classList.contains('is-busy')) return;
+    // ↻：按现在定好的说话人直接重新生成（不再让 AI 判断），生成好自动播放；
+    // 长按 ↻ 可以自己选这句是谁说的
+    async _regen(bar, btn, speaker = '') {
+        if (bar._regenJob) return;
         this.stop();
-        btn.classList.add('is-busy');
+        if (speaker && speaker !== bar.dataset.speaker) this._saveOverride(bar, speaker);
+        btn?.classList.add('is-busy');
         bar.classList.add('is-loading');
+        const job = (async () => {
+            const vi = await this._voiceFor(bar.dataset.speaker || '');
+            const urls = await Promise.all(splitSpeech(bar.dataset.text).map(part => this._synthRetry(part, vi, { regen: true })));
+            return this._joinAudio(urls);
+        })();
+        bar._regenJob = job;
         try {
-            const who = await this._askSpeaker(bar);
-            if (who && this._hasVoice(who)) {
-                if (who !== bar.dataset.speaker) this._toast('重新识别', `这句是：${who}`);
-                this._saveOverride(bar, who);
-            }
+            await job;
         } catch (err) {
-            console.warn('[正文朗读] AI 判断说话人失败:', err);
+            this._toast('重新生成失败', String(err?.message || err).slice(0, 120));
+            return;
         } finally {
-            btn.classList.remove('is-busy');
+            bar._regenJob = null;
+            btn?.classList.remove('is-busy');
             bar.classList.remove('is-loading');
         }
-        this.playBars([bar], { regen: true });
+        this.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
+    }
+
+    // 长按 ↻：选说话人
+    _openSpeakerPicker(bar, btn) {
+        document.querySelectorAll('.yzsv-pop').forEach(n => n.remove());
+        const names = [...new Set([...this.getSettings().speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
+        const cur = bar.dataset.speaker || '';
+        const pop = document.createElement('div');
+        pop.className = 'yzsv-pop';
+        pop.innerHTML = `
+            <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '未识别')}</span></div>
+            ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
+            <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>`;
+        document.body.appendChild(pop);
+        const r = btn.getBoundingClientRect();
+        const w = Math.min(280, window.innerWidth - 16);
+        pop.style.width = `${w}px`;
+        pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+        const below = r.bottom + 8;
+        pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 8) : below}px`;
+        const close = () => { pop.remove(); document.removeEventListener('pointerdown', outside, true); };
+        const outside = (e) => { if (!pop.contains(e.target)) close(); };
+        setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+        pop.addEventListener('click', (e) => {
+            const b = e.target.closest('button[data-name]');
+            if (!b) return;
+            e.stopPropagation();
+            close();
+            this._unlockAudio();
+            this._regen(bar, btn, b.dataset.name);
+        });
     }
 
     async _askSpeaker(bar) {
@@ -426,7 +479,7 @@ export class StoryVoice {
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
             this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
-            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新识别说话人并重新生成">↻</button>`;
+            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -482,9 +535,34 @@ export class StoryVoice {
     _bindBox(box) {
         if (box.dataset.yzsvBound === '1') return;
         box.dataset.yzsvBound = '1';
+        // 长按 ↻ 选说话人
+        let pressTimer = null;
+        const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+        box.addEventListener('pointerdown', (e) => {
+            const btn = e.target.closest('.yzsv-regen');
+            if (!btn) return;
+            cancelPress();
+            pressTimer = setTimeout(() => {
+                pressTimer = null;
+                const bar = btn.closest('.yzsv-bar');
+                if (!bar) return;
+                this._longPressAt = Date.now();
+                this._openSpeakerPicker(bar, btn);
+            }, 500);
+        }, true);
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => box.addEventListener(t, cancelPress, true));
+        box.addEventListener('contextmenu', (e) => {
+            const btn = e.target.closest('.yzsv-regen');
+            if (!btn) return;
+            e.preventDefault();
+            cancelPress();
+            const bar = btn.closest('.yzsv-bar');
+            if (bar && Date.now() - (this._longPressAt || 0) > 600) { this._longPressAt = Date.now(); this._openSpeakerPicker(bar, btn); }
+        }, true);
         box.addEventListener('click', (e) => {
             const btn = e.target.closest('.yzsv-btn');
             if (!btn) return;
+            if (btn.classList.contains('yzsv-regen') && Date.now() - (this._longPressAt || 0) < 700) { e.preventDefault(); e.stopPropagation(); return; }
             e.preventDefault();
             e.stopPropagation();
             this._unlockAudio();
@@ -496,6 +574,7 @@ export class StoryVoice {
             const bar = btn.closest('.yzsv-bar');
             if (!bar) return;
             if (btn.classList.contains('yzsv-regen')) { this._regen(bar, btn); return; }
+            if (bar._regenJob) { this._toast('正在重新生成', '生成好会自动播放'); return; }
             this.playBars([bar], { trigger: btn });
         }, true);
     }
@@ -731,6 +810,7 @@ export class StoryVoice {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
         const vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
         const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
+        text = this._applyReadings(text);
         const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
         this._inflight = this._inflight || new Map();
@@ -741,19 +821,54 @@ export class StoryVoice {
     }
 
     async _synthNow(key, text, vi, signal) {
-        const old = this.cache.get(key);
+        this._gen = this._gen || new Map();
+        const token = (this._gen.get(key) || 0) + 1;
+        this._gen.set(key, token);
         const opts = { voice: vi.voice || undefined, signal };
         if (vi.provider) opts.provider = vi.provider;
         if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
         const url = await this.tts.requestTTS(text, opts);
-        if (old && old !== url) { try { URL.revokeObjectURL(old); } catch (e) { /* 忽略 */ } }
+        // 晚回来的旧请求不能盖掉新生成的语音
+        if (this._gen.get(key) !== token) return this.cache.get(key) || url;
+        const old = this.cache.get(key);
         this.cache.set(key, url);
-        if (this.cache.size > 120) {
+        if (old && old !== url) this._safeRevoke(old);
+        if (this.cache.size > 300) {
             const first = this.cache.keys().next().value;
-            try { URL.revokeObjectURL(this.cache.get(first)); } catch (e) { /* 忽略 */ }
+            this._safeRevoke(this.cache.get(first));
             this.cache.delete(first);
         }
         return url;
+    }
+
+    // 正在播的音频不能回收，否则会播到一半断掉
+    _safeRevoke(url) {
+        if (!url) return;
+        const playingNow = () => { try { return this.audio.src === url && !this.audio.paused; } catch (e) { return false; } };
+        const go = () => { if (playingNow()) { setTimeout(go, 30000); return; } try { URL.revokeObjectURL(url); } catch (e) { /* 忽略 */ } };
+        setTimeout(go, 30000);
+    }
+
+    // 名字读音：微信联系人 / 我的音色里填的「写法 → 读音」，合成前替换
+    _readingRules() {
+        const data = this._wx();
+        const rules = [];
+        const add = (list) => (Array.isArray(list) ? list : []).forEach(r => {
+            const t = String(r?.text || '').trim(); const rd = String(r?.reading || '').trim();
+            if (t && rd) rules.push([t, rd]);
+        });
+        try { (data?.getContacts?.() || []).forEach(c => add(c?.nameReadings)); } catch (e) { /* 忽略 */ }
+        add(data?.data?.userInfo?.nameReadings);
+        const seen = new Set();
+        return rules.filter(([t]) => !seen.has(t) && seen.add(t)).sort((a, b) => b[0].length - a[0].length);
+    }
+
+    _applyReadings(text) {
+        const rules = this._readingRules();
+        if (!rules.length) return text;
+        const re = new RegExp(rules.map(([t]) => reEsc(t)).join('|'), 'g');
+        const map = new Map(rules);
+        return String(text).replace(re, m => map.get(m) || m);
     }
 
     stop() {
@@ -838,23 +953,47 @@ export class StoryVoice {
     }
 
     // 几段 mp3 直接首尾相接成一段；不是 mp3 的就按顺序分开播
+    // 几段语音解码后拼成一段 WAV（时长准确，不会只播第一段）；解码不了就按顺序分开播
     async _joinAudio(urls) {
         if (urls.length <= 1) return urls;
         const key = urls.join('|');
         this._joined = this._joined || new Map();
         if (this._joined.has(key)) return [this._joined.get(key)];
         try {
-            const blobs = await Promise.all(urls.map(u => fetch(u).then(r => r.blob())));
-            if (!blobs.every(b => /mpeg|mp3/i.test(b.type))) return urls;
-            const url = URL.createObjectURL(new Blob(blobs, { type: 'audio/mpeg' }));
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return urls;
+            this._decoder = this._decoder || new Ctx();
+            const bufs = [];
+            for (const u of urls) {
+                const ab = await (await fetch(u)).arrayBuffer();
+                bufs.push(await new Promise((res, rej) => {
+                    const p = this._decoder.decodeAudioData(ab, res, rej);
+                    if (p && p.then) p.then(res, rej);
+                }));
+            }
+            const rate = bufs[0].sampleRate;
+            const gap = Math.round(rate * 0.12);
+            const total = bufs.reduce((n, b) => n + b.length, 0) + gap * (bufs.length - 1);
+            const pcm = new Float32Array(total);
+            let at = 0;
+            bufs.forEach((b, i) => {
+                const ch0 = b.getChannelData(0);
+                if (b.numberOfChannels > 1) {
+                    const ch1 = b.getChannelData(1);
+                    for (let k = 0; k < b.length; k++) pcm[at + k] = (ch0[k] + ch1[k]) / 2;
+                } else pcm.set(ch0, at);
+                at += b.length + (i < bufs.length - 1 ? gap : 0);
+            });
+            const url = URL.createObjectURL(encodeWav(pcm, rate));
             this._joined.set(key, url);
-            if (this._joined.size > 60) {
+            if (this._joined.size > 80) {
                 const first = this._joined.keys().next().value;
-                try { URL.revokeObjectURL(this._joined.get(first)); } catch (e) { /* 忽略 */ }
+                this._safeRevoke(this._joined.get(first));
                 this._joined.delete(first);
             }
             return [url];
         } catch (e) {
+            console.warn('[正文朗读] 拼接失败，改为分段播放:', e);
             return urls;
         }
     }
@@ -908,6 +1047,7 @@ export class StoryVoice {
 .yzsv-btn { border: 1px solid rgba(255,255,255,.18); background: rgba(127,127,127,.16); color: inherit; opacity: .8; border-radius: 999px; padding: 0 8px; min-width: 26px; height: 22px; font-size: .75em; line-height: 20px; cursor: pointer; font-family: inherit; }
 .yzsv-btn:hover { opacity: 1; }
 .yzsv-regen { padding: 1px 7px; }
+.yzsv-btn { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
 .yzsv-regen.is-busy { animation: yzsv-spin .8s linear infinite; opacity: .8; pointer-events: none; }
 @keyframes yzsv-spin { to { transform: rotate(360deg); } }
 .yzsv-bar.is-loading .yzsv-play { opacity: .5; }

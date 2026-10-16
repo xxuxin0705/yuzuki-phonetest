@@ -28,6 +28,13 @@ function injectStyle() {
 .yzac-add input { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 10px; border: 1px solid #ececec; border-radius: 9px; background: rgba(255,255,255,.9); font-size: 12.5px; color: #222; outline: none; }
 .yzac-add input:focus { border-color: #9cc3f5; }
 .yzac-add button { flex: 0 0 auto; height: 32px; padding: 0 14px; border: 0; border-radius: 9px; background: #07c160; color: #fff; font-size: 12.5px; cursor: pointer; }
+.yzrd { display: flex; flex-direction: column; gap: 6px; }
+.yzrd-row { display: flex; align-items: center; gap: 6px; }
+.yzrd-row input { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 9px; border: 1px solid #ececec; border-radius: 9px; background: rgba(255,255,255,.9); font-size: 12.5px; color: #222; outline: none; }
+.yzrd-row input:focus { border-color: #9cc3f5; }
+.yzrd-row i { font-style: normal; color: #aaa; flex: 0 0 auto; font-size: 12px; }
+.yzrd-del { flex: 0 0 24px; height: 24px; border: 0; border-radius: 50%; background: rgba(0,0,0,.06); color: #6a7d92; font-size: 14px; line-height: 24px; padding: 0; cursor: pointer; }
+.yzrd-add { align-self: flex-start; height: 30px; padding: 0 12px; border: 1px dashed #b9d7f5; border-radius: 9px; background: transparent; color: #2b6cb0; font-size: 12.5px; cursor: pointer; }
 `;
     document.head.appendChild(st);
 }
@@ -121,4 +128,48 @@ export function setAliasFixed(root, name, { label = '真实姓名', empty = '' }
     chip.className = n ? 'yzac-chip is-fixed' : 'yzac-chip is-empty';
     chip.innerHTML = n ? `<span class="yzac-text">${esc(n)}</span><em>${esc(label)}</em>` : esc(empty);
     list.prepend(chip);
+}
+
+// ---------- 名字读音：正文朗读合成前，把「写法」换成「读音」（比如 悟 → さとる） ----------
+export function normalizeReadings(value) {
+    const list = Array.isArray(value) ? value : [];
+    const seen = new Set();
+    return list.map(x => ({ text: String(x?.text || '').trim(), reading: String(x?.reading || '').trim() }))
+        .filter(x => x.text && x.reading && !seen.has(x.text) && seen.add(x.text));
+}
+
+const readingRow = (r = {}) => `<div class="yzrd-row"><input type="text" data-rd="text" placeholder="正文里的写法" value="${esc(r.text || '')}"><i>读作</i><input type="text" data-rd="reading" placeholder="日语读音（假名）" value="${esc(r.reading || '')}"><button type="button" class="yzrd-del" title="删除">×</button></div>`;
+
+export function renderReadingPairs({ key = 'readings', readings = [] } = {}) {
+    injectStyle();
+    const list = normalizeReadings(readings);
+    return `<div class="yzrd" data-yzrd="${esc(key)}">${list.map(readingRow).join('')}<button type="button" class="yzrd-add">＋ 添加读音</button></div>`;
+}
+
+export function bindReadingPairs(root, onChange) {
+    if (!root || root.__yzrdBound) return;
+    root.__yzrdBound = true;
+    const read = () => normalizeReadings(Array.from(root.querySelectorAll('.yzrd-row')).map(row => ({
+        text: row.querySelector('[data-rd="text"]')?.value,
+        reading: row.querySelector('[data-rd="reading"]')?.value
+    })));
+    let last = JSON.stringify(read());
+    const emit = () => {
+        const list = read();
+        const sig = JSON.stringify(list);
+        if (sig === last) return;
+        last = sig;
+        try { onChange?.(list); } catch (e) { console.warn('[读音] 保存失败', e); }
+    };
+    root.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (e.target.closest('.yzrd-add')) {
+            e.target.closest('.yzrd-add').insertAdjacentHTML('beforebegin', readingRow());
+            root.querySelector('.yzrd-row:last-of-type [data-rd="text"]')?.focus();
+            return;
+        }
+        const del = e.target.closest('.yzrd-del');
+        if (del) { del.closest('.yzrd-row')?.remove(); emit(); }
+    });
+    root.addEventListener('change', (e) => { e.stopPropagation(); emit(); });
 }

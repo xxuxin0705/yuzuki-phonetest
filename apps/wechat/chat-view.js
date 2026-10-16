@@ -16,7 +16,7 @@ import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, com
 import { startCallTimer } from '../../config/call-timer.js';
 import { ImageCropper } from '../settings/image-cropper.js';
 import { captureWechatChatSnapshot } from './chat-snapshot.js';
-import { renderAliasChips, bindAliasChips } from './alias-chips.js?v=20261021-a2';
+import { renderAliasChips, bindAliasChips, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { applyPhoneTagFilter } from '../../config/tag-filter.js';
 import { readPhoneContextLimit } from '../../config/context-settings.js';
 import {
@@ -20306,6 +20306,10 @@ ${callTranscript}`;
                     <div class="wce-label">别名<small>正文朗读靠名字找音色：真实姓名默认就会比对；正文里对 TA 还有别的叫法就加在这里，点一下可以改，× 删除</small></div>
                     ${renderAliasChips({ key: 'contact-alias', fixed: String(contact.realName || contact.name || '').trim(), fixedLabel: contact.realName ? '真实姓名' : '名字', aliases: contact.voiceAliases || [], placeholder: '添加别名，例如：硝子' })}
                 </div>
+                <div class="wce-field">
+                    <div class="wce-label">名字读音<small>正文朗读时把名字换成这个读音再念，比如「悟 → さとる」「硝子 → しょうこ」。对所有台词都生效</small></div>
+                    ${renderReadingPairs({ key: 'contact-reading', readings: contact.nameReadings || [] })}
+                </div>
                 <div class="wce-hint">改完自动保存；微信语音和正文朗读都会用新音色，点播放就会按新音色重新生成。</div>
             </section>
             <section class="wechat-detail-card wce-card" data-collapse-key="contact-ref" data-contact-id="${this._escapeAttr(id)}">
@@ -20360,6 +20364,13 @@ ${callTranscript}`;
             persist();
             try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
         }, { fixed: String(contact.realName || contact.name || '').trim() });
+
+        // 名字读音
+        bindReadingPairs(cards.map(c => c.querySelector('[data-yzrd="contact-reading"]')).find(Boolean), (nameReadings) => {
+            data.updateContact(id, { nameReadings });
+            persist();
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
+        });
 
         // 专属音色
         const currentProvider = cv?._getCurrentTtsProvider?.() || String(this.app.storage?.get?.('phone-tts-provider') || 'minimax_cn');
@@ -20569,7 +20580,7 @@ ${callTranscript}`;
             try { this.app.wechatData.storage?.set?.('wechat_settings_order_v1', JSON.stringify(map), false); } catch (e) { /* 忽略 */ }
         };
 
-        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
+        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .yzrd, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
         let timer = null, dragging = null, startX = 0, startY = 0, lastY = 0, moved = false, suppressClick = false, rafId = 0;
         const cancelTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
         const autoScroll = () => {
