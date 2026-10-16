@@ -1474,7 +1474,7 @@ if (window.GGP_Loaded) {
             import('./config/api-manager.js?v=20261009-unified-sse-parser'),
             import('./config/time-manager.js'),    // 👈 取消懒加载
         import('./config/prompt-manager.js?v=20261002-x-follower-sync'),  // 👈 取消懒加载
-            import('./config/tts-manager.js?v=20261021-tts-emo'),
+            import('./config/tts-manager.js?v=20261021-tts-mdl'),
         import('./config/image-generation-manager.js?v=20261006-nai-queue-lock-retry'),
             import('./config/worldbook-manager.js')
         ]);
@@ -1499,7 +1499,7 @@ if (window.GGP_Loaded) {
         promptManager = new PromptManager(storage);
         ttsManager = new TtsManager(storage);
         // 🔊 正文朗读：酒馆正文里对白符号中的台词挂上播放按钮（用小手机的 TTS 配置）
-        import('./apps/story-voice/story-voice.js?v=20261021-sv32')
+        import('./apps/story-voice/story-voice.js?v=20261021-sv34')
             .then(module => module.installStoryVoice({ storage, ttsManager, phoneShell }))
             .catch(error => console.warn('⚠️ 正文朗读模块加载失败:', error));
         imageGenerationManager = new ImageGenerationManager(storage);
@@ -11610,7 +11610,7 @@ if (window.GGP_Loaded) {
                             phoneShell?.showNotification('错误', '日历模块加载失败', '❌');
                         });
                 } else if (appId === 'storyvoice') {
-                    import('./apps/story-voice/story-voice.js?v=20261021-sv32')
+                    import('./apps/story-voice/story-voice.js?v=20261021-sv34')
                         .then(module => {
                             const sv = module.installStoryVoice({ storage, ttsManager, phoneShell });
                             sv.phoneShell = phoneShell;

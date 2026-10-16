@@ -185,7 +185,8 @@ export class TtsManager {
         }
         const scopedModel = this._getStoredProviderValue(provider, 'model');
         const legacyModel = this._getStoredProviderValue(provider, 'model', 'phone-tts-model');
-        const model = scopedModel || (provider === 'volcengine' ? defaults.model : legacyModel) || defaults.model || '';
+        // 正文朗读可以给自己指定模型（不改小手机语音设置里的）
+        const model = String(options.model || '').trim() || scopedModel || (provider === 'volcengine' ? defaults.model : legacyModel) || defaults.model || '';
         const globalVoice = this._getStoredProviderValue(provider, 'voice', 'phone-tts-voice') || defaults.voice || '';
         const voice = String(options.voice || globalVoice || '').trim();
         const appId = this._getStoredProviderValue(provider, 'app-id', 'phone-tts-volc-app-id');

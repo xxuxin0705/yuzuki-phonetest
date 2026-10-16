@@ -247,7 +247,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b> <small class="yzsv-ed-nsfw" ${curTone === '亲密' ? '' : 'hidden'}>NSFW</small>
                 <div class="yzsv-ed-amb">🎬 这一楼的情节<select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === curTone ? 'selected' : ''}>${x ? (x === '亲密' ? '亲密（NSFW）' : x) : '没判断'}</option>`).join('')}</select>${analyzed && !single ? `<input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向" style="flex:1;min-width:0;border:1px solid #e3e3ea;border-radius:9px;padding:5px 8px;font-size:13px;background:#f8f8fb;">` : ''}</div>
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
-                ${(() => { const m = sv._modelOf('fish'); const prov = String(sv.storage?.get?.('phone-tts-provider') || ''); return prov === 'fish' && /drama/i.test(m) ? `<div class="yzsv-ed-warn">⚠ 现在的 Fish 模型是 ${esc(m)}：它不认 [方括号] 标签，情绪、声音标签都会被去掉，只有叠字、语气词、标点有用。想用标签请在「设置 → 语音」把模型换成 s2.1-pro / s2-pro。</div>` : ''; })()}
+                ${(() => { const m = sv._modelOf('fish'); const prov = sv._storyProvider(); return prov === 'fish' && /drama/i.test(m) ? `<div class="yzsv-ed-warn">⚠ 现在的 Fish 模型是 ${esc(m)}：它不认 [方括号] 标签，情绪、声音标签都会被去掉，只有叠字、语气词、标点有用。想用标签请在「朗读」App 的语音渠道里把模型换成 s2.1-pro / s2-pro。</div>` : ''; })()}
                 <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。Fish 原样用这些标签，MiniMax、OpenAI、豆包、MiMo、IndexTTS 会自动换成它们认的情绪写法。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用语音接口重新生成这一句（不会再调用分析模型），生成中再点一下可以取消。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
@@ -278,6 +278,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (!r.amb) delete next.amb;
         const changed = ['role', 'pace', 't', 's', 'amb'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
         if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
+        sv.markFresh(mesid, r.line); // 改过就丢掉这句的旧语音，下次播放一定重新生成
         row._dirty = false;
         const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(r.line)}"]`);
         if (bar && r.speaker && r.speaker !== (bar.dataset.speaker || '')) sv._saveOverride(bar, r.speaker);
@@ -486,11 +487,11 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 if (!box || !log.length) return;
                 const amb = (() => { try { return sv._floorAmbience(mesid).get(String(line)) || 'none'; } catch (err) { return 'none'; } })();
                 box.hidden = false;
-                box.innerHTML = log.map(x => `<div><b>${x.cached ? '用了缓存（和上次发的一模一样，没有重新请求）' : '新生成'}</b> · ${esc(x.provider || '?')}${x.model ? ` / ${esc(x.model)}` : ''}${x.fish?.temperature ? ` · 温度 ${x.fish.temperature}` : ''}${x.extra ? ` · ${esc(JSON.stringify(x.extra))}` : ''}</div><div>实际发送：${esc(x.text)}</div>`).join('')
+                box.innerHTML = log.map(x => `<div><b>${x.cached ? '用了缓存（和上次发的一模一样，没有重新请求）' : '已清掉旧语音，重新生成'}</b> · ${esc(x.provider || '?')}${x.model ? ` / ${esc(x.model)}` : ''}${x.fish?.temperature ? ` · 温度 ${x.fish.temperature}` : ''}${x.extra ? ` · ${esc(JSON.stringify(x.extra))}` : ''}</div><div>实际发送：${esc(x.text)}</div>`).join('')
                     + `<div>环境声：${amb === 'none' ? '无' : esc(AMBIENCE_LABELS[amb] || amb)}${amb !== 'none' ? '（环境声是另外叠的，听着不对可以先在设置里关掉对比）' : ''}</div>`;
             };
             try {
-                await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
+                await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play'), regen: true }); // 面板里点生成：每次都清掉旧的重新请求
             } finally {
                 showSent();
                 if (play._run === run) {

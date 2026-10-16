@@ -57,7 +57,27 @@ export function splitTags(script = '') {
     return { lead, all, rest: m ? s.slice(m[0].length) : s };
 }
 
-const stripAll = (s) => String(s || '').replace(/\[long pause\]\s*/gi, '……').replace(/\[pause\]\s*/gi, '…').replace(TAG_RE, '').replace(/[ \t]{2,}/g, ' ').trim();
+// 不认标签的引擎：声音类标签换成真的拟声字（中文 / 日文），情绪类标签去掉
+const SOUND_TEXT = {
+    laughter: ['哈哈，', 'あはは、'], laughing: ['哈哈，', 'あはは、'], 'laughing loudly': ['哈哈哈哈，', 'あはははっ、'],
+    chuckling: ['呵呵，', 'ふふっ、'], snicker: ['哼，', 'ふっ、'], 'bitter laugh': ['呵……', 'はは……'],
+    sigh: ['唉……', 'はぁ……'], gasp: ['啊，', 'はっ、'], panting: ['哈……哈……', 'はぁ、はぁ……'], 'panting softly': ['哈……', 'はぁ……'],
+    sobbing: ['呜……', 'うぅ……'], 'crying loudly': ['呜哇……', 'うわぁ……'], 'choked up': ['呜……', 'うっ……'], sniffling: ['（吸鼻子）', 'ぐすっ……'],
+    'clear throat': ['咳，', 'こほん、'], yawning: ['哈啊……', 'ふぁ……'], groan: ['唔……', 'うぅ……'], 'moaning softly': ['嗯……', 'ん……'], moaning: ['啊……', 'あっ……']
+};
+const ONO_NEXT = /^[哈呵嘿嘻哼唉啊呜嗯唔咳あはふへうぐこんっ]/;
+const stripAll = (s) => {
+    const str = String(s || '');
+    const ja = /[\u3040-\u30ff]/.test(str);
+    return str.replace(/\[long pause\]\s*/gi, '……').replace(/\[pause\]\s*/gi, '…')
+        .replace(/\[([^\]\n]{1,40})\]\s*/g, (all, w, off) => {
+            const t = SOUND_TEXT[w.trim().toLowerCase()];
+            if (!t) return '';
+            const next = str.slice(off + all.length);
+            return ONO_NEXT.test(next) ? '' : t[ja ? 1 : 0]; // 后面已经写了拟声字就不重复
+        })
+        .replace(/（吸鼻子）/g, '').replace(/[ \t]{2,}/g, ' ').trim();
+};
 
 export function instructionEn(tags, t) {
     const words = tags.filter(x => !/^(pause|long pause)$/.test(x));
@@ -91,8 +111,9 @@ export function adaptScript({ provider = '', model = '', script = '', t = 0 } = 
         let text = String(script)
             .replace(/\[long pause\]\s*/gi, '<#1.0#>')
             .replace(/\[pause\]\s*/gi, '<#0.4#>')
-            .replace(TAG_RE, (all, w) => { const k = w.trim().toLowerCase(); return is28 && MM_SOUND[k] ? MM_SOUND[k] : ''; })
+            .replace(TAG_RE, (all, w) => { const k = w.trim().toLowerCase(); return is28 && MM_SOUND[k] ? MM_SOUND[k] : `[${w}] `; })
             .replace(/[ \t]{2,}/g, ' ').trim();
+        text = stripAll(text); // 2.8 以外：声音标签换成拟声字，情绪标签去掉（情绪交给 emotion 参数）
         const key = (lead.length ? lead : tags).join(' ');
         const emo = (MM_EMO.find(([re]) => re.test(key)) || [])[1] || '';
         return { text, opts: emo ? { minimax: { emotion: emo } } : {} };
