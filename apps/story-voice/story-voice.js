@@ -15,6 +15,7 @@ const DEFAULTS = Object.freeze({
 });
 const MARK_RE = /\[\[([^\[\]\n]{1,24})\]\][ \t]*[:：]?[ \t]*/g;
 const PROMPT_KEY = 'yzsv_speaker_mark';
+const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const reEsc = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -151,13 +152,10 @@ export class StoryVoice {
     _canonicalName(name = '') {
         const n = String(name || '').trim();
         if (!n) return '';
-        const near = (x) => x === n || (x.length >= 2 && n.length >= 2 && (x.includes(n) || n.includes(x)));
-        const list = this.getSettings().speakers.map(x => x.name).filter(Boolean);
-        const hit = list.find(x => x === n) || list.find(near);
-        if (hit) return hit;
-        const wx = this._wechatVoiceContacts();
-        const c = wx.find(x => x.aliases.includes(n)) || wx.find(x => x.aliases.some(near));
-        return c ? c.primary : '';
+        const hit = this._findAppSpeaker(n);
+        if (hit) return hit.name;
+        const wx = this._findWechatVoice(n);
+        return wx ? wx.primary : '';
     }
 
     _saveOverride(bar, name) {
@@ -231,6 +229,7 @@ export class StoryVoice {
             });
             if (ev.CHAT_CHANGED) es.on(ev.CHAT_CHANGED, () => { this.stop(); this.updatePrompt(); setTimeout(() => this.refreshAll(), 400); });
             if (ev.MESSAGE_DELETED) es.on(ev.MESSAGE_DELETED, () => this.stop());
+            if (ev.STREAM_TOKEN_RECEIVED) es.on(ev.STREAM_TOKEN_RECEIVED, () => this._onStreamToken());
             if (ev.GENERATION_ENDED) es.on(ev.GENERATION_ENDED, () => {
                 const chat = window.SillyTavern?.getContext?.()?.chat || [];
                 const id = chat.length - 1;
@@ -238,6 +237,7 @@ export class StoryVoice {
                     this.processById(id);
                     const s = this.getSettings();
                     const msg = chat[id];
+                    if (s.enabled && msg && !msg.is_system) this._prefetchMessage(id);
                     if (s.enabled && s.autoPlay && msg && !msg.is_user && !msg.is_system) this.playMessage(id);
                 }, 250);
             });
@@ -268,21 +268,9 @@ export class StoryVoice {
         }, 200);
     }
 
-    // 这个说话人有没有能用的音色（「朗读」App 登记的，或微信联系人填过音色ID）
+    // 这个说话人有没有能用的音色（「朗读」App 登记的，或微信里填过音色）
     _hasVoice(speaker = '') {
-        const sp = String(speaker || '').trim();
-        if (!sp) return false;
-        const list = this.getSettings().speakers;
-        if (list.some(x => x.name && x.voice && (x.name === sp || (sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)))))) return true;
-        const vp = window.VirtualPhone || {};
-        const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
-        try {
-            const r = data?.resolveTtsVoiceByName?.(sp, { includeChats: true });
-            if (!r?.contact) return false;
-            if (String(r.voice || '').trim()) return true;
-            const vs = r.contact.ttsVoices && typeof r.contact.ttsVoices === 'object' ? Object.values(r.contact.ttsVoices) : [];
-            return vs.some(v => String(v || '').trim()) || !!String(r.contact.ttsVoice || '').trim();
-        } catch (e) { return false; }
+        return !!(this._findAppSpeaker(speaker) || this._findWechatVoice(speaker));
     }
 
     processById(id) {
@@ -294,42 +282,12 @@ export class StoryVoice {
         box.querySelectorAll('.yzsv-bar, .yzsv-all').forEach(n => n.remove());
     }
 
-    processElement(mesEl) {
-        const box = mesEl?.querySelector?.('.mes_text');
-        if (!box) return;
-        this._clear(box);
+    // 从一段正文文字里找出台词和说话人（显示的正文、生成中的原文都用它）
+    _analyze(full, { id = -1, msg = null, useMemo = true } = {}) {
         const s = this.getSettings();
-        if (!s.enabled) return;
-        if (box.querySelector('textarea')) return; // 正在编辑
-        const id = Number(mesEl.getAttribute('mesid'));
-        const msg = window.SillyTavern?.getContext?.()?.chat?.[id];
-        if (msg?.is_system) return;
-        if (msg?.is_user && !s.readUser) return;
-
-        // 收集正文文字节点（跳过代码、按钮、其他插件的控件）
-        const nodes = [];
-        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
-            acceptNode: (n) => {
-                const p = n.parentElement;
-                if (!p || p.closest('script,style,code,pre,button,textarea,iframe,select,.yzsv-bar,.yzsv-all')) return NodeFilter.FILTER_REJECT;
-                return NodeFilter.FILTER_ACCEPT;
-            }
-        });
-        let full = '';
-        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-            const block = n.parentElement.closest('p,div,li,blockquote,h1,h2,h3,h4,h5,h6,td') || box;
-            if (nodes.length && nodes[nodes.length - 1].block !== block) full += '\n';
-            nodes.push({ node: n, start: full.length, block });
-            full += n.nodeValue;
-        }
-        if (!full.trim()) return;
-
         // 模型标的说话人 [[角色名]]：记下来，显示时藏掉
         const marks = [];
         for (const m of full.matchAll(MARK_RE)) marks.push({ start: m.index, end: m.index + m[0].length, name: m[1].trim() });
-        const removeMarks = () => {
-            [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end));
-        };
 
         const skips = findRanges(full, parsePairs(s.skips), 3000);
         const inSkip = (a, b) => skips.some(r => a >= r.start && b <= r.end);
@@ -346,7 +304,7 @@ export class StoryVoice {
             text = text.replace(/\s+/g, ' ').trim();
             return { ...r, text };
         }).filter(r => /[\p{L}\p{N}]/u.test(r.text));
-        if (!lines.length) { removeMarks(); return; }
+        if (!lines.length) return { marks, lines };
 
         const defaultSpeaker = String(msg?.name || '').trim();
         const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceAliases()].filter(Boolean))];
@@ -366,7 +324,7 @@ export class StoryVoice {
             if (mark) {
                 r.speaker = this._canonicalName(mark.name) || mark.name;
                 r.marked = true;
-                this._speakerMemo.set(`${id}:${i}:${r.text}`, r.speaker);
+                if (useMemo) this._speakerMemo.set(`${id}:${i}:${r.text}`, r.speaker);
                 if (this._speakerMemo.size > 2000) this._speakerMemo.delete(this._speakerMemo.keys().next().value);
                 prevEnd = r.end;
                 return;
@@ -399,6 +357,43 @@ export class StoryVoice {
             r.speaker = (speaker && (this._canonicalName(speaker) || speaker)) || defaultSpeaker;
             prevEnd = r.end;
         });
+        return { marks, lines };
+    }
+
+    processElement(mesEl) {
+        const box = mesEl?.querySelector?.('.mes_text');
+        if (!box) return;
+        this._clear(box);
+        const s = this.getSettings();
+        if (!s.enabled) return;
+        if (box.querySelector('textarea')) return; // 正在编辑
+        const id = Number(mesEl.getAttribute('mesid'));
+        const msg = window.SillyTavern?.getContext?.()?.chat?.[id];
+        if (msg?.is_system) return;
+        if (msg?.is_user && !s.readUser) return;
+
+        // 收集正文文字节点（跳过代码、按钮、其他插件的控件）
+        const nodes = [];
+        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
+            acceptNode: (n) => {
+                const p = n.parentElement;
+                if (!p || p.closest('script,style,code,pre,button,textarea,iframe,select,.yzsv-bar,.yzsv-all')) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        let full = '';
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const block = n.parentElement.closest('p,div,li,blockquote,h1,h2,h3,h4,h5,h6,td') || box;
+            if (nodes.length && nodes[nodes.length - 1].block !== block) full += '\n';
+            nodes.push({ node: n, start: full.length, block });
+            full += n.nodeValue;
+        }
+        if (!full.trim()) return;
+
+        const { marks, lines: found } = this._analyze(full, { id, msg });
+        let lines = found;
+        if (!lines.length) { [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end)); return; }
+
         // 记下每句的上下文，↻ 时可以让 AI 重新判断
         this._lineContext = this._lineContext || new Map();
         // 只给对得上音色的台词挂按钮（说话人在微信里没填音色ID就不显示）
@@ -466,7 +461,7 @@ export class StoryVoice {
         const quotes = parsePairs(s.quotes).map(([a, b]) => `${a}${b}`).join('、') || '「」';
         const [qa, qb] = parsePairs(s.quotes)[0] || ['「', '」'];
         const userName = String(ctx.name1 || '').trim();
-        const names = [...new Set([...s.speakers.map(x => x.name), String(ctx.name2 || '').trim(), userName].filter(Boolean))];
+        const names = [...new Set([...s.speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx.name2 || '').trim(), userName].filter(Boolean))];
         const text = [
             '【台词说话人标注】正文中每一句角色说出口的台词，在开头的对白符号前面紧贴写上说话人：[[角色名]]。',
             `对白符号：${quotes}。例：[[${names[0] || '角色名'}]]${qa}……${qb}`,
@@ -485,6 +480,7 @@ export class StoryVoice {
             if (!btn) return;
             e.preventDefault();
             e.stopPropagation();
+            this._unlockAudio();
             if (btn.classList.contains('yzsv-playall')) {
                 const mes = btn.closest('.mes');
                 this.playMessage(Number(mes?.getAttribute('mesid')), btn);
@@ -498,6 +494,115 @@ export class StoryVoice {
     }
 
     // ---------- 合成与播放 ----------
+    // 手机浏览器要求“点了才能出声”：点按钮的那一刻先用一段静音把播放器解锁，
+    // 后面不管 AI 判断、合成要多久，生成好就能直接播
+    _unlockAudio() {
+        if (this.playing) return;
+        try {
+            const a = this.audio;
+            a.src = SILENT_WAV;
+            const p = a.play();
+            if (p && p.catch) p.catch(() => {});
+        } catch (e) { /* 忽略 */ }
+    }
+
+    // ---------- 提前生成 ----------
+    _prefetchLines(items = []) {
+        if (!this.getSettings().enabled) return;
+        this._prefetchQ = this._prefetchQ || [];
+        this._prefetchSeen = this._prefetchSeen || new Set();
+        items.forEach(({ speaker, text }) => {
+            if (!text || !this._hasVoice(speaker)) return;
+            const key = `${speaker}\u0001${text}`;
+            if (this._prefetchSeen.has(key)) return;
+            this._prefetchSeen.add(key);
+            this._prefetchQ.push({ speaker, text });
+        });
+        if (this._prefetchSeen.size > 1000) this._prefetchSeen = new Set([...this._prefetchSeen].slice(-500));
+        this._pumpPrefetch();
+    }
+
+    _pumpPrefetch() {
+        this._prefetchActive = this._prefetchActive || 0;
+        while (this._prefetchActive < 3 && this._prefetchQ?.length) {
+            const job = this._prefetchQ.shift();
+            this._prefetchActive += 1;
+            (async () => {
+                try {
+                    const vi = await this._voiceFor(job.speaker);
+                    await Promise.all(splitSpeech(job.text).map(part => this._synth(part, vi)));
+                } catch (err) {
+                    console.warn('[正文朗读] 提前生成失败:', err);
+                    this._prefetchSeen?.delete(`${job.speaker}\u0001${job.text}`);
+                } finally {
+                    this._prefetchActive -= 1;
+                    this._pumpPrefetch();
+                }
+            })();
+        }
+    }
+
+    // 原文（可能带思考、<content> 标签和 HTML）→ 纯文字；生成到一半也能用
+    _rawToText(raw) {
+        let t = String(raw || '');
+        t = t.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/<think(?:ing)?>[\s\S]*$/i, '');
+        const open = t.search(/<content>/i);
+        if (open >= 0) {
+            t = t.slice(open + 9);
+            const close = t.search(/<\/content>/i);
+            if (close >= 0) t = t.slice(0, close);
+        }
+        return t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|blockquote|h[1-6])>/gi, '\n').replace(/<[^>]*>?/g, '')
+            .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+            .replace(/\*+/g, '');
+    }
+
+    // 找出已经说完（引号闭合）的台词，马上提前生成
+    _prefetchRaw(raw, id, msg) {
+        const { lines } = this._analyze(this._rawToText(raw), { id, msg });
+        this._prefetchLines(lines.map(r => ({ speaker: this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker, text: r.text })));
+    }
+
+    // 已经挂好按钮的楼层：把按钮对应的台词提前生成
+    _prefetchMessage(id) {
+        const el = document.querySelector(`#chat .mes[mesid="${id}"]`);
+        const bars = Array.from(el?.querySelectorAll('.mes_text .yzsv-bar') || []);
+        this._prefetchLines(bars.map(b => ({ speaker: b.dataset.speaker || '', text: b.dataset.text || '' })));
+    }
+
+    // 流式生成中：藏掉 [[名字]]；每句台词一说完（引号闭合）就马上开始生成语音
+    _onStreamToken() {
+        if (!this._markRaf) {
+            this._markRaf = requestAnimationFrame(() => { this._markRaf = 0; this._hideLiveMarks(); });
+        }
+        if (this._streamTimer) return;
+        this._streamTimer = setTimeout(() => {
+            this._streamTimer = null;
+            const s = this.getSettings();
+            if (!s.enabled) return;
+            const ctx = window.SillyTavern?.getContext?.();
+            const chat = ctx?.chat || [];
+            const id = chat.length - 1;
+            const msg = chat[id];
+            if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return;
+            const raw = String(msg.mes || '');
+            if (!raw) return;
+            const go = () => this._prefetchRaw(raw, id, msg);
+            if (window.VirtualPhone?.wechatApp?.wechatData || window.VirtualPhone?.cachedWechatData) go();
+            else this._getWechatData().catch(() => null).then(go);
+        }, 150);
+    }
+
+    _hideLiveMarks() {
+        const all = document.querySelectorAll('#chat .mes .mes_text');
+        const box = all[all.length - 1];
+        if (!box) return;
+        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            if (n.nodeValue && n.nodeValue.includes('[[')) n.nodeValue = n.nodeValue.replace(MARK_RE, '');
+        }
+    }
+
     // 拿到微信数据（没打开过微信时自己加载一份，和小手机共用）
     async _getWechatData() {
         const vp = window.VirtualPhone || {};
@@ -515,19 +620,46 @@ export class StoryVoice {
         }
     }
 
-    // 微信里填了音色ID的联系人：主名用真实姓名，昵称/网名/备注都算别名
+    // 按小手机的规则算出某人（联系人或“我”）当前该用的音色
+    _pickVoice(obj = {}) {
+        const globalProvider = String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn').trim() || 'minimax_cn';
+        const voices = obj.ttsVoices && typeof obj.ttsVoices === 'object' ? obj.ttsVoices : {};
+        const bound = String(obj.ttsProvider || '').trim();
+        const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
+        const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
+        if (String(voices[globalProvider] || '').trim()) return { voice: String(voices[globalProvider]).trim(), provider: globalProvider, languageBoost: lang };
+        const provider = bound || globalProvider;
+        if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang };
+        if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang };
+        if (String(obj.ttsVoice || '').trim()) return { voice: String(obj.ttsVoice).trim(), provider, languageBoost: lang };
+        return null;
+    }
+
+    _splitAliases(v) {
+        return (Array.isArray(v) ? v : String(v || '').split(/[,，、;；\n]/)).map(x => String(x || '').trim()).filter(Boolean);
+    }
+
+    // 微信里填了音色的人：联系人（真实姓名 + 自己加的可识别名字）和“我”
     _wechatVoiceContacts() {
         const vp = window.VirtualPhone || {};
         const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
+        const out = [];
         let list = [];
         try { list = data?.getContacts?.() || []; } catch (e) { list = []; }
-        return list.filter(c => {
-            const vs = c?.ttsVoices && typeof c.ttsVoices === 'object' ? Object.values(c.ttsVoices) : [];
-            return vs.some(v => String(v || '').trim()) || String(c?.ttsVoice || '').trim();
-        }).map(c => {
-            const aliases = [...new Set([c.realName, c.name, c.nickname, c.remark].map(x => String(x || '').trim()).filter(Boolean))];
-            return { primary: aliases[0] || '', aliases };
-        }).filter(x => x.primary);
+        list.forEach(c => {
+            const vi = this._pickVoice(c || {});
+            if (!vi) return;
+            const aliases = [...new Set([String(c.realName || c.name || '').trim(), ...this._splitAliases(c.voiceAliases)].filter(Boolean))];
+            if (aliases.length) out.push({ primary: aliases[0], aliases, voiceInfo: vi });
+        });
+        const me = data?.data?.userInfo;
+        const myVoice = me ? this._pickVoice(me) : null;
+        if (myVoice) {
+            const ctxName = String(window.SillyTavern?.getContext?.()?.name1 || '').trim();
+            const aliases = [...new Set([ctxName, String(me.realName || me.name || '').trim(), ...this._splitAliases(me.voiceAliases)].filter(Boolean))];
+            if (aliases.length) out.push({ primary: aliases[0], aliases, voiceInfo: myVoice, isMe: true });
+        }
+        return out;
     }
 
     _wechatVoiceNames() {
@@ -538,23 +670,33 @@ export class StoryVoice {
         return this._wechatVoiceContacts().flatMap(x => x.aliases);
     }
 
-    // 说话人 → 音色：先看「朗读」App 里登记的，再看微信联系人（私聊设置里的音色ID），最后用默认
+    _findWechatVoice(name = '') {
+        const n = String(name || '').trim();
+        if (!n) return null;
+        const list = this._wechatVoiceContacts();
+        return list.find(x => x.aliases.includes(n))
+            || list.find(x => x.aliases.some(a => a.length >= 2 && n.length >= 2 && (a.includes(n) || n.includes(a))))
+            || null;
+    }
+
+    _findAppSpeaker(name = '') {
+        const sp = String(name || '').trim();
+        if (!sp) return null;
+        const list = this.getSettings().speakers.filter(x => x.name && x.voice);
+        return list.find(x => x.name === sp)
+            || list.find(x => sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)))
+            || null;
+    }
+
+    // 说话人 → 音色：先看「朗读」App 里登记的，再看微信（联系人 / 我的音色），最后用默认
     async _voiceFor(speaker = '') {
         const s = this.getSettings();
-        const sp = String(speaker || '').trim();
-        const hit = s.speakers.find(x => x.name && x.voice && x.name === sp)
-            || s.speakers.find(x => x.name && x.voice && sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)));
-        if (hit?.voice) return { voice: hit.voice };
-        if (sp) {
-            const data = await this._getWechatData();
-            try {
-                const r = data?.resolveTtsVoiceByName?.(sp, { includeChats: true });
-                if (r?.contact && r.voice) return { voice: r.voice, provider: r.provider, languageBoost: r.languageBoost };
-                // 当前服务商没填、但别的服务商填了音色：直接用填了的那个
-                const vs = r?.contact?.ttsVoices && typeof r.contact.ttsVoices === 'object' ? r.contact.ttsVoices : {};
-                const pick = Object.entries(vs).find(([, v]) => String(v || '').trim());
-                if (r?.contact && pick) return { voice: String(pick[1]).trim(), provider: pick[0], languageBoost: r.languageBoost };
-            } catch (e) { /* 忽略 */ }
+        const hit = this._findAppSpeaker(speaker);
+        if (hit) return { voice: hit.voice };
+        if (String(speaker || '').trim()) {
+            await this._getWechatData();
+            const wx = this._findWechatVoice(speaker);
+            if (wx) return { ...wx.voiceInfo };
         }
         return { voice: s.voice || '' };
     }
@@ -566,6 +708,14 @@ export class StoryVoice {
         const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
         const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
+        this._inflight = this._inflight || new Map();
+        if (!regen && this._inflight.has(key)) return this._inflight.get(key);
+        const job = this._synthNow(key, text, vi, signal);
+        this._inflight.set(key, job);
+        try { return await job; } finally { if (this._inflight.get(key) === job) this._inflight.delete(key); }
+    }
+
+    async _synthNow(key, text, vi, signal) {
         const old = this.cache.get(key);
         const opts = { voice: vi.voice || undefined, signal };
         if (vi.provider) opts.provider = vi.provider;

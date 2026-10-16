@@ -10,13 +10,14 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m4';
+import { ChatView } from './chat-view.js?v=20261021-m6';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261020-m2';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
 import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261020-m2';
+import { renderAliasChips, bindAliasChips, setAliasFixed } from './alias-chips.js?v=20261021-a2';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
 import { formatWechatChatListTime } from './chat-list-time.js?v=20260717-wechat-list-time';
@@ -250,6 +251,99 @@ export class WechatApp {
         }
 
         return { profiles, activeId, activeProfile };
+    }
+
+
+    // “我”的音色：正文朗读里读到我说的话时用（也可以填正文里对我的其他叫法）
+    _renderMyVoiceHtml() {
+        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        const info = this.wechatData?.data?.userInfo || {};
+        const cv = this.contactsView;
+        const providers = cv?._getTtsProviderOptions?.() || [];
+        const globalProvider = cv?._getCurrentTtsProvider?.() || String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn');
+        const voices = info.ttsVoices && typeof info.ttsVoices === 'object' ? info.ttsVoices : {};
+        const bound = String(info.ttsProvider || '');
+        const active = bound || globalProvider;
+        const aliases = Array.isArray(info.voiceAliases) ? info.voiceAliases.join('，') : String(info.voiceAliases || '');
+        const activeVoice = String(voices[active] || Object.values(voices).find(v => String(v || '').trim()) || '').trim();
+        const myName = String(info.realName || info.name || '').trim();
+        return `
+                <div class="profile-function-item wx-myvoice-item" id="wx-myvoice-btn">
+                    <div class="function-icon-wrapper" style="background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3);">
+                        <i class="fa-solid fa-microphone-lines" style="color: #666;"></i>
+                    </div>
+                    <div class="function-content">
+                        <div class="function-title">我的音色</div>
+                        <div class="function-desc">${activeVoice ? `正文朗读读我的台词时使用 · ${esc(activeVoice)}` : '正文朗读读到我的台词时使用（未填写）'}</div>
+                    </div>
+                    <div class="function-arrow"><i class="fa-solid fa-chevron-right"></i></div>
+                </div>
+                <div class="wx-myvoice-panel" id="wx-myvoice-panel">
+                    <div class="wce-field">
+                        <div class="wce-label">语音服务商<small>留空跟随全局设置</small></div>
+                        <select class="wce-input" data-myvoice="provider"><option value="" ${!bound ? 'selected' : ''}>跟随全局</option>${providers.map(p => `<option value="${p.id}" ${bound === p.id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
+                    </div>
+                    ${providers.map(p => `<label class="wce-voice${p.id === active ? ' is-on' : ''}"><span>${esc(p.label)}${p.id === active ? '<i>使用中</i>' : ''}</span><input type="text" class="wce-input" data-myvoice-voice="${p.id}" placeholder="${esc(p.placeholder || '')}" value="${esc(voices[p.id] || '')}"></label>`).join('')}
+                    <div class="wce-field" style="margin-top:12px">
+                        <div class="wce-label">我的真实姓名<small>正文里怎么称呼我就填什么（比如九月七），会作为默认别名一直比对</small></div>
+                        <input type="text" class="wce-input" data-myvoice="realName" placeholder="例如：九月七" value="${esc(info.realName || '')}">
+                    </div>
+                    <div class="wce-field">
+                        <div class="wce-label">别名<small>正文里对我的其他叫法；点一下可以改，× 删除。酒馆里的用户名也会自动比对</small></div>
+                        <div data-myvoice-alias-wrap>${renderAliasChips({ key: 'my-alias', fixed: String(info.realName || '').trim(), fixedLabel: '真实姓名', fixedEmpty: '先在上面填真实姓名', aliases: info.voiceAliases || [], placeholder: '添加别名，例如：小七' })}</div>
+                    </div>
+                </div>`;
+    }
+
+    _bindMyVoice(root) {
+        const btn = root?.querySelector?.('#wx-myvoice-btn');
+        const panel = root?.querySelector?.('#wx-myvoice-panel');
+        if (!btn || !panel) return;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = !panel.classList.contains('is-open');
+            panel.classList.toggle('is-open', open);
+            btn.classList.toggle('is-open', open);
+        });
+        panel.addEventListener('click', e => e.stopPropagation());
+        const save = () => {
+            const ttsVoices = {};
+            panel.querySelectorAll('[data-myvoice-voice]').forEach(inp => { const v = String(inp.value || '').trim(); if (v) ttsVoices[inp.dataset.myvoiceVoice] = v; });
+            const ttsProvider = String(panel.querySelector('[data-myvoice="provider"]')?.value || '').trim();
+            this.wechatData.updateUserInfo({ ttsVoices, ttsProvider });
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.wechatData;
+            const globalProvider = this.contactsView?._getCurrentTtsProvider?.() || String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn');
+            const active = ttsProvider || globalProvider;
+            panel.querySelectorAll('.wce-voice').forEach(l => {
+                const on = l.querySelector('[data-myvoice-voice]')?.dataset.myvoiceVoice === active;
+                l.classList.toggle('is-on', on);
+                const tag = l.querySelector('span i');
+                if (on && !tag) l.querySelector('span')?.insertAdjacentHTML('beforeend', '<i>使用中</i>');
+                if (!on && tag) tag.remove();
+            });
+            const desc = btn.querySelector('.function-desc');
+            const shown = ttsVoices[active] || Object.values(ttsVoices)[0] || '';
+            if (desc) desc.textContent = shown ? `正文朗读读我的台词时使用 · ${shown}` : '正文朗读读到我的台词时使用（未填写）';
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
+            this.phoneShell?.showNotification?.('已保存', '我的音色已更新', '✅');
+        };
+        panel.querySelectorAll('select, input[data-myvoice-voice]').forEach(el => el.addEventListener('change', save));
+        bindAliasChips(panel.querySelector('[data-yzac="my-alias"]'), (voiceAliases) => {
+            this.wechatData.updateUserInfo({ voiceAliases });
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.wechatData;
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
+        }, { fixed: () => String(this.wechatData?.data?.userInfo?.realName || '').trim() });
+        panel.querySelector('[data-myvoice="realName"]')?.addEventListener('change', (e) => {
+            const realName = String(e.target.value || '').trim();
+            const info = this.wechatData?.data?.userInfo || {};
+            if (realName === String(info.realName || '').trim()) return;
+            const voiceAliases = (Array.isArray(info.voiceAliases) ? info.voiceAliases : []).filter(a => a !== realName);
+            this.wechatData.updateUserInfo({ realName, voiceAliases });
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = this.wechatData;
+            setAliasFixed(panel.querySelector('[data-yzac="my-alias"]'), realName, { label: '真实姓名', empty: '先在上面填真实姓名' });
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (err) { /* 忽略 */ }
+            this.phoneShell?.showNotification?.('已保存', realName ? `正文里的「${realName}」会用我的音色` : '已清空真实姓名', '✅');
+        });
     }
 
     getWechatSkin() {
@@ -3655,7 +3749,20 @@ export class WechatApp {
 .wce-label small { display: block; margin-top: 3px; color: #8b8b8b; font-size: 10px; line-height: 1.5; }
 .wce-label b { font-weight: 600; color: #576b95; margin-left: 4px; }
 .wce-textarea { width: 100%; box-sizing: border-box; min-height: 64px; padding: 8px 10px; border: 1px solid #ececec; border-radius: 10px; background: rgba(255,255,255,.9); font-size: 12.5px; line-height: 1.5; color: #222; resize: vertical; font-family: inherit; outline: none; }
-.wce-textarea:focus, .wce-voice input:focus { border-color: #9cc3f5; }
+.wce-textarea:focus, .wce-voice input:focus, .wce-input:focus { border-color: #9cc3f5; }
+.wce-input { width: 100%; box-sizing: border-box; height: 34px; padding: 0 10px; border: 1px solid #ececec; border-radius: 9px; background: rgba(255,255,255,.9); font-size: 12.5px; color: #222; outline: none; }
+.wx-myvoice-item .function-arrow i { transition: transform .2s; }
+.wx-myvoice-item.is-open .function-arrow i { transform: rotate(90deg); }
+.wx-myvoice-panel { display: none; margin: -4px 12px 10px; padding: 12px; border-radius: 14px; background: rgba(255,255,255,.72); border: 1px solid rgba(0,0,0,.05); }
+.wx-myvoice-panel.is-open { display: block; }
+.wx-myvoice-panel .wce-label { font-size: 12.5px; color: #333; font-weight: 600; margin-bottom: 6px; }
+.wx-myvoice-panel .wce-label small { display: block; font-weight: 400; color: #999; font-size: 11px; margin-top: 2px; line-height: 1.45; }
+.wx-myvoice-panel .wce-field { margin-bottom: 10px; }
+.wx-myvoice-panel select.wce-input { appearance: auto; }
+.wx-myvoice-panel .wce-voice { display: block; margin-bottom: 8px; }
+.wx-myvoice-panel .wce-voice > span { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #777; margin-bottom: 4px; }
+.wx-myvoice-panel .wce-voice > span i { font-style: normal; font-size: 10px; color: #fff; background: #07c160; border-radius: 6px; padding: 0 5px; }
+.wx-myvoice-panel .wce-voice.is-on input { border-color: #9be3bd; background: #f3fff8; }
 .wce-voice-now { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 6px; border-radius: 12px; background: linear-gradient(135deg, rgba(91,141,239,.10), rgba(161,140,209,.12)); font-size: 12px; color: #555; }
 .wce-voice-now b { font-size: 13px; color: #222; }
 .wce-voice-now em { font-style: normal; color: #4a7bd8; word-break: break-all; }
@@ -7982,6 +8089,8 @@ export class WechatApp {
                     </div>
                 </div>
 
+                ${this._renderMyVoiceHtml()}
+
                 <div class="profile-function-item" id="wechat-settings-btn">
                     <div class="function-icon-wrapper" style="background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3);">
                         <i class="fa-solid fa-gear" style="color: #666;"></i>
@@ -8100,6 +8209,7 @@ export class WechatApp {
         addClickListener('#smart-load-contacts', () => this.showLoadContactsConfirm());
         addClickListener('#edit-profile-btn', () => this.showEditProfile());
         addClickListener('#wechat-settings-btn', () => this.showSettings());
+        this._bindMyVoice(wechatRoot);
         wechatRoot?.querySelectorAll?.('[data-moments-style]').forEach(btn => btn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.setWechatSkin({ moments: btn.dataset.momentsStyle });
