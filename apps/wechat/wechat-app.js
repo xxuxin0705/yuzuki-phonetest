@@ -12,7 +12,7 @@
 // 微信APP主程序
 import { ChatView } from './chat-view.js?v=20261021-m12';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261021-m14';
+import { MomentsView } from './moments-view.js?v=20261021-m15';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
@@ -3976,6 +3976,7 @@ export class WechatApp {
 .mtx .mtx-z { display: none; }
 .mtx.is-zh .mtx-o { display: none; }
 .mtx.is-zh .mtx-z { display: inline; }
+.mc-reply { display: inline; border: 0; background: none; padding: 0 0 0 8px; margin: 0; color: #8e8e8e; font-size: .78em; line-height: inherit; cursor: pointer; white-space: nowrap; font-family: inherit; }
 .mtx-btn { display: inline; border: 0; background: none; padding: 0 0 0 6px; margin: 0; color: #576b95; font-size: .78em; line-height: inherit; cursor: pointer; white-space: nowrap; vertical-align: baseline; font-family: inherit; }
 .moment-edit-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .moment-edit-img { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; background: #f2f2f2; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #888; text-align: center; padding: 2px; box-sizing: border-box; }

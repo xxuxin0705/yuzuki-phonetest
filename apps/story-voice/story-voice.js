@@ -8,6 +8,9 @@ const DEFAULTS = Object.freeze({
     quotes: '「」, 『』, “”',
     skips: '（）, ()',
     voice: '',
+    npcMode: 'only',      // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
+    npcMale: '',
+    npcFemale: '',
     speakers: [],
     readUser: false,
     markSpeaker: true
@@ -98,6 +101,7 @@ export class StoryVoice {
         this._timers = new Map();
         this._installed = false;
         this.speakerOverrides = this._loadOverrides();
+        this._genderOf = this._loadGenders();
         this._speakerMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
     }
 
@@ -118,6 +122,39 @@ export class StoryVoice {
         this.updatePrompt();
         this.refreshAll();
         return next;
+    }
+
+    _loadGenders() {
+        try { return JSON.parse(this.storage?.get?.('phone-story-voice-genders', false) || '{}') || {}; }
+        catch (_) { return {}; }
+    }
+
+    _setGender(name, g) {
+        const n = String(name || '').trim();
+        if (!n || !['m', 'f'].includes(g)) return;
+        if (this._genderOf[n] === g) return;
+        this._genderOf[n] = g;
+        const keys = Object.keys(this._genderOf);
+        if (keys.length > 400) keys.slice(0, keys.length - 400).forEach(k => delete this._genderOf[k]);
+        try { this.storage?.set?.('phone-story-voice-genders', JSON.stringify(this._genderOf)); } catch (e) { /* 忽略 */ }
+    }
+
+    // 说话人是男是女：模型标的 [[名字/男]] → 微信联系人的性别 → 不知道
+    _genderFor(speaker = '') {
+        const n = String(speaker || '').trim();
+        if (!n) return '';
+        if (this._genderOf[n]) return this._genderOf[n];
+        const data = this._wx();
+        try {
+            const list = data?.getContacts?.() || [];
+            const near = (a) => a && (a === n || (a.length >= 2 && n.length >= 2 && (a.includes(n) || n.includes(a))));
+            const c = list.find(x => [x.realName, x.name, ...this._splitAliases(x.voiceAliases)].some(a => String(a || '').trim() === n))
+                || list.find(x => [x.realName, x.name, ...this._splitAliases(x.voiceAliases)].some(a => near(String(a || '').trim())));
+            const g = c ? String(data.getContactGender?.(c.id) || c.gender || '') : '';
+            if (g === 'male') return 'm';
+            if (g === 'female') return 'f';
+        } catch (e) { /* 忽略 */ }
+        return '';
     }
 
     _loadOverrides() {
@@ -220,6 +257,7 @@ export class StoryVoice {
         pop.innerHTML = `
             <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '未识别')}</span></div>
             ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
+            ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
@@ -232,6 +270,15 @@ export class StoryVoice {
         const outside = (e) => { if (!pop.contains(e.target)) close(); };
         setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
         pop.addEventListener('click', (e) => {
+            const gb = e.target.closest('button[data-gender]');
+            if (gb) {
+                e.stopPropagation();
+                close();
+                this._setGender(bar.dataset.speaker || '', gb.dataset.gender);
+                this._unlockAudio();
+                this._regen(bar, btn);
+                return;
+            }
             const b = e.target.closest('button[data-name]');
             if (!b) return;
             e.stopPropagation();
@@ -324,7 +371,9 @@ export class StoryVoice {
 
     // 这个说话人有没有能用的音色（「朗读」App 登记的，或微信里填过音色）
     _hasVoice(speaker = '') {
-        return !!(this._findAppSpeaker(speaker) || this._findWechatVoice(speaker));
+        if (this._findAppSpeaker(speaker) || this._findWechatVoice(speaker)) return true;
+        // 选了「没配音色的用默认 NPC 音色」：谁说的都能读
+        return this.getSettings().npcMode === 'npc' && !!String(speaker || '').trim();
     }
 
     processById(id) {
@@ -341,7 +390,15 @@ export class StoryVoice {
         const s = this.getSettings();
         // 模型标的说话人 [[角色名]]：记下来，显示时藏掉
         const marks = [];
-        for (const m of full.matchAll(MARK_RE)) marks.push({ start: m.index, end: m.index + m[0].length, name: m[1].trim() });
+        for (const m of full.matchAll(MARK_RE)) {
+            // [[名字/男]]、[[名字|女]]、[[名字（男）]] 都认：名字 + 性别
+            const raw = m[1].trim();
+            const gm = raw.match(/^(.+?)\s*(?:[\/|｜]\s*|[（(]\s*)(男|女|m|f|male|female)\s*[)）]?$/i);
+            const name = gm ? gm[1].trim() : raw;
+            const g = gm ? (/^(男|m|male)$/i.test(gm[2]) ? 'm' : 'f') : '';
+            if (g && useMemo) this._setGender(name, g);
+            marks.push({ start: m.index, end: m.index + m[0].length, name });
+        }
 
         const skips = findRanges(full, parsePairs(s.skips), 3000);
         const inSkip = (a, b) => skips.some(r => a >= r.start && b <= r.end);
@@ -530,6 +587,7 @@ export class StoryVoice {
             '【台词说话人标注】正文中每一句角色说出口的台词，在开头的对白符号前面紧贴写上说话人：[[角色名]]。',
             `对白符号：${quotes}。例：[[${names[0] || '角色名'}]]${qa}……${qb}`,
             userName ? `用户角色说的话标 [[${userName}]]。` : '',
+            s.npcMode === 'npc' ? `下面名单以外的配角、路人、NPC，在名字后面加性别：[[名字/男]] 或 [[名字/女]]（例：[[店员/女]]${qa}……${qb}）。` : '',
             names.length ? `同一角色始终用同一个名字：${names.join('、')}。` : '',
             '旁白、动作、心理描写、括号里的译文都不要标；不要解释这个标记，也不要漏标。'
         ].filter(Boolean).join('\n');
@@ -825,6 +883,11 @@ export class StoryVoice {
             await this._getWechatData();
             const wx = this._findWechatVoice(speaker);
             if (wx) return { ...wx.voiceInfo };
+            if (s.npcMode === 'npc') {
+                const g = this._genderFor(speaker);
+                if (g === 'm' && s.npcMale) return { voice: s.npcMale };
+                if (g === 'f' && s.npcFemale) return { voice: s.npcFemale };
+            }
         }
         return { voice: s.voice || '' };
     }
@@ -1129,6 +1192,9 @@ export class StoryVoice {
 .yzsv-mini { border: 0; background: #f1f0f7; border-radius: 10px; padding: 9px 12px; font-size: 12.5px; color: #444; cursor: pointer; font-family: inherit; }
 .yzsv-mini.is-primary { background: #a18cd1; color: #fff; font-weight: 600; }
 .yzsv-mini.is-wide { width: 100%; border: 1.5px dashed #d9d4ec; background: transparent; color: #8a7bbf; }
+.yzsv-seg { display: flex; gap: 6px; }
+.yzsv-seg button { flex: 1; border: 1px solid #e3e0ef; background: #f8f8fb; border-radius: 10px; padding: 8px 6px; font-size: 12px; color: #555; cursor: pointer; font-family: inherit; }
+.yzsv-seg button.is-on { border-color: #a18cd1; background: #f1ecff; color: #6b54b8; font-weight: 600; }
 .yzsv-btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
 `;
         document.head.appendChild(st);
@@ -1176,11 +1242,21 @@ export class StoryVoiceApp {
 
                     <div class="yzsv-sec">音色</div>
                     <div class="yzsv-card pad">
-                        <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="Fish 的 reference_id，留空用「设置 → 语音」的音色"></div>
+                        <div class="yzsv-field"><label>没配音色的人</label>
+                            <div class="yzsv-seg">
+                                <button type="button" data-npc="only" class="${s.npcMode !== 'npc' ? 'is-on' : ''}">不读（只读配了音色的）</button>
+                                <button type="button" data-npc="npc" class="${s.npcMode === 'npc' ? 'is-on' : ''}">用默认 NPC 音色</button>
+                            </div>
+                            <input type="hidden" data-k="npcMode" value="${s.npcMode === 'npc' ? 'npc' : 'only'}">
+                        </div>
+                        <div class="yzsv-field"><label>默认男 NPC 音色</label><input class="yzsv-input" data-k="npcMale" value="${esc(s.npcMale)}" placeholder="男性配角、路人用这个"></div>
+                        <div class="yzsv-field"><label>默认女 NPC 音色</label><input class="yzsv-input" data-k="npcFemale" value="${esc(s.npcFemale)}" placeholder="女性配角、路人用这个"></div>
+                        <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="分不出男女时用；留空用「设置 → 语音」的音色"></div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">男女怎么判断：模型标的 [[名字/男]]、微信联系人设置的性别；分不出就用默认音色。正文里长按 ↻ 也可以手动指定按男声或女声读。</div>
                         <div class="yzsv-field"><label>角色音色</label>
                             <div id="yzsv-spk-list">${spk.map(row).join('')}</div>
                             <button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button>
-                            <div class="yzsv-note">名字写全名或常用称呼都行（家入硝子 / 硝子 会自动对上）。识别错了就点正文里的 ↻，可以直接选人或让 AI 重新判断。</div>
+                            <div class="yzsv-note">名字写全名或常用称呼都行（家入硝子 / 硝子 会自动对上）。识别错了就长按正文里的 ↻ 直接选人。</div>
                         </div>
                         <div class="yzsv-btns">
                             <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
@@ -1213,6 +1289,9 @@ export class StoryVoiceApp {
             quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
             skips: String(val('skips')?.value || '').trim(),
             voice: String(val('voice')?.value || '').trim(),
+            npcMode: String(val('npcMode')?.value || 'only') === 'npc' ? 'npc' : 'only',
+            npcMale: String(val('npcMale')?.value || '').trim(),
+            npcFemale: String(val('npcFemale')?.value || '').trim(),
             speakers
         };
     }
@@ -1264,6 +1343,13 @@ export class StoryVoiceApp {
     _bind() {
         const root = this._root();
         this._fixScroll(root);
+        root.querySelectorAll('[data-npc]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-npc]').forEach(x => x.classList.toggle('is-on', x === b));
+            const h = root.querySelector('[data-k="npcMode"]');
+            if (h) h.value = b.dataset.npc;
+            this.sv.saveSettings(this._collect());
+            toast('已保存', b.dataset.npc === 'npc' ? '没配音色的人用默认 NPC 音色读' : '只读配了音色的人');
+        }));
         const toast = (t, m, i = '🔊') => this.phoneShell?.showNotification?.(t, m, i);
         root.querySelector('#yzsv-back')?.addEventListener('click', () => {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();

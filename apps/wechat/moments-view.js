@@ -194,7 +194,10 @@ export class MomentsView {
 
     // “Liked by A, B and 23 others”
     _renderInsLikesHtml(moment) {
-        const names = (Array.isArray(moment?.likeList) ? moment.likeList : []).map(n => this._displayName(n)).filter(Boolean);
+        const rawLikes = Array.isArray(moment?.likeList) ? moment.likeList : [];
+        // 我点了赞就排第一个（显示我的网名）
+        const sorted = [...rawLikes.filter(n => this._isSelfName(n)), ...rawLikes.filter(n => !this._isSelfName(n))];
+        const names = [...new Set(sorted.map(n => this._displayName(n)).filter(Boolean))];
         const total = this._insLikeTotal(moment);
         if (!total) return '';
         const fmt = (n) => n >= 10000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K` : n.toLocaleString('en-US');
@@ -336,6 +339,15 @@ export class MomentsView {
                 this.showMomentDetailPage(open.dataset.mzOpen, null);
                 return;
             }
+            const replyBtn = e.target.closest('.mc-reply');
+            if (replyBtn) {
+                const row = replyBtn.closest('.comment-row');
+                if (row) {
+                    e.stopPropagation();
+                    this.showCommentInput(row.dataset.momentId, row.dataset.author);
+                }
+                return;
+            }
             const el = e.target.closest('[data-mz-act]');
             if (!el) return;
             e.stopPropagation();
@@ -355,11 +367,7 @@ export class MomentsView {
             if (!id) return;
             if (act === 'like') return this.toggleLike(id);
             if (act === 'comment') return this.showCommentInput(id);
-            if (act === 'ai') {
-                const m = this.app.wechatData.getMoment(id);
-                this.triggerAIReaction(id, 'post', m?.text || '').catch(() => {});
-                return;
-            }
+            if (act === 'ai') return this._triggerFriendsReact(id);
             if (act === 'pin') return this.togglePinMoment(id);
             if (act === 'edit') return this.showEditMomentSheet(id);
             if (act === 'delete') return this.confirmDeleteMoment(id);
@@ -461,7 +469,15 @@ export class MomentsView {
         const trans = this._getAuthorTranslation(author);
         const mine = this._isSelfName(author);
         const norm = v => String(v || '').replace(/[\s，。！？、,.!?~～…"“”'‘’「」]/g, '');
-        const canToggle = !!zh && norm(body) !== norm(zh) && (trans.on || mine);
+        // 「译文」其实也是中文（模型偷懒没用外语写）：就别给切换按钮了，免得两边都是中文
+        const looksForeign = (v) => {
+            const t = String(v || '');
+            if (/[\u3040-\u30ff\uac00-\ud7af]/.test(t)) return true;
+            const latin = (t.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+            const han = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+            return latin > 0 && latin >= han;
+        };
+        const canToggle = !!zh && norm(body) !== norm(zh) && (trans.on || mine) && looksForeign(body);
         if (!canToggle) {
             // 没开翻译：有中文译文就直接显示中文
             return { main: this._renderEmojiText(trans.on || mine ? body : (zh || body), size), fold: '' };
@@ -666,7 +682,7 @@ export class MomentsView {
                                 <span class="comment-author">${this._escapeHtml(this._displayName(comment.name))}</span>
                                 ${comment.visibleReplyTo ? `<span class="comment-reply">回复</span><span class="comment-author">${this._escapeHtml(this._displayName(comment.visibleReplyTo))}</span>` : ''}
                                 <span class="comment-colon">：</span>
-                                ${(() => { const t = this._renderTranslatableText(comment.name, comment.text, { size: 15, inline: true }); return `<span class="comment-content">${t.main}</span>${t.fold}`; })()}
+                                ${(() => { const t = this._renderTranslatableText(comment.name, comment.text, { size: 15, inline: true }); return `<span class="comment-content">${t.main}</span>${t.fold}`; })()}${this._isSelfName(comment.name) ? '' : '<button type="button" class="mc-reply">回复</button>'}
                             </div>
                         `).join('')}
                     </div>
@@ -797,6 +813,8 @@ export class MomentsView {
         // 点击评论可以回复（包括自己的评论，方便和其他NPC互动）
         this._root().querySelectorAll('.comment-row').forEach(row => {
             row.addEventListener('click', (e) => {
+                // 只有点「回复」才回复，误触评论不再弹输入框
+                if (!e.target.closest('.mc-reply')) return;
                 e.stopPropagation();
                 e.preventDefault();
                 const momentId = row.dataset.momentId;
@@ -809,6 +827,7 @@ export class MomentsView {
         this._root().querySelector('.moments-page')?.addEventListener('click', (e) => {
             if (!e.target.closest('.inline-comment-box') &&
                 !e.target.closest('[data-mz-act="comment"]') &&
+                !e.target.closest('.mc-reply') &&
                 !e.target.closest('.action-popup') &&
                 !e.target.closest('.comment-row')) {
                 this._root().querySelectorAll('.inline-comment-box').forEach(el => el.remove());
@@ -1924,7 +1943,7 @@ export class MomentsView {
             if (act === 'comment') return this.showCommentInput(momentId);
             if (act === 'share') return this.showShareMomentSheet(momentId);
             if (act === 'ai') {
-                this.triggerAIReaction(momentId, 'post', moment?.text || '').catch(() => {});
+                this._triggerFriendsReact(momentId);
                 return;
             }
             if (act === 'pin') { this.togglePinMoment(momentId); return; }
@@ -2712,6 +2731,7 @@ export class MomentsView {
         if (newInteractionsEl) {
             newInteractionsEl.querySelectorAll('.comment-row').forEach(row => {
                 row.addEventListener('click', (e) => {
+                    if (!e.target.closest('.mc-reply')) return;
                     e.stopPropagation();
                     e.preventDefault();
                     const rowMomentId = row.dataset.momentId;
@@ -2787,6 +2807,26 @@ export class MomentsView {
         inputBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    // ✨ 好友互动：有我还没被回应的评论/回复，就让大家回应这些；没有就围绕这条动态互动
+    _triggerFriendsReact(momentId) {
+        const moment = this.app.wechatData.getMoment(momentId);
+        if (!moment) return;
+        const mine = (moment.commentList || []).filter(c => c?.pendingAI && this._isSelfName(c.name));
+        if (!mine.length) {
+            this.triggerAIReaction(momentId, 'post', moment.text || '').catch(() => {});
+            return;
+        }
+        const plain = (t) => {
+            const raw = String(t || '');
+            return /\[\s*翻译\s*[:：]/.test(raw) ? (parseWechatTranslationContent(raw).translationText || raw) : raw;
+        };
+        const text = mine.map(c => (c.replyTo ? `（回复${c.replyTo}）` : '') + plain(c.text)).join('\n');
+        const replyTo = mine[mine.length - 1].replyTo || null;
+        mine.forEach(c => { delete c.pendingAI; });
+        this.app.wechatData.saveData();
+        this.triggerAIReaction(momentId, 'comment', text, replyTo).catch(() => {});
+    }
+
     // 🌐 我的评论：对方（被回复的人，没有就是发帖人）私聊里开了「自动翻译我发出的消息」，
     //   就把评论翻成对应语言显示，「查看翻译」能看回中文原文
     _translateMyComment(moment, commentObj, replyTo = null) {
@@ -2829,7 +2869,8 @@ export class MomentsView {
         const myComment = {
             name: userInfo.name,
             text: comment,
-            replyTo: this.currentReplyTo || null
+            replyTo: this.currentReplyTo || null,
+            pendingAI: true
         };
         moment.commentList.push(myComment);
         this._translateMyComment(moment, myComment, this.currentReplyTo || null);
@@ -2848,8 +2889,8 @@ export class MomentsView {
         // 刷新界面
         this._rerender();
 
-        // 触发AI回复
-        this.triggerAIReaction(momentId, 'comment', comment, replyTo);
+        // 不自动召唤好友互动：可以连发几条、发错了还能删改，想要大家回应时再点 ✨（好友互动）
+        void momentId; void replyTo;
     }
 
     // 🔥 提交评论
@@ -2869,7 +2910,8 @@ export class MomentsView {
         const myComment = {
             name: userInfo.name,
             text: comment,
-            replyTo: this.currentReplyTo || null
+            replyTo: this.currentReplyTo || null,
+            pendingAI: true
         };
         moment.commentList.push(myComment);
         this._translateMyComment(moment, myComment, this.currentReplyTo || null);
@@ -2891,8 +2933,8 @@ export class MomentsView {
         // 刷新界面
         this.app.render();
 
-        // 触发AI回复
-        await this.triggerAIReaction(momentId, 'comment', comment, replyTo);
+        // 不自动召唤好友互动，等用户点 ✨（好友互动）
+        void momentId; void replyTo;
     }
 
     // 触发AI反应（回复评论、回赞等）
@@ -2998,7 +3040,7 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
             + this._buildMomentLanguageRule(contactNames);
 
         try {
-            this.app.phoneShell.showNotification('朋友圈', '好友围观中...', '👀');
+            this.app.phoneShell.showNotification(this._momentsLabel(), ({ line: '好友正在回应…', qq: '好友正在空间里互动…' })[this._getMomentsSkin()] || '好友正在互动…', '👀');
 
             const result = await this.callAI(prompt);
             const defaultReplyTo = actionType === 'comment' ? userInfo.name : null;
