@@ -1,10 +1,13 @@
 // 🔊 正文朗读：在酒馆正文里，把「对白符号」里的台词挂上 ▶播放 / ↻重新生成 按钮，用小手机的 TTS（Fish 等）读出来。
 // 只改页面显示，不改聊天记录；引擎、API Key 沿用小手机「设置 → 语音」里的配置。
 
-import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp1';
+import { openDeepEditor } from './deep-editor.js?v=20261021-ed2';
+import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp3';
 
 const STORE_KEY = 'phone-story-voice';
-const DEEP_KEY = 'phone-story-voice-deep';
+const DEEP_KEY = 'phone-story-voice-deep';          // 旧版本存放位置（会自动搬走）
+const DEEP_LOCAL_KEY = 'yzsv-deep-analysis-cache';    // 现在：只存浏览器本地
+const DEEP_MAX = 100;
 const STYLE_ID = 'yz-story-voice-style';
 const DEFAULTS = Object.freeze({
     enabled: true,
@@ -157,20 +160,49 @@ export class StoryVoice {
         return (h >>> 0).toString(36) + t.length.toString(36);
     }
 
+    // 分析结果只存在这台设备的浏览器本地（localStorage），不进酒馆设置、不进聊天记录；
+    // 最多留最近 DEEP_MAX 楼，超过自动删最旧的
     _deepStore() {
         if (this._deepCache) return this._deepCache;
         let obj = {};
-        try { const raw = this.storage?.get?.(DEEP_KEY, false); obj = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
+        try { const raw = localStorage.getItem(DEEP_LOCAL_KEY); obj = raw ? JSON.parse(raw) : {}; } catch (e) { obj = {}; }
+        // 旧版本存在小手机设置里的：搬过来并从设置里删掉，免得酒馆设置文件变大
+        try {
+            const old = this.storage?.get?.(DEEP_KEY, null);
+            if (old) {
+                const o = typeof old === 'string' ? JSON.parse(old) : old;
+                if (o && typeof o === 'object') obj = { ...o, ...obj };
+                this.storage?.remove?.(DEEP_KEY);
+                this._deepCache = obj;
+                this._deepWrite();
+            }
+        } catch (e) { /* 忽略 */ }
         this._deepCache = obj && typeof obj === 'object' ? obj : {};
         return this._deepCache;
+    }
+
+    _deepWrite() {
+        const store = this._deepCache || {};
+        const keys = Object.keys(store);
+        if (keys.length > DEEP_MAX) keys.sort((a, b) => (store[a].at || 0) - (store[b].at || 0)).slice(0, keys.length - DEEP_MAX).forEach(k => delete store[k]);
+        try { localStorage.setItem(DEEP_LOCAL_KEY, JSON.stringify(store)); }
+        catch (e) {
+            // 浏览器本地空间满了：只留最近一半再试
+            const ks = Object.keys(store).sort((a, b) => (store[b].at || 0) - (store[a].at || 0));
+            ks.slice(Math.ceil(ks.length / 2)).forEach(k => delete store[k]);
+            try { localStorage.setItem(DEEP_LOCAL_KEY, JSON.stringify(store)); } catch (e2) { /* 只留在内存里 */ }
+        }
     }
 
     _deepSave(hash, entry) {
         const store = this._deepStore();
         store[hash] = entry;
-        const keys = Object.keys(store);
-        if (keys.length > 80) keys.sort((a, b) => (store[a].at || 0) - (store[b].at || 0)).slice(0, keys.length - 80).forEach(k => delete store[k]);
-        try { this.storage?.set?.(DEEP_KEY, JSON.stringify(store)); } catch (e) { /* 忽略 */ }
+        this._deepWrite();
+    }
+
+    clearDeepCache() {
+        this._deepCache = {};
+        try { localStorage.removeItem(DEEP_LOCAL_KEY); } catch (e) { /* 忽略 */ }
     }
 
     // 一楼正文（<content> 里、去掉 [[标记]]）的指纹：正文改了就重新分析
@@ -546,7 +578,8 @@ export class StoryVoice {
             <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '未识别')}</span></div>
             ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
-            <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>`;
+            <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
+            ${this.getSettings().analysisMode === 'deep' && this._deepEntry(window.SillyTavern?.getContext?.()?.chat?.[Number(bar.dataset.mesid)]) ? '<div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 查看 / 修改这句的演法</button></div>' : ''}`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
@@ -558,6 +591,12 @@ export class StoryVoice {
         const outside = (e) => { if (!pop.contains(e.target)) close(); };
         setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
         pop.addEventListener('click', (e) => {
+            if (e.target.closest('button[data-edit]')) {
+                e.stopPropagation();
+                close();
+                openDeepEditor(this, Number(bar.dataset.mesid), bar.dataset.line);
+                return;
+            }
             const gb = e.target.closest('button[data-gender]');
             if (gb) {
                 e.stopPropagation();
@@ -884,7 +923,9 @@ export class StoryVoice {
                 const pending = this._deepPending(msg);
                 const err = h ? this._deepErr.get(h) : '';
                 const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(deepEntry.tone || '已分析')}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
-                deepHtml = `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || deepEntry?.arc || '')}">${label}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">${deepEntry ? '重新分析' : '分析'}</button>`}`;
+                deepHtml = deepEntry && !pending
+                    ? `<button type="button" class="yzsv-deep yzsv-deep-open" title="点开查看、修改每句的分析">${label} ›</button><button type="button" class="yzsv-btn yzsv-deep-open">查看 / 编辑</button><button type="button" class="yzsv-btn yzsv-reanalyze">重新分析</button>`
+                    : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">分析</button>`}`;
             }
             all.innerHTML = `${lines.length > 1 ? `<button type="button" class="yzsv-btn yzsv-playall">▶ 朗读本条全部对白（${lines.length} 句）</button>` : ''}${deepHtml}`;
             box.appendChild(all);
@@ -961,16 +1002,22 @@ export class StoryVoice {
             if (bar && Date.now() - (this._longPressAt || 0) > 600) { this._longPressAt = Date.now(); this._openSpeakerPicker(bar, btn); }
         }, true);
         box.addEventListener('click', (e) => {
-            const btn = e.target.closest('.yzsv-btn');
+            const btn = e.target.closest('.yzsv-btn, .yzsv-deep-open');
             if (!btn) return;
             if (btn.classList.contains('yzsv-regen') && Date.now() - (this._longPressAt || 0) < 700) { e.preventDefault(); e.stopPropagation(); return; }
             e.preventDefault();
             e.stopPropagation();
             this._unlockAudio();
+            if (btn.classList.contains('yzsv-deep-open')) {
+                openDeepEditor(this, Number(btn.closest('.mes')?.getAttribute('mesid')));
+                return;
+            }
             if (btn.classList.contains('yzsv-reanalyze')) {
                 const mes = btn.closest('.mes');
                 const mid = Number(mes?.getAttribute('mesid'));
-                const had = !!this._deepEntry(window.SillyTavern?.getContext?.()?.chat?.[mid]);
+                const ent = this._deepEntry(window.SillyTavern?.getContext?.()?.chat?.[mid]);
+                const had = !!ent;
+                if (ent && Object.values(ent.lines || {}).some(v => v?.edited) && !window.confirm('这一楼有你手动改过的演法，重新分析会覆盖掉，确定吗？')) return;
                 this._startDeep(mid, { force: had });
                 this.processById(mid);
                 return;
@@ -1345,7 +1392,7 @@ export class StoryVoice {
         let t = String(text || '');
         t = t.replace(/\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu, '').replace(/[♡♥♪♫★☆◆◇■□●○※]/g, '');
         t = t.replace(/[—―]{2,}/g, '…').replace(/(?:…|‥|\.{3,}|・{3,}){2,}/g, '……');
-        if (provider !== 'fish') return t.replace(/\[[a-z ]+\]\s*/g, '').trim();
+        if (provider !== 'fish') return t.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
         let model = '';
         try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
         return scriptForModel(t, model).trim();
@@ -1648,6 +1695,7 @@ export class StoryVoice {
 .yzsv-bar.is-loading .yzsv-play::after { content: '…'; }
 .yzsv-bar.is-playing .yzsv-play { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
 .yzsv-all { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.yzsv-deep-open.yzsv-deep { border: 0; background: transparent; color: inherit; padding: 0; cursor: pointer; font-family: inherit; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; }
 .yzsv-deep { font-size: 12px; opacity: .72; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yzsv-deep.is-busy { animation: yzsvPulse 1.2s ease-in-out infinite; }
 @keyframes yzsvPulse { 0%,100% { opacity: .45; } 50% { opacity: .9; } }
@@ -1796,7 +1844,7 @@ export class StoryVoiceApp {
                             <div class="yzsv-btns" style="margin-bottom:10px;"><button type="button" class="yzsv-mini" id="yzsv-api-test">测试连接</button></div>
                         </div>
                         <div class="yzsv-field"><label>单次分析最长等待（秒）</label><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
-                        <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果会缓存，正文没改就不会重复调用；楼层下面可以点「重新分析」。</div>
+                        <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果只存在这台设备的浏览器里（最近 100 楼，更早的自动删），正文没改就不会重复调用；「清缓存」会一起清掉；楼层下面可以点「重新分析」。</div>
                         </div>
                     </div>
 
@@ -2034,7 +2082,8 @@ export class StoryVoiceApp {
         });
         root.querySelector('#yzsv-clear')?.addEventListener('click', () => {
             this.sv.clearCache();
-            toast('已清除', '语音缓存已清空', '🧹');
+            this.sv.clearDeepCache();
+            toast('已清除', '语音缓存和深度分析结果都已清空', '🧹');
         });
     }
 }

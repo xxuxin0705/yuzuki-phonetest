@@ -5,6 +5,11 @@
 // 思路参考 MirrorTranslate 的「分析模式（声学标注规则）」。
 
 export const ACOUSTIC_TAGS = Object.freeze(['whisper', 'breathy', 'snicker', 'laughter', 'sigh', 'gasp', 'panting', 'groan', 'clear throat', 'pause', 'sobbing', 'shouting']);
+// 情绪词和更细的声音描述：Fish S2 能直接理解的英文短语（和编辑器的快捷选项一致）
+export const EMOTION_TAGS = Object.freeze(['happy', 'excited', 'proud', 'tender', 'gentle', 'coquettish', 'embarrassed', 'teasing', 'curious', 'moved', 'relieved', 'hopeful', 'sad', 'upset', 'heartbroken', 'disappointed', 'lonely', 'guilty', 'desperate', 'exhausted', 'resigned', 'nervous', 'anxious', 'scared', 'panicked', 'surprised', 'confused', 'doubtful', 'angry', 'furious', 'frustrated', 'jealous', 'disdainful', 'sarcastic', 'indifferent', 'cold', 'serious', 'determined', 'hysterical', 'lazy', 'drunk', 'smug', 'whiny', 'sleepy']);
+export const VOICE_TAGS = Object.freeze(['crying loudly', 'holding back tears', 'voice trembling', 'voice breaking', 'soft tone', 'loud', 'screaming', 'through gritted teeth', 'sniffling', 'choked up', 'chuckling', 'laughing', 'laughing loudly', 'bitter laugh', 'yawning', 'in a hurry tone', 'drawn out', 'long pause']);
+const KNOWN_TAGS = new Set([...ACOUSTIC_TAGS, ...EMOTION_TAGS, ...VOICE_TAGS]);
+
 export const PACES = Object.freeze(['very_slow', 'slow', 'normal', 'fast', 'very_fast']);
 const TONES = ['日常', '轻松', '温馨', '浪漫', '亲密', '悲伤', '紧张', '悬疑', '恐怖', '战斗', '壮阔'];
 
@@ -33,7 +38,7 @@ export const DEEP_PROMPT = [
     '3. 情绪贴合剧情（最重要）：每句的演法必须来自正文——前后文写了什么事、这个人此刻什么处境、他的性格怎么表达这种情绪。冷静克制的人崩溃时是压着的颤抖，不是大喊；嘴硬的人心软时是别扭的停顿；同一句「没事」在强撑、敷衍、安慰里演法完全不同。一楼的情绪有走向：跟着剧情升降，剧情真的转了才转，转折落在真正转的那一句，不要句句一样，也不要忽高忽低。',
     '4. tension_level（1~5 的整数）：1 平静中性；2 轻度起伏（日常的喜怒、调侃）；3 中度（着急、撩拨、认真质问、委屈、害羞）；4 强烈（愤怒斥责、哭、紧张示警、破防）；5 极端顶点（暴怒咆哮、惊叫、崩溃痛哭、生离死别）。绝大多数是 1~3，5 只给真正的顶点。',
     '5. pace：very_slow（极度悲恸、临终、贴耳隐忍）、slow（抒情、回忆、疲惫、温柔安抚、低语）、normal（不用写）、fast（着急解释、催促、斗嘴、质问）、very_fast（激烈争吵、惊慌、战斗、暴怒）。同一个人在不同场景给不同的 pace。',
-    '6. 不写情绪词，情绪落到声音上。能用的标签只有这些：[whisper] 压低耳语、[breathy] 气声、[snicker] 窃笑嗤笑、[laughter] 笑出声、[sigh] 叹气、[gasp] 倒抽气、[panting] 急喘、[groan] 低哼、[clear throat] 清嗓、[pause] 短停顿、[sobbing] 哭腔抽泣、[shouting] 喊。[angry]、[sad]、[teasing] 这类自己编的词一律不许写。常见情绪这样落：平静日常 → 不加标签；惊讶 → 一次 [gasp]；讥讽得意 → [snicker]，尾音可以 ~；疲惫无奈 → [sigh] 加 …… 落尾；犹豫欲言又止 → [pause] 加 ……；愤怒斥责 → [shouting] 或 ！，顶点用 ！！；紧张压低 → [whisper]；强忍哭 → [whisper] 加 …… 和叠字，哭出来了 → [sobbing] 加 呜/う；调侃带笑 → [laughter] 或 [snicker]；害羞 → [whisper] 加首字叠字和 ……。拿不准就不加标签，靠 tension_level 和 pace。',
+    '6. 情绪落到声音上。标签只能从下面选（照抄英文）：【情绪】happy、excited、proud、tender、gentle、coquettish（撒娇）、embarrassed、teasing、curious、moved、relieved、hopeful、sad、upset（委屈）、heartbroken（心疼）、disappointed、lonely、guilty、desperate、exhausted、resigned（无奈）、nervous、anxious、scared、panicked、surprised、confused、doubtful、angry、furious、frustrated、jealous、disdainful、sarcastic、indifferent、cold、serious、determined、hysterical、lazy、drunk；【声音】whisper（耳语）、soft tone（小声）、breathy（气声）、loud、shouting、screaming、through gritted teeth（咬牙）、voice trembling（发抖）、voice breaking（破音）、holding back tears（强忍泪）、choked up（哽咽）、sobbing（哭腔）、crying loudly（大哭）、sniffling（吸鼻子）、sigh、gasp、panting、groan、chuckling（轻笑）、laughing、laughing loudly、bitter laugh（苦笑）、snicker（冷笑）、yawning、clear throat、in a hurry tone、drawn out（拖长）、pause、long pause。用法：情绪词最多一个，放在情绪开始的地方（通常句首，句中情绪真的转了再放一个）；声音标签放在真正发出那个声音的字前面。一处最多叠两个（情绪在前、声音在后，例 [sad][voice trembling]）。列表外的词一律不许写。常见情绪这样落：平静日常 → 不加标签；惊讶 → [surprised] 或一次 [gasp]；讥讽得意 → [sarcastic] / [snicker]，尾音可以 ~；疲惫无奈 → [exhausted][sigh] 加 …… 落尾；犹豫欲言又止 → [pause] 加 ……；愤怒斥责 → [angry]，爆发用 [furious][shouting] 和 ！！；紧张压低 → [nervous][whisper]；强忍哭 → [holding back tears] 加 …… 和叠字，哭出来了 → [sobbing] 加 呜/う；调侃带笑 → [teasing][chuckling]；撒娇 → [coquettish]，尾音 ~；害羞 → [embarrassed][whisper] 加首字叠字和 ……。拿不准就不加标签，靠 tension_level 和 pace。',
     '7. 呼吸闸门：[breathy]、[panting]、[groan] 默认不用，只有正文旁白写出了对应的身体状态才用：奔跑打斗、受伤力竭 → [panting]；实质亲密接触 → [breathy]、[panting]、[groan]。紧张、害怕、害羞不是喘，用 [whisper]。',
     '8. content：这句最终要念的文字，只给需要加标签或改字的句子写；平平常常的句子不写 content。标签插在情绪真正生效的字前面，和后面的字之间空一格；一处最多叠两个（[whisper][gasp]）；长句里情绪起伏几次就插几次，不要把整句情绪压成句首一个标签。content 只能在台词原文上插标签，再加这些：叠字（我、我不是／綺、綺真，表现结巴、颤抖、哽咽，比破折号好）、！！（只给爆发的顶点）、~（挑尾）、……（停顿换气）、语气字 呜嗯唔啊哈呼（台词是日文时用 う ん あ は ふ っ ぅ ぁ）。原文的字一个都不能改、不能删、不能调换顺序，也不能加别的字；程序会逐字核对，不合格的整句退回原文。',
     '9. 高张力（4 以上）的长台词：标签一下就衰减，长句中段会塌成平读，用叠字和省略号打碎成短碎片，每 4~7 个字补一个匹配的标签。中低张力的句子绝不堆标签。',
@@ -92,7 +97,7 @@ export function acousticScript(content, original) {
     // 标签规范化
     s = s.replace(/\[([^\]\n]{1,30})\]/g, (all, w) => {
         const k = String(w).trim().toLowerCase();
-        const tag = ACOUSTIC_TAGS.includes(k) ? k : TAG_ALIAS[k];
+        const tag = KNOWN_TAGS.has(k) ? k : TAG_ALIAS[k];
         return tag ? `[${tag}]` : ' ';
     });
     // 连续超过两个标签的砍掉
@@ -165,9 +170,20 @@ export const PACE_SPEED = Object.freeze({ very_slow: 0.82, slow: 0.9, normal: 1,
 
 // S1 只认固定的 (英文) 标记；Drama 不认标签
 const S1_MAP = { whisper: '(whispering)', breathy: '(soft tone)', snicker: '(chuckling)', laughter: '(laughing)', sigh: '(sighing)', gasp: '(panting)', panting: '(panting)', groan: '(groaning)', sobbing: '(sobbing)', shouting: '(shouting)', 'clear throat': '', pause: '' };
+// S1 官方认识的 (标记)
+const S1_OFFICIAL = new Set(['happy', 'sad', 'angry', 'excited', 'calm', 'nervous', 'confident', 'surprised', 'satisfied', 'delighted', 'scared', 'worried', 'upset', 'frustrated', 'depressed', 'empathetic', 'embarrassed', 'disgusted', 'moved', 'proud', 'relaxed', 'grateful', 'curious', 'sarcastic', 'disdainful', 'unhappy', 'anxious', 'hysterical', 'indifferent', 'uncertain', 'doubtful', 'confused', 'disappointed', 'regretful', 'guilty', 'ashamed', 'jealous', 'envious', 'hopeful', 'optimistic', 'pessimistic', 'nostalgic', 'lonely', 'bored', 'contemptuous', 'sympathetic', 'compassionate', 'determined', 'resigned', 'in a hurry tone', 'shouting', 'screaming', 'whispering', 'soft tone', 'laughing', 'chuckling', 'sobbing', 'crying loudly', 'sighing', 'groaning', 'panting', 'gasping', 'yawning', 'snoring']);
+// 编辑器里的写法 → S1 最接近的标记
+const S1_NEAR = { furious: 'angry', panicked: 'scared', tender: 'soft tone', gentle: 'soft tone', coquettish: 'delighted', whiny: 'upset', teasing: 'sarcastic', smug: 'proud', heartbroken: 'sad', exhausted: 'sighing', desperate: 'hysterical', cold: 'indifferent', serious: 'confident', relieved: 'relaxed', lazy: 'relaxed', sleepy: 'yawning', drunk: 'relaxed', 'voice trembling': 'scared', 'voice breaking': 'sobbing', 'holding back tears': 'sobbing', 'choked up': 'sobbing', sniffling: 'sobbing', 'through gritted teeth': 'angry', loud: 'shouting', 'laughing loudly': 'laughing', 'bitter laugh': 'chuckling', 'drawn out': 'relaxed', 'long pause': '' };
+
 export function scriptForModel(script = '', model = '') {
     const m = String(model || '');
-    if (/drama/i.test(m)) return script.replace(/\[[a-z ]+\]\s*/g, '').trim();
-    if (/^s1\b|speech-1/i.test(m)) return script.replace(/\[([a-z ]+)\]\s*/g, (all, w) => (w === 'pause' ? '…' : (S1_MAP[w] ? `${S1_MAP[w]} ` : ''))).trim();
+    if (/drama/i.test(m)) return script.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
+    if (/^s1\b|speech-1/i.test(m)) return script.replace(/\[([^\]\n]{1,40})\]\s*/g, (all, w) => {
+        const k = String(w).trim().toLowerCase();
+        if (S1_OFFICIAL.has(k)) return `(${k}) `;
+        if (S1_NEAR[k]) return `(${S1_NEAR[k]}) `;
+        const tag = ACOUSTIC_TAGS.includes(k) ? k : TAG_ALIAS[k];
+        return tag === 'pause' ? '…' : (S1_MAP[tag] ? `${S1_MAP[tag]} ` : '');
+    }).trim();
     return script;
 }
