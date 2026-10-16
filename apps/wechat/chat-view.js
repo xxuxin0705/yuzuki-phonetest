@@ -4329,7 +4329,7 @@ renderChatRoom(chat) {
             }
 
             default:
-                // 🔥 普通文本消息（引用在气泡外下方显示）
+                // 🔥 普通文本消息（引用在气泡上方显示）
                 messageBody = this.renderTextMessageBubble(msg.content, { isGroupChat, msg });
                 break;
         }
@@ -4363,9 +4363,9 @@ renderChatRoom(chat) {
             ${!isMe ? `<div class="message-avatar">${this.app.renderAvatar(senderAvatar, '👤', senderName)}</div>` : ''}
             <div class="message-content" style="display: inline-flex; flex-direction: column; ${isMe ? 'align-items: flex-end;' : 'align-items: flex-start;'}">
                 ${senderLineHtml}
+                ${quoteHtml}
                 <div style="display: inline-block; max-width:100%;">${messageBody}</div>
                 ${reactionsHtml}
-                ${quoteHtml}
             </div>
             ${isMe ? `<div class="message-avatar">${this.app.renderAvatar(senderAvatar || userInfo.avatar, '😊', userInfo.name)}</div>` : ''}
         </div>
@@ -4850,7 +4850,7 @@ renderChatRoom(chat) {
     // ================================================================
     // 😀 消息表情回应
     // ================================================================
-    // 💬 引用块（气泡下方）：加大字号、加深对比、左侧强调条，最多显示两行
+    // 💬 引用块（气泡上方）：加大字号、加深对比、左侧强调条，最多显示两行
     //    当前聊天开了翻译时，引用内容显示译文语言那一版；没开翻译则原样显示。
     _renderQuoteBlockHtml(quote = {}) {
         const sender = String(quote?.sender || '').trim();

@@ -42,7 +42,7 @@ const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261009-payment-store-right-shift';
 const ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m8';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m9';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -8525,6 +8525,46 @@ if (window.GGP_Loaded) {
                 : [];
             const cleanUserReplyEnabled = isWechatOfflineUserReplyCleanEnabled();
 
+            // 🙋 正文里明明是我用手机发出去的话，AI 却写成别人「引用 我: …」：
+            // 先补上我发的这条，再接对方的回复（这条回复就不再挂引用）
+            try {
+                const normText = (t) => String(t || '').replace(/\s+/g, '').replace(/[。．.!！?？~～…]+$/g, '');
+                const sameFloor = (m) => m?.fromMainChatTag && data.tavernMessageIndex !== undefined && m.tavernMessageIndex === data.tavernMessageIndex;
+                const mineBefore = (existingMessages || []).filter(m => m?.from === 'me' && !sameFloor(m)).map(m => normText(m.content)).filter(Boolean);
+                const alreadySent = (text) => {
+                    const k = normText(text);
+                    if (!k) return true;
+                    return mineBefore.some(m => m === k || (k.length >= 4 && (m.includes(k) || k.includes(m))));
+                };
+                const inserted = new Set();
+                const expanded = [];
+                data.messages.forEach((msg) => {
+                    const q = msg?.quote;
+                    const fromUser = isWechatSenderCurrentUser(String(msg?.sender || ''));
+                    if (q && q.content && !fromUser && isWechatSenderCurrentUser(String(q.sender || ''))) {
+                        const key = normText(q.content);
+                        if (!inserted.has(key) && !alreadySent(q.content)) {
+                            inserted.add(key);
+                            const order = Number(msg.sourceOrder);
+                            expanded.push({
+                                time: msg.time,
+                                sender: 'me',
+                                content: String(q.content).trim(),
+                                type: 'text',
+                                userFromQuote: true,
+                                sourceOrder: Number.isFinite(order) ? order - 0.5 : undefined
+                            });
+                            expanded.push({ ...msg, quote: null });
+                            return;
+                        }
+                    }
+                    expanded.push(msg);
+                });
+                data.messages = expanded;
+            } catch (e) {
+                console.warn('⚠️ [微信] 补发用户消息失败:', e);
+            }
+
             data.messages.forEach((msg, index) => {
                 if (hasIncomingCall) {
                     const queuedLine = String(msg.content || '').trim();
@@ -8622,7 +8662,7 @@ if (window.GGP_Loaded) {
                 // 线下转线上用户发言清洗开关：
                 // 开启时丢弃 AI 伪造的用户发言；关闭时允许用户发言写入“我”。
                 if (msgSenderIsCurrentUser) {
-                    if (cleanUserReplyEnabled && !data.isHistoryReplay) {
+                    if (cleanUserReplyEnabled && !data.isHistoryReplay && !msg.userFromQuote) {
                         console.warn('⚠️ [微信] 线下转线上已清洗用户发言:', {
                             contact: data.contact,
                             sender: rawMsgSender,
