@@ -20,7 +20,7 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<'
 const reEsc = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // 长对白按标点切为短片段，避免语音服务对长输入只返回前半段。
-export function splitSpeech(text, max = 70) {
+export function splitSpeech(text, max = 120) {
     const value = String(text || '').trim();
     if (!value) return [];
     const out = [];
@@ -151,10 +151,13 @@ export class StoryVoice {
     _canonicalName(name = '') {
         const n = String(name || '').trim();
         if (!n) return '';
-        const list = [...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean);
-        return list.find(x => x === n)
-            || list.find(x => x.length >= 2 && n.length >= 2 && (x.includes(n) || n.includes(x)))
-            || '';
+        const near = (x) => x === n || (x.length >= 2 && n.length >= 2 && (x.includes(n) || n.includes(x)));
+        const list = this.getSettings().speakers.map(x => x.name).filter(Boolean);
+        const hit = list.find(x => x === n) || list.find(near);
+        if (hit) return hit;
+        const wx = this._wechatVoiceContacts();
+        const c = wx.find(x => x.aliases.includes(n)) || wx.find(x => x.aliases.some(near));
+        return c ? c.primary : '';
     }
 
     _saveOverride(bar, name) {
@@ -167,71 +170,36 @@ export class StoryVoice {
         bar.querySelector('.yzsv-play')?.setAttribute('title', `播放（${bar.dataset.speaker || '默认音色'}）`);
     }
 
-    // ↻：选说话人 / 让 AI 重新判断，然后重新生成
-    _openRegenMenu(bar, btn) {
-        document.querySelectorAll('.yzsv-pop').forEach(n => n.remove());
-        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
-        const cur = bar.dataset.speaker || '';
-        const pop = document.createElement('div');
-        pop.className = 'yzsv-pop';
-        pop.innerHTML = `
-            <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '默认音色')}</span></div>
-            <button type="button" class="yzsv-pop-ai" data-act="ai">✨ 让 AI 重新判断</button>
-            ${names.length ? `<div class="yzsv-pop-names">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty">在「朗读」App 或微信私聊的「聊天设置 → 语音音色」里填好音色后，这里可以直接选人</div>'}
-            <button type="button" class="yzsv-pop-same" data-act="same">保持「${esc(cur || '默认音色')}」，只重新生成语音</button>`;
-        document.body.appendChild(pop);
-        const r = btn.getBoundingClientRect();
-        const w = Math.min(280, window.innerWidth - 16);
-        pop.style.width = `${w}px`;
-        pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
-        const below = r.bottom + 8;
-        pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 8) : below}px`;
-        const close = () => { pop.remove(); document.removeEventListener('pointerdown', outside, true); };
-        const outside = (e) => { if (!pop.contains(e.target)) close(); };
-        setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
-        pop.addEventListener('click', async (e) => {
-            const b = e.target.closest('button');
-            if (!b) return;
-            e.stopPropagation();
-            if (b.dataset.name) {
-                close();
-                this._saveOverride(bar, b.dataset.name);
-                this.playBars([bar], { regen: true });
-                return;
+    // ↻：先让 AI 快速判断这句是谁说的，再按那个人的音色重新生成
+    async _regen(bar, btn) {
+        if (btn.classList.contains('is-busy')) return;
+        this.stop();
+        btn.classList.add('is-busy');
+        bar.classList.add('is-loading');
+        try {
+            const who = await this._askSpeaker(bar);
+            if (who && this._hasVoice(who)) {
+                if (who !== bar.dataset.speaker) this._toast('重新识别', `这句是：${who}`);
+                this._saveOverride(bar, who);
             }
-            if (b.dataset.act === 'same') {
-                close();
-                this.playBars([bar], { regen: true });
-                return;
-            }
-            if (b.dataset.act === 'ai') {
-                b.disabled = true;
-                b.textContent = '✨ AI 判断中…';
-                try {
-                    const who = await this._askSpeaker(bar);
-                    close();
-                    if (!who) { this._toast('没判断出来', '可以直接点下面的名字指定'); return; }
-                    this._saveOverride(bar, who);
-                    this._toast('重新识别', `这句判断为：${who}`);
-                    this.playBars([bar], { regen: true });
-                } catch (err) {
-                    b.disabled = false;
-                    b.textContent = '✨ 让 AI 重新判断';
-                    this._toast('AI 判断失败', String(err?.message || err).slice(0, 120));
-                }
-            }
-        });
+        } catch (err) {
+            console.warn('[正文朗读] AI 判断说话人失败:', err);
+        } finally {
+            btn.classList.remove('is-busy');
+            bar.classList.remove('is-loading');
+        }
+        this.playBars([bar], { regen: true });
     }
 
     async _askSpeaker(bar) {
         const ctx = window.SillyTavern?.getContext?.();
         const context = this._lineContext?.get(`${bar.dataset.mesid}:${bar.dataset.line}`) || `【${bar.dataset.text}】`;
-        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || ''), String(ctx?.name1 || '')].filter(Boolean))];
-        const prompt = `下面是一段小说正文，判断用【】括起来的那句台词是谁说出口的。\n只输出说话人的名字，不要解释。${names.length ? `尽量从这些名字里选：${names.join('、')}。` : ''}\n\n正文：\n${context}`;
+        const names = [...new Set([...this.getSettings().speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
+        const prompt = `【】里这句话是谁说的？只回答名字。${names.length ? `从中选：${names.join('、')}` : ''}\n${context}`;
         let out = '';
         if (typeof ctx?.generateRaw === 'function') {
-            try { out = await ctx.generateRaw({ prompt, responseLength: 30 }); }
-            catch (e) { out = await ctx.generateRaw(prompt, null, false, false, '', 30); }
+            try { out = await ctx.generateRaw({ prompt, responseLength: 12 }); }
+            catch (e) { out = await ctx.generateRaw(prompt, null, false, false, '', 12); }
         } else if (typeof ctx?.generateQuietPrompt === 'function') {
             out = await ctx.generateQuietPrompt(prompt, false, true);
         } else {
@@ -381,7 +349,7 @@ export class StoryVoice {
         if (!lines.length) { removeMarks(); return; }
 
         const defaultSpeaker = String(msg?.name || '').trim();
-        const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
+        const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceAliases()].filter(Boolean))];
         let prevEnd = 0;
         lines.forEach((r, i) => {
             r.index = i;
@@ -428,7 +396,7 @@ export class StoryVoice {
                 });
                 if (candidate) speaker = candidate;
             }
-            r.speaker = speaker || defaultSpeaker;
+            r.speaker = (speaker && (this._canonicalName(speaker) || speaker)) || defaultSpeaker;
             prevEnd = r.end;
         });
         // 记下每句的上下文，↻ 时可以让 AI 重新判断
@@ -455,7 +423,7 @@ export class StoryVoice {
             bar.dataset.manualSpeaker = override ? '1' : '0';
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
-            this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 260), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 80));
+            this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
             bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新识别说话人并重新生成">↻</button>`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
@@ -524,7 +492,7 @@ export class StoryVoice {
             }
             const bar = btn.closest('.yzsv-bar');
             if (!bar) return;
-            if (btn.classList.contains('yzsv-regen')) { this._openRegenMenu(bar, btn); return; }
+            if (btn.classList.contains('yzsv-regen')) { this._regen(bar, btn); return; }
             this.playBars([bar], { trigger: btn });
         }, true);
     }
@@ -547,8 +515,8 @@ export class StoryVoice {
         }
     }
 
-    // 微信里设置了音色的联系人名字（给 ↻ 弹窗用）
-    _wechatVoiceNames() {
+    // 微信里填了音色ID的联系人：主名用真实姓名，昵称/网名/备注都算别名
+    _wechatVoiceContacts() {
         const vp = window.VirtualPhone || {};
         const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
         let list = [];
@@ -556,7 +524,18 @@ export class StoryVoice {
         return list.filter(c => {
             const vs = c?.ttsVoices && typeof c.ttsVoices === 'object' ? Object.values(c.ttsVoices) : [];
             return vs.some(v => String(v || '').trim()) || String(c?.ttsVoice || '').trim();
-        }).map(c => String(c.remark || c.name || '').trim()).filter(Boolean);
+        }).map(c => {
+            const aliases = [...new Set([c.realName, c.name, c.nickname, c.remark].map(x => String(x || '').trim()).filter(Boolean))];
+            return { primary: aliases[0] || '', aliases };
+        }).filter(x => x.primary);
+    }
+
+    _wechatVoiceNames() {
+        return this._wechatVoiceContacts().map(x => x.primary);
+    }
+
+    _wechatVoiceAliases() {
+        return this._wechatVoiceContacts().flatMap(x => x.aliases);
     }
 
     // 说话人 → 音色：先看「朗读」App 里登记的，再看微信联系人（私聊设置里的音色ID），最后用默认
@@ -628,39 +607,41 @@ export class StoryVoice {
         const run = { bars, trigger, abort };
         this.playing = run;
         trigger?.classList.add('is-active');
-        // 把要读的内容排成一串小段，提前并行合成（同时最多 3 段），播放时下一段已经准备好，不会一卡一卡
+        // 每句台词：长句拆成几段并行合成，合成完拼成一整段再播（不会播到一半断掉）；
+        // 播这一句的时候，下一句已经在后台合成
         const queue = [];
         const voiceMemo = new Map();
         for (const bar of bars) {
             const sp = bar.dataset.speaker || '';
             if (!voiceMemo.has(sp)) voiceMemo.set(sp, await this._voiceFor(sp));
             if (this.playing !== run) return;
-            const voice = voiceMemo.get(sp);
-            splitSpeech(bar.dataset.text).forEach((part, i, arr) => queue.push({ bar, part, voice, last: i === arr.length - 1 }));
+            const parts = splitSpeech(bar.dataset.text);
+            if (parts.length) queue.push({ bar, parts, voice: voiceMemo.get(sp) });
         }
         const jobs = new Array(queue.length);
-        let started = 0;
-        const startMore = (upTo) => {
-            while (started < queue.length && started <= upTo) {
-                const q = queue[started];
-                jobs[started] = this._synth(q.part, q.voice, { regen, signal: abort.signal });
-                jobs[started].catch(() => {});
-                started += 1;
-            }
+        const start = (i) => {
+            if (i >= queue.length || jobs[i]) return;
+            const q = queue[i];
+            jobs[i] = Promise.all(q.parts.map(part => this._synthRetry(part, q.voice, { regen, signal: abort.signal })))
+                .then(urls => this._joinAudio(urls));
+            jobs[i].catch(() => {});
         };
         try {
-            startMore(2);
+            start(0); start(1);
             for (let i = 0; i < queue.length; i++) {
                 if (this.playing !== run) return;
                 const q = queue[i];
                 q.bar.classList.add('is-loading');
-                const url = await jobs[i];
-                startMore(i + 3);
+                const urls = await jobs[i];
+                start(i + 1); start(i + 2);
                 if (this.playing !== run) return;
                 q.bar.classList.remove('is-loading');
                 q.bar.classList.add('is-playing');
-                await this._playUrl(url, run);
-                if (q.last) q.bar.classList.remove('is-playing');
+                for (const url of urls) {
+                    if (this.playing !== run) return;
+                    await this._playUrl(url, run);
+                }
+                q.bar.classList.remove('is-playing');
             }
         } catch (err) {
             if (abort.signal.aborted || err?.name === 'AbortError') return;
@@ -671,21 +652,57 @@ export class StoryVoice {
         }
     }
 
-    // 播一段：等音频缓冲好再开始，结束后才进入下一段
+    // 合成失败（比如免费额度并发限制）自动再试一次
+    async _synthRetry(text, voice, opts) {
+        try { return await this._synth(text, voice, opts); }
+        catch (err) {
+            if (opts?.signal?.aborted || err?.name === 'AbortError') throw err;
+            await new Promise(r => setTimeout(r, 800));
+            return this._synth(text, voice, { ...opts, regen: true });
+        }
+    }
+
+    // 几段 mp3 直接首尾相接成一段；不是 mp3 的就按顺序分开播
+    async _joinAudio(urls) {
+        if (urls.length <= 1) return urls;
+        const key = urls.join('|');
+        this._joined = this._joined || new Map();
+        if (this._joined.has(key)) return [this._joined.get(key)];
+        try {
+            const blobs = await Promise.all(urls.map(u => fetch(u).then(r => r.blob())));
+            if (!blobs.every(b => /mpeg|mp3/i.test(b.type))) return urls;
+            const url = URL.createObjectURL(new Blob(blobs, { type: 'audio/mpeg' }));
+            this._joined.set(key, url);
+            if (this._joined.size > 60) {
+                const first = this._joined.keys().next().value;
+                try { URL.revokeObjectURL(this._joined.get(first)); } catch (e) { /* 忽略 */ }
+                this._joined.delete(first);
+            }
+            return [url];
+        } catch (e) {
+            return urls;
+        }
+    }
+
+    // 播一段，真正播完才进入下一段
     _playUrl(url, run) {
         return new Promise((resolve, reject) => {
             const a = this.audio;
-            const done = () => { cleanup(); resolve(); };
-            const fail = () => { cleanup(); reject(new Error('音频播放失败')); };
-            const cleanup = () => { a.onended = null; a.onerror = null; };
+            let finished = false;
+            const cleanup = () => { finished = true; a.onended = null; a.onerror = null; a.onpause = null; clearInterval(timer); };
+            const done = () => { if (!finished) { cleanup(); resolve(); } };
+            const fail = (err) => { if (!finished) { cleanup(); reject(err || new Error('音频播放失败')); } };
+            // 有的手机浏览器播完不发 ended：暂停在结尾也算播完；被 stop() 打断也结束
+            const timer = setInterval(() => {
+                if (this.playing !== run) return done();
+                if (a.paused && a.duration && a.currentTime >= a.duration - 0.25) done();
+            }, 400);
             a.onended = done;
-            a.onerror = fail;
+            a.onerror = () => fail();
             a.preload = 'auto';
             a.src = url;
-            const go = () => { if (this.playing !== run) { cleanup(); resolve(); return; } a.play().catch(err => { cleanup(); reject(err); }); };
-            if (a.readyState >= 3) go();
-            else a.addEventListener('canplaythrough', go, { once: true });
-            a.load();
+            const p = a.play();
+            if (p && typeof p.catch === 'function') p.catch(err => fail(err));
         });
     }
 
@@ -716,6 +733,8 @@ export class StoryVoice {
 .yzsv-btn { border: 1px solid rgba(255,255,255,.18); background: rgba(127,127,127,.16); color: inherit; opacity: .8; border-radius: 999px; padding: 0 8px; min-width: 26px; height: 22px; font-size: .75em; line-height: 20px; cursor: pointer; font-family: inherit; }
 .yzsv-btn:hover { opacity: 1; }
 .yzsv-regen { padding: 1px 7px; }
+.yzsv-regen.is-busy { animation: yzsv-spin .8s linear infinite; opacity: .8; pointer-events: none; }
+@keyframes yzsv-spin { to { transform: rotate(360deg); } }
 .yzsv-bar.is-loading .yzsv-play { opacity: .5; }
 .yzsv-bar.is-loading .yzsv-play::after { content: '…'; }
 .yzsv-bar.is-playing .yzsv-play { background: rgba(80,160,255,.28); border-color: rgba(80,160,255,.55); opacity: 1; }
@@ -739,7 +758,8 @@ export class StoryVoice {
 .yzsv-head { flex: 0 0 auto; height: 68px; padding: 32px 10px 0; box-sizing: border-box; display: flex; align-items: center; gap: 4px; }
 .yzsv-back { width: 34px; height: 34px; border: 0; background: transparent; color: #222; font-size: 16px; cursor: pointer; border-radius: 50%; }
 .yzsv-head-title { flex: 1; text-align: center; font-size: 15px; font-weight: 600; margin-right: 38px; }
-.yzsv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 6px 14px 40px; box-sizing: border-box; }
+.yzsv-page .yzsv-body { flex: 1 1 0 !important; height: 0 !important; min-height: 0 !important; overflow-y: auto !important; overflow-x: hidden !important; -webkit-overflow-scrolling: auto !important; overscroll-behavior: contain; touch-action: pan-y !important; padding: 6px 14px 60px !important; box-sizing: border-box; scrollbar-width: none; }
+.yzsv-page .yzsv-body::-webkit-scrollbar { display: none; }
 .yzsv-hero { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: 18px; background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%); color: #fff; box-shadow: 0 8px 22px rgba(161,140,209,.35); margin-bottom: 16px; }
 .yzsv-hero-icon { flex: 0 0 46px; height: 46px; border-radius: 14px; background: rgba(255,255,255,.25); display: flex; align-items: center; justify-content: center; font-size: 22px; }
 .yzsv-hero b { display: block; font-size: 16px; }
@@ -795,7 +815,7 @@ export class StoryVoiceApp {
                     <button class="yzsv-back" id="yzsv-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
                     <div class="yzsv-head-title">正文朗读</div>
                 </div>
-                <div class="yzsv-body">
+                <div class="yzsv-body app-body">
                     <div class="yzsv-hero">
                         <div class="yzsv-hero-icon">🔊</div>
                         <div><b>${s.enabled ? '朗读已开启' : '朗读已关闭'}</b><small>角色音色 ${count} 个 · 对白符号 ${esc(s.quotes || '未设置')}</small></div>
@@ -860,8 +880,53 @@ export class StoryVoiceApp {
         };
     }
 
+    // 手机浏览器里滚到底/顶后，下一次滑动会被外层接走，看起来就“滑不动”了：
+    // 每次手指按下时，让列表离开边缘 1px，滑动始终交给列表自己
+    _fixScroll(root) {
+        const body = root?.querySelector?.('.yzsv-body');
+        if (!body || body.__yzsvScrollFix) return;
+        body.__yzsvScrollFix = true;
+        const nudge = () => {
+            const max = body.scrollHeight - body.clientHeight;
+            if (max <= 0) return;
+            if (body.scrollTop <= 0) body.scrollTop = 1;
+            else if (body.scrollTop >= max) body.scrollTop = max - 1;
+        };
+        body.addEventListener('touchstart', nudge, { passive: true });
+        body.addEventListener('pointerdown', nudge, { passive: true });
+        // 点输入框时浏览器可能把外层容器也顶上去，复位
+        root.addEventListener('focusin', () => {
+            setTimeout(() => {
+                const page = root.querySelector('.yzsv-page');
+                [page, page?.parentElement].forEach(el => { if (el && el.scrollTop) el.scrollTop = 0; });
+            }, 300);
+        });
+        // 兜底：连续几下手指在动、列表却纹丝不动，就由我们自己滚（只在“卡住”时接管）
+        let lastY = null, lastTop = 0, stuck = 0, manual = false;
+        body.addEventListener('touchstart', (e) => { lastY = e.touches?.[0]?.clientY ?? null; lastTop = body.scrollTop; stuck = 0; manual = false; }, { passive: true });
+        body.addEventListener('touchmove', (e) => {
+            const y = e.touches?.[0]?.clientY;
+            if (lastY == null || y == null) return;
+            const dy = lastY - y;
+            lastY = y;
+            const max = body.scrollHeight - body.clientHeight;
+            if (max <= 0 || Math.abs(dy) < 1) return;
+            if (!manual) {
+                const want = dy > 0 ? body.scrollTop < max : body.scrollTop > 0;
+                if (want && body.scrollTop === lastTop) stuck += 1; else stuck = 0;
+                lastTop = body.scrollTop;
+                if (stuck >= 3) manual = true;
+            }
+            if (manual) {
+                body.scrollTop = Math.max(0, Math.min(max, body.scrollTop + dy));
+                lastTop = body.scrollTop;
+            }
+        }, { passive: true });
+    }
+
     _bind() {
         const root = this._root();
+        this._fixScroll(root);
         const toast = (t, m, i = '🔊') => this.phoneShell?.showNotification?.(t, m, i);
         root.querySelector('#yzsv-back')?.addEventListener('click', () => {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();
