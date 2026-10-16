@@ -13,8 +13,16 @@ export const SFX_TAGS = Object.freeze(['crowd laughing', 'background laughter', 
 const KNOWN_TAGS = new Set([...ACOUSTIC_TAGS, ...EMOTION_TAGS, ...VOICE_TAGS, ...NSFW_TAGS, ...SFX_TAGS]);
 
 // SFW / NSFW：三种模式共用的内容尺度
-export const RULE_SFW = '内容模式 SFW（默认）：不用 [groan]、[moaning]、[moaning softly] 这类呻吟标签，不写娇喘；亲密、暧昧的段落也照日常克制处理，最多 [whisper][breathy]。';
-export const RULE_NSFW = '内容模式 NSFW（用户主动开启，成人虚构内容）：是许可，不是整篇拔高，要逐段判断。日常段落照常克制；只有调情、没有身体接触时仍然克制，用 [whisper][breathy]、[seductive]、[teasing]。只有正文旁白写出了实质亲密身体接触才放开，按强度递进：前戏、低强度 → [breathy] 或 [whisper][breathy]；渐入、中强度 → [breathy][panting] 或 [panting softly]，加 嗯……、唔……（日文 ん……、はぁ……）；高潮、高强度 → [moaning][panting] 或 [moaning softly]，加 哈啊……、啊~，短促断句。张力随强度 3→4→5 逐段爬升；亲密常伴着害羞，可叠 [embarrassed] 和首字叠字。额外可用的标签：moaning、moaning softly、panting softly、seductive、holding back、satisfied。旁白不用呻吟标签。';
+// 亲密场景由模型自己判断（不再有 SFW / NSFW 开关）：tone 写「亲密」才放开，程序也按 tone 把关
+export const RULE_INTIMATE_AUTO = '亲密场景（自行判断）：只有正文旁白写出了实质的亲密身体接触，tone 才写「亲密」；只有调情、暧昧气氛、台词里的暗示都不算（写「浪漫」）。tone 是「亲密」时要逐段判断，不是整篇拔高：日常段落照常克制，只有调情时用 [whisper][breathy]、[seductive]、[teasing]；写到身体接触的段落按强度递进：前戏、低强度 → [breathy] 或 [whisper][breathy]；渐入、中强度 → [breathy][panting] 或 [panting softly]，加 嗯……、唔……（日文 ん……、はぁ……）；高潮、高强度 → [moaning][panting] 或 [moaning softly]，加 哈啊……、啊~，短促断句；张力随强度 3→4→5 逐段爬升，可叠 [embarrassed] 和首字叠字。额外可用的标签：moaning、moaning softly、panting softly、seductive、holding back、satisfied。旁白不用呻吟标签。tone 不是「亲密」时：不用 [groan]、[moaning]、[moaning softly]，不写娇喘，亲密暧昧的段落最多 [whisper][breathy]（程序只在 tone 是「亲密」时才放出呻吟类标签）。';
+
+export const STORY_TONES = Object.freeze(['日常', '轻松', '温馨', '浪漫', '亲密', '悲伤', '紧张', '悬疑', '恐怖', '战斗', '壮阔']);
+export const NSFW_WORDS = Object.freeze(['groan', 'moaning', 'moaning softly', 'panting softly', 'seductive']);
+// 简单分析的 [[名字|语气]]：不是亲密的楼，去掉呻吟类的词
+export function gateCue(cue = '', tone = '') {
+    if (!cue || tone === '亲密') return cue;
+    return String(cue).split(/[,，、;；]/).map(x => x.trim()).filter(x => x && !NSFW_WORDS.includes(x.toLowerCase()) && !/moan|呻吟|娇喘/i.test(x)).join(', ');
+}
 
 export const AMBIENCES = Object.freeze(['none', 'rain', 'storm', 'wind', 'waves', 'night', 'room', 'fire', 'crowd', 'cafe']);
 
@@ -56,7 +64,7 @@ export const DEEP_PROMPT = [
     '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。'
 ].join('\n');
 
-export function buildDeepMessages({ story = '', lines = [], roster = [], userName = '', previous = '', speakers = {}, nsfw = false } = {}) {
+export function buildDeepMessages({ story = '', lines = [], roster = [], userName = '', previous = '', speakers = {} } = {}) {
     const input = {
         task: 'acoustic_annotation_for_audiobook',
         ...(userName ? { user: userName } : {}),
@@ -67,7 +75,7 @@ export function buildDeepMessages({ story = '', lines = [], roster = [], userNam
         lines: lines.map(l => ({ id: l.id, text: l.text }))
     };
     return [
-        { role: 'system', content: `${DEEP_PROMPT}\n13. ${nsfw ? RULE_NSFW : RULE_SFW}` },
+        { role: 'system', content: `${DEEP_PROMPT}\n13. ${RULE_INTIMATE_AUTO}` },
         { role: 'user', content: JSON.stringify(input) }
     ];
 }
@@ -167,7 +175,7 @@ export function parseDeep(raw, lines) {
 }
 
 // 基调收紧标签：紧张、恐怖、战斗这类楼层不用气声和低哼；日常、悲伤不用低哼
-export function applyToneGate(script = '', tone = '', nsfw = false) {
+export function applyToneGate(script = '', tone = '', nsfw = tone === '亲密') {
     let ban = [];
     if (['紧张', '悬疑', '恐怖', '战斗', '壮阔'].includes(tone)) ban = ['breathy', 'groan', 'moaning', 'moaning softly'];
     else if (['日常', '轻松', '温馨', '悲伤'].includes(tone)) ban = ['groan', 'moaning', 'moaning softly'];
@@ -193,6 +201,8 @@ export function scriptForModel(script = '', model = '') {
     if (/drama/i.test(m)) return script.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
     if (/^s1\b|speech-1/i.test(m)) return script.replace(/\[([^\]\n]{1,40})\]\s*/g, (all, w) => {
         const k = String(w).trim().toLowerCase();
+        if (k === 'pause' || k === 'break') return '(break) ';
+        if (k === 'long pause' || k === 'long-break') return '(long-break) ';
         if (S1_OFFICIAL.has(k)) return `(${k}) `;
         if (S1_NEAR[k]) return `(${S1_NEAR[k]}) `;
         const tag = ACOUSTIC_TAGS.includes(k) ? k : TAG_ALIAS[k];

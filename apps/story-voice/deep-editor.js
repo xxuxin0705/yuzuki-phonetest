@@ -141,6 +141,12 @@ function injectStyle() {
 .yzsv-ed-why { font-size: 12px; color: #8a6fc0; margin: 4px 0 0; }
 .yzsv-ed-lineamb { margin: 0 0 6px; font-size: 12px; color: #888; }
 .yzsv-ed-lineamb select { padding: 3px 6px; font-size: 12px; }
+.yzsv-ed-nsfw { color: #c0396b; font-size: 12px; }
+.yzsv-ed-nsfw[hidden] { display: none; }
+.yzsv-ed-amb.is-flash select { box-shadow: 0 0 0 3px rgba(224,96,138,.45); transition: box-shadow .3s; }
+.yzsv-ed-sent { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: #f4f6fb; border: 1px dashed #cdd5e6; font-size: 11.5px; line-height: 1.55; color: #556; word-break: break-all; }
+.yzsv-ed-sent b { color: #334; }
+.yzsv-ed-warn { margin-top: 8px; padding: 7px 10px; border-radius: 10px; background: #fff6e6; color: #9a6400; font-size: 12px; line-height: 1.5; }
 .yzsv-ed-orig { font-size: 12px; color: #999; margin: 6px 0; line-height: 1.5; word-break: break-all; }
 .yzsv-ed-script { width: 100%; box-sizing: border-box; min-height: 58px; border: 1px solid #e3e3ea; border-radius: 10px; padding: 8px 10px; font-size: 14px; line-height: 1.55; background: #fbfbfd; color: #222; resize: vertical; font-family: inherit; }
 .yzsv-ed-script:focus { outline: none; border-color: #a18cd1; background: #fff; }
@@ -196,10 +202,12 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     let bars = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar`));
     if (single && focusLine !== null) bars = bars.filter(b => String(b.dataset.line) === String(focusLine));
     if (!bars.length) { sv._toast('没有可编辑的台词', '这一楼没有找到挂了按钮的台词'); return; }
-    const presets = settings.nsfw ? [...PRESETS, ...NSFW_PRESETS] : PRESETS;
+    // 所有标签都显示；用了 🔞 的标签，这一楼的情节自动标成「亲密」（可以再改回来）
+    const presets = [...PRESETS, ...NSFW_PRESETS];
+    const curTone = sv._floorTone(msg) || entry.tone || '';
     // 顺序：情绪、声音、拟声/音效、停顿、叠字、（亲密）、语气词放最后
     const lang = OPTION_GROUPS.filter(g => g.key === 'zh' || g.key === 'ja');
-    const groups = [...OPTION_GROUPS.filter(g => g.key !== 'zh' && g.key !== 'ja'), ...(settings.nsfw ? [NSFW_GROUP] : []), ...lang];
+    const groups = [...OPTION_GROUPS.filter(g => g.key !== 'zh' && g.key !== 'ja'), NSFW_GROUP, ...lang];
     // 简单分析：没改过的句子，用模型写的 [[名字|语气]] 作为初稿
     const cueScript = (cue, text) => {
         const tags = String(cue || '').replace(/[\[\]]/g, '').split(/[,，、;；]/).map(x => x.trim()).filter(Boolean).slice(0, 2);
@@ -225,6 +233,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" class="${p.nsfw ? 'is-nsfw' : ''}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
             ${groups.map(g => `<div class="yzsv-ed-chips${g.key === 'nsfw' ? ' is-nsfw' : ''}" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
             <div class="yzsv-ed-hint">情绪、声音放在要生效的字前面（光标在哪就插在哪，没点过就插在句首）；一键演法会换掉句首的标签并设好张力和语速。</div>
+            <div class="yzsv-ed-sent" hidden></div>
             <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 按这样生成并播放</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
         </div>`;
     };
@@ -235,9 +244,10 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         <div class="yzsv-ed" role="dialog">
             <div class="yzsv-ed-head">
                 <button type="button" class="yzsv-ed-close" title="关闭">✕</button>
-                <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b>${settings.nsfw ? ' <small style="color:#c0506a">NSFW</small>' : ''}
-                ${analyzed && !single ? `<div class="row"><select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === (entry.tone || '') ? 'selected' : ''}>${x || '基调'}</option>`).join('')}</select><input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向"></div>` : ''}
+                <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b> <small class="yzsv-ed-nsfw" ${curTone === '亲密' ? '' : 'hidden'}>NSFW</small>
+                <div class="yzsv-ed-amb">🎬 这一楼的情节<select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === curTone ? 'selected' : ''}>${x ? (x === '亲密' ? '亲密（NSFW）' : x) : '没判断'}</option>`).join('')}</select>${analyzed && !single ? `<input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向" style="flex:1;min-width:0;border:1px solid #e3e3ea;border-radius:9px;padding:5px 8px;font-size:13px;background:#f8f8fb;">` : ''}</div>
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
+                ${(() => { const m = sv._modelOf('fish'); const prov = String(sv.storage?.get?.('phone-tts-provider') || ''); return prov === 'fish' && /drama/i.test(m) ? `<div class="yzsv-ed-warn">⚠ 现在的 Fish 模型是 ${esc(m)}：它不认 [方括号] 标签，情绪、声音标签都会被去掉，只有叠字、语气词、标点有用。想用标签请在「设置 → 语音」把模型换成 s2.1-pro / s2-pro。</div>` : ''; })()}
                 <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。Fish 原样用这些标签，MiniMax、OpenAI、豆包、MiMo、IndexTTS 会自动换成它们认的情绪写法。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用语音接口重新生成这一句（不会再调用分析模型），生成中再点一下可以取消。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
@@ -281,8 +291,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (amb && amb.value !== (entry.ambience || 'none')) { entry.ambience = amb.value; entry.ambienceSet = true; n += 1; }
         const tone = mask.querySelector('.yzsv-ed-tone');
         const arc = mask.querySelector('.yzsv-ed-arc');
-        if (tone) entry.tone = tone.value;
-        if (arc) entry.arc = arc.value.trim();
+        if (tone && tone.value !== curTone) { entry.tone = tone.value; entry.toneSet = true; n += 1; }
+        if (arc && arc.value.trim() !== (entry.arc || '')) { entry.arc = arc.value.trim(); n += 1; }
         if (n || analyzed) { entry.at = Date.now(); sv._deepSave(sv._deepHashOf(msg), entry); }
         sv.processById(mesid);
         return n;
@@ -374,6 +384,10 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         ta._sel = null;
     };
 
+    mask.querySelector('.yzsv-ed-tone')?.addEventListener('change', (ev) => {
+        const b = mask.querySelector('.yzsv-ed-nsfw');
+        if (b) b.hidden = ev.target.value !== '亲密';
+    });
     let trial = null;
     const close = () => { trial?.stop(); mask.remove(); };
     mask.addEventListener('click', async (e) => {
@@ -410,7 +424,23 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         }
         const ta = row.querySelector('.yzsv-ed-script');
         const presetBtn = e.target.closest('[data-preset]');
-        if (presetBtn) { applyPreset(row, ta, presets[Number(presetBtn.dataset.preset)]); return; }
+        const toNsfw = () => {
+            const sel = mask.querySelector('.yzsv-ed-tone');
+            if (!sel || sel.value === '亲密') return;
+            sel.value = '亲密';
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            const box = sel.closest('.yzsv-ed-amb');
+            box?.classList.add('is-flash');
+            setTimeout(() => box?.classList.remove('is-flash'), 1200);
+            sv._toast('情节已标成「亲密」', '用了 🔞 标签；不对的话在面板顶部改回去');
+        };
+        if (presetBtn) {
+            const p = presets[Number(presetBtn.dataset.preset)];
+            applyPreset(row, ta, p);
+            if (p?.nsfw) toNsfw();
+            return;
+        }
+        if (e.target.closest('.yzsv-ed-chips.is-nsfw [data-ins]')) toNsfw();
         const insBtn = e.target.closest('[data-ins]');
         if (insBtn) {
             const v = insBtn.dataset.ins;
@@ -449,9 +479,20 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             label();
             clearInterval(play._tick);
             play._tick = setInterval(label, 250);
+            const t0 = Date.now();
+            const showSent = () => {
+                const box = row.querySelector('.yzsv-ed-sent');
+                const log = (sv._sentLog || []).filter(x => x.at >= t0);
+                if (!box || !log.length) return;
+                const amb = (() => { try { return sv._floorAmbience(mesid).get(String(line)) || 'none'; } catch (err) { return 'none'; } })();
+                box.hidden = false;
+                box.innerHTML = log.map(x => `<div><b>${x.cached ? '用了缓存（和上次发的一模一样，没有重新请求）' : '新生成'}</b> · ${esc(x.provider || '?')}${x.model ? ` / ${esc(x.model)}` : ''}${x.fish?.temperature ? ` · 温度 ${x.fish.temperature}` : ''}${x.extra ? ` · ${esc(JSON.stringify(x.extra))}` : ''}</div><div>实际发送：${esc(x.text)}</div>`).join('')
+                    + `<div>环境声：${amb === 'none' ? '无' : esc(AMBIENCE_LABELS[amb] || amb)}${amb !== 'none' ? '（环境声是另外叠的，听着不对可以先在设置里关掉对比）' : ''}</div>`;
+            };
             try {
                 await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
             } finally {
+                showSent();
                 if (play._run === run) {
                     clearInterval(play._tick);
                     play.classList.remove('is-busy');
