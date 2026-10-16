@@ -10,8 +10,8 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261020-m2';
-import { ContactsView } from './contacts-view.js?v=20261020-m2';
+import { ChatView } from './chat-view.js?v=20261021-m4';
+import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261020-m2';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
@@ -3649,6 +3649,32 @@ export class WechatApp {
 .message-mind-share .mmr-img { max-width: 120px; max-height: 120px; border-radius: 10px; object-fit: cover; margin-top: 6px; }
 .message-mind-share .mms-foot { margin-top: 6px; font-size: 10px; color: #a79fc4; }
 /* 🫧 气泡设置：质感 / 圆角 / 装饰 / 连续气泡 */
+.wce-field { padding: 10px 0; border-bottom: 1px solid #e9e9e9; }
+.wce-field:last-child { border-bottom: 0; }
+.wce-label { font-size: 13px; margin-bottom: 7px; }
+.wce-label small { display: block; margin-top: 3px; color: #8b8b8b; font-size: 10px; line-height: 1.5; }
+.wce-label b { font-weight: 600; color: #576b95; margin-left: 4px; }
+.wce-textarea { width: 100%; box-sizing: border-box; min-height: 64px; padding: 8px 10px; border: 1px solid #ececec; border-radius: 10px; background: rgba(255,255,255,.9); font-size: 12.5px; line-height: 1.5; color: #222; resize: vertical; font-family: inherit; outline: none; }
+.wce-textarea:focus, .wce-voice input:focus { border-color: #9cc3f5; }
+.wce-voice-now { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; padding: 10px 12px; margin: 0 0 6px; border-radius: 12px; background: linear-gradient(135deg, rgba(91,141,239,.10), rgba(161,140,209,.12)); font-size: 12px; color: #555; }
+.wce-voice-now b { font-size: 13px; color: #222; }
+.wce-voice-now em { font-style: normal; color: #4a7bd8; word-break: break-all; }
+.wce-voices { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; }
+.wce-voice { display: flex; flex-direction: column; gap: 4px; }
+.wce-voice > span { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #666; }
+.wce-voice > span i { font-style: normal; font-size: 10px; color: #fff; background: #07c160; border-radius: 6px; padding: 0 5px; }
+.wce-voice input { width: 100%; box-sizing: border-box; height: 32px; padding: 0 10px; border: 1px solid #ececec; border-radius: 9px; background: rgba(255,255,255,.9); font-size: 12.5px; color: #222; outline: none; }
+.wce-voice.is-on input { border-color: rgba(7,193,96,.5); background: #f6fffa; }
+.wce-hint { font-size: 10.5px; color: #8b8b8b; line-height: 1.5; padding: 6px 0 2px; }
+.wce-ref { display: flex; gap: 12px; align-items: center; padding: 4px 0 10px; border-bottom: 1px solid #e9e9e9; }
+.wce-ref-preview { flex: 0 0 68px; width: 68px; height: 68px; border-radius: 12px; border: 1px dashed #d6d6d6; background: #f6f6f6 center / cover no-repeat; color: #aaa; font-size: 20px; cursor: pointer; }
+.wce-ref-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.wce-ref-btns { display: flex; gap: 8px; }
+.wce-btn { border: 0; background: #f0f0f0; color: #333; border-radius: 9px; padding: 7px 12px; font-size: 12px; cursor: pointer; }
+.wce-btn.is-danger { background: #fff1f0; color: #d93025; }
+.wce-btn:disabled { opacity: .45; cursor: default; }
+.wce-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #555; }
+.wce-range { width: 100%; }
 .wbx-field { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .wbx-seg { flex: 1; display: flex; gap: 3px; background: #f2f3f5; border-radius: 10px; padding: 2px; }
 .wbx-seg-btn { flex: 1; border: 0; background: transparent; padding: 5px 0; border-radius: 8px; font-size: 11.5px; color: #666; cursor: pointer; white-space: nowrap; }
@@ -9049,7 +9075,7 @@ export class WechatApp {
             });
 
             menu.appendChild(pinBtn);
-            menu.appendChild(editBtn);
+            void editBtn; // “编辑”已移到私聊的聊天设置里
             menu.appendChild(deleteBtn);
             host.appendChild(menu);
 

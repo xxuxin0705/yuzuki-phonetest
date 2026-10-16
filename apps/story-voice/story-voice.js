@@ -83,6 +83,7 @@ export class StoryVoice {
         this._timers = new Map();
         this._installed = false;
         this.speakerOverrides = this._loadOverrides();
+        this._speakerMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
     }
 
     // ---------- 设置 ----------
@@ -138,7 +139,7 @@ export class StoryVoice {
     // 台词正前方的「名字 [02:22]：」「名字：」「名字说：」
     _labelBefore(full, start) {
         const before = full.slice(Math.max(0, start - 60), start);
-        const m = before.match(/(?:^|[\n。！？!?」』”）)\]])\s*([^\s\n:：「『“（(\[\]【】，,。]{1,12}?)\s*(?:[\[［(（【]\s*\d{1,2}[:：]\d{2}(?:[:：]\d{2})?\s*[\]］)）】])?\s*(?:说道|说|问道|问|道|喊道|喊)?\s*[:：]\s*$/);
+        const m = before.match(/(?:^|[\n。！？!?」』”）)\]])\s*([^\s\n:：「」『』“”（）()\[\]【】，,。！？!?…~～、]{1,12}?)\s*(?:[\[［(（【]\s*\d{1,2}[:：]\d{2}(?:[:：]\d{2})?\s*[\]］)）】])?\s*(?:说道|说|问道|问|道|喊道|喊)?\s*[:：]\s*$/);
         if (!m) return '';
         const name = m[1].trim();
         if (!name || /^(?:他|她|我|你|它|对方|旁白)$/.test(name)) return '';
@@ -150,7 +151,7 @@ export class StoryVoice {
     _canonicalName(name = '') {
         const n = String(name || '').trim();
         if (!n) return '';
-        const list = this.getSettings().speakers.map(x => x.name).filter(Boolean);
+        const list = [...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean);
         return list.find(x => x === n)
             || list.find(x => x.length >= 2 && n.length >= 2 && (x.includes(n) || n.includes(x)))
             || '';
@@ -169,14 +170,14 @@ export class StoryVoice {
     // ↻：选说话人 / 让 AI 重新判断，然后重新生成
     _openRegenMenu(bar, btn) {
         document.querySelectorAll('.yzsv-pop').forEach(n => n.remove());
-        const names = this.getSettings().speakers.map(x => x.name).filter(Boolean);
+        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
         const cur = bar.dataset.speaker || '';
         const pop = document.createElement('div');
         pop.className = 'yzsv-pop';
         pop.innerHTML = `
             <div class="yzsv-pop-title">这句是谁说的？<span>现在：${esc(cur || '默认音色')}</span></div>
             <button type="button" class="yzsv-pop-ai" data-act="ai">✨ 让 AI 重新判断</button>
-            ${names.length ? `<div class="yzsv-pop-names">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty">在「朗读」App 里登记角色音色后，这里可以直接选人</div>'}
+            ${names.length ? `<div class="yzsv-pop-names">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty">在「朗读」App 或微信私聊的「聊天设置 → 语音音色」里填好音色后，这里可以直接选人</div>'}
             <button type="button" class="yzsv-pop-same" data-act="same">保持「${esc(cur || '默认音色')}」，只重新生成语音</button>`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
@@ -225,7 +226,7 @@ export class StoryVoice {
     async _askSpeaker(bar) {
         const ctx = window.SillyTavern?.getContext?.();
         const context = this._lineContext?.get(`${bar.dataset.mesid}:${bar.dataset.line}`) || `【${bar.dataset.text}】`;
-        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), String(ctx?.name2 || ''), String(ctx?.name1 || '')].filter(Boolean))];
+        const names = [...new Set([...this.getSettings().speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || ''), String(ctx?.name1 || '')].filter(Boolean))];
         const prompt = `下面是一段小说正文，判断用【】括起来的那句台词是谁说出口的。\n只输出说话人的名字，不要解释。${names.length ? `尽量从这些名字里选：${names.join('、')}。` : ''}\n\n正文：\n${context}`;
         let out = '';
         if (typeof ctx?.generateRaw === 'function') {
@@ -246,6 +247,8 @@ export class StoryVoice {
         if (this._installed) return;
         this._installed = true;
         this._injectStyle();
+        // 先把微信联系人（音色ID）读进来，再挂按钮：只有对得上音色的台词才显示按钮
+        this._getWechatData().catch(() => null).then(() => setTimeout(() => this.refreshAll(), 50));
         const ctx = window.SillyTavern?.getContext?.();
         const es = ctx?.eventSource;
         const ev = ctx?.event_types || ctx?.eventTypes || {};
@@ -286,6 +289,32 @@ export class StoryVoice {
 
     refreshAll() {
         document.querySelectorAll('#chat .mes[mesid]').forEach(el => this.processElement(el));
+    }
+
+    // 微信里改了音色ID：重新判断哪些台词能显示按钮
+    onVoicesChanged() {
+        clearTimeout(this._voiceRefreshTimer);
+        this._voiceRefreshTimer = setTimeout(() => {
+            if (this.playing) this.stop();
+            this.refreshAll();
+        }, 200);
+    }
+
+    // 这个说话人有没有能用的音色（「朗读」App 登记的，或微信联系人填过音色ID）
+    _hasVoice(speaker = '') {
+        const sp = String(speaker || '').trim();
+        if (!sp) return false;
+        const list = this.getSettings().speakers;
+        if (list.some(x => x.name && x.voice && (x.name === sp || (sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)))))) return true;
+        const vp = window.VirtualPhone || {};
+        const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
+        try {
+            const r = data?.resolveTtsVoiceByName?.(sp, { includeChats: true });
+            if (!r?.contact) return false;
+            if (String(r.voice || '').trim()) return true;
+            const vs = r.contact.ttsVoices && typeof r.contact.ttsVoices === 'object' ? Object.values(r.contact.ttsVoices) : [];
+            return vs.some(v => String(v || '').trim()) || !!String(r.contact.ttsVoice || '').trim();
+        } catch (e) { return false; }
     }
 
     processById(id) {
@@ -352,7 +381,7 @@ export class StoryVoice {
         if (!lines.length) { removeMarks(); return; }
 
         const defaultSpeaker = String(msg?.name || '').trim();
-        const speakerNames = s.speakers.map(x => x.name).filter(Boolean);
+        const speakerNames = [...new Set([...s.speakers.filter(x => x.voice).map(x => x.name), ...this._wechatVoiceNames()].filter(Boolean))];
         let prevEnd = 0;
         lines.forEach((r, i) => {
             r.index = i;
@@ -368,6 +397,16 @@ export class StoryVoice {
             const mark = marks.find(mk => mk.end <= r.start && r.start - mk.end <= 2 && !/\S/.test(full.slice(mk.end, r.start)));
             if (mark) {
                 r.speaker = this._canonicalName(mark.name) || mark.name;
+                r.marked = true;
+                this._speakerMemo.set(`${id}:${i}:${r.text}`, r.speaker);
+                if (this._speakerMemo.size > 2000) this._speakerMemo.delete(this._speakerMemo.keys().next().value);
+                prevEnd = r.end;
+                return;
+            }
+            // 1.5) 之前处理时模型标过（标记已经藏掉了）
+            const memo = this._speakerMemo.get(`${id}:${i}:${r.text}`);
+            if (memo) {
+                r.speaker = memo;
                 r.marked = true;
                 prevEnd = r.end;
                 return;
@@ -394,6 +433,8 @@ export class StoryVoice {
         });
         // 记下每句的上下文，↻ 时可以让 AI 重新判断
         this._lineContext = this._lineContext || new Map();
+        // 只给对得上音色的台词挂按钮（说话人在微信里没填音色ID就不显示）
+        lines = lines.filter(r => this._hasVoice(this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker));
 
         // 从后往前改（插按钮、藏标记），前面的位置不会被打乱
         const ops = [
@@ -489,20 +530,68 @@ export class StoryVoice {
     }
 
     // ---------- 合成与播放 ----------
-    _voiceFor(speaker = '') {
+    // 拿到微信数据（没打开过微信时自己加载一份，和小手机共用）
+    async _getWechatData() {
+        const vp = window.VirtualPhone || {};
+        let data = vp.wechatApp?.wechatData || vp.cachedWechatData || null;
+        if (data) return data;
+        if (!this.storage) return null;
+        try {
+            const mod = await import('../wechat/wechat-data.js?v=20261011-wallet-credit-repayment');
+            data = window.VirtualPhone?.wechatApp?.wechatData || window.VirtualPhone?.cachedWechatData || new mod.WechatData(this.storage);
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = data;
+            return data;
+        } catch (e) {
+            console.warn('[正文朗读] 读取微信联系人失败:', e);
+            return null;
+        }
+    }
+
+    // 微信里设置了音色的联系人名字（给 ↻ 弹窗用）
+    _wechatVoiceNames() {
+        const vp = window.VirtualPhone || {};
+        const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
+        let list = [];
+        try { list = data?.getContacts?.() || []; } catch (e) { list = []; }
+        return list.filter(c => {
+            const vs = c?.ttsVoices && typeof c.ttsVoices === 'object' ? Object.values(c.ttsVoices) : [];
+            return vs.some(v => String(v || '').trim()) || String(c?.ttsVoice || '').trim();
+        }).map(c => String(c.remark || c.name || '').trim()).filter(Boolean);
+    }
+
+    // 说话人 → 音色：先看「朗读」App 里登记的，再看微信联系人（私聊设置里的音色ID），最后用默认
+    async _voiceFor(speaker = '') {
         const s = this.getSettings();
         const sp = String(speaker || '').trim();
         const hit = s.speakers.find(x => x.name && x.voice && x.name === sp)
             || s.speakers.find(x => x.name && x.voice && sp.length >= 2 && x.name.length >= 2 && (sp.includes(x.name) || x.name.includes(sp)));
-        return hit?.voice || s.voice || '';
+        if (hit?.voice) return { voice: hit.voice };
+        if (sp) {
+            const data = await this._getWechatData();
+            try {
+                const r = data?.resolveTtsVoiceByName?.(sp, { includeChats: true });
+                if (r?.contact && r.voice) return { voice: r.voice, provider: r.provider, languageBoost: r.languageBoost };
+                // 当前服务商没填、但别的服务商填了音色：直接用填了的那个
+                const vs = r?.contact?.ttsVoices && typeof r.contact.ttsVoices === 'object' ? r.contact.ttsVoices : {};
+                const pick = Object.entries(vs).find(([, v]) => String(v || '').trim());
+                if (r?.contact && pick) return { voice: String(pick[1]).trim(), provider: pick[0], languageBoost: r.languageBoost };
+            } catch (e) { /* 忽略 */ }
+        }
+        return { voice: s.voice || '' };
     }
 
-    async _synth(text, voice, { regen = false, signal } = {}) {
+    // 缓存按「平台+音色+文本」区分：联系人音色改了，点 ▶ 就会自动重新生成
+    async _synth(text, voiceInfo, { regen = false, signal } = {}) {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
-        const key = `${voice}\u0001${text}`;
+        const vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
+        const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
+        const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
         const old = this.cache.get(key);
-        const url = await this.tts.requestTTS(text, { voice: voice || undefined, signal });
+        const opts = { voice: vi.voice || undefined, signal };
+        if (vi.provider) opts.provider = vi.provider;
+        if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
+        const url = await this.tts.requestTTS(text, opts);
         if (old && old !== url) { try { URL.revokeObjectURL(old); } catch (e) { /* 忽略 */ } }
         this.cache.set(key, url);
         if (this.cache.size > 120) {
@@ -541,10 +630,14 @@ export class StoryVoice {
         trigger?.classList.add('is-active');
         // 把要读的内容排成一串小段，提前并行合成（同时最多 3 段），播放时下一段已经准备好，不会一卡一卡
         const queue = [];
-        bars.forEach(bar => {
-            const voice = this._voiceFor(bar.dataset.speaker);
+        const voiceMemo = new Map();
+        for (const bar of bars) {
+            const sp = bar.dataset.speaker || '';
+            if (!voiceMemo.has(sp)) voiceMemo.set(sp, await this._voiceFor(sp));
+            if (this.playing !== run) return;
+            const voice = voiceMemo.get(sp);
             splitSpeech(bar.dataset.text).forEach((part, i, arr) => queue.push({ bar, part, voice, last: i === arr.length - 1 }));
-        });
+        }
         const jobs = new Array(queue.length);
         let started = 0;
         const startMore = (upTo) => {
@@ -637,8 +730,9 @@ export class StoryVoice {
 .yzsv-pop-names { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .yzsv-pop-names button { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: inherit; border-radius: 999px; padding: 5px 12px; font-size: 12.5px; }
 .yzsv-pop-names button.is-on { background: rgba(134,168,231,.35); border-color: rgba(134,168,231,.8); }
-.yzsv-pop-empty { margin-top: 10px; font-size: 11.5px; opacity: .6; line-height: 1.5; }
-.yzsv-pop-same { width: 100%; margin-top: 10px; border: 0; background: transparent; color: inherit; opacity: .7; font-size: 12px; padding: 4px; }
+.yzsv-pop-empty { margin-top: 10px; font-size: 11.5px; opacity: .75; line-height: 1.5; padding: 8px 10px; border-radius: 10px; border: 1px dashed rgba(255,255,255,.25); background: rgba(255,255,255,.05); }
+.yzsv-pop-same { width: 100%; margin-top: 10px; border: 1px solid rgba(134,168,231,.65); background: rgba(134,168,231,.16); color: #dfe6ff; border-radius: 10px; font-size: 12.5px; padding: 8px 9px; line-height: 1.4; }
+.yzsv-pop-same:active { background: rgba(134,168,231,.32); }
 
 /* ---- 朗读 App ---- */
 .yzsv-page { position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; background: linear-gradient(180deg, #f3f0ff 0%, #f6f6fa 220px, #f6f6fa 100%); color: #222; overflow: hidden; font-size: 13px; box-sizing: border-box; }

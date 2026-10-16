@@ -1292,6 +1292,7 @@ export class ContactsView {
                 this.app.phoneShell.showNotification('提示', '该昵称或备注已被其他联系人使用', '⚠️');
                 return;
             }
+            setTimeout(() => { try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (e) { /* 忽略 */ } }, 300);
             this.app.wechatData.setContactGender?.(
                 safeContactId,
                 String(query('#edit-contact-gender-select')?.value || 'female').trim() === 'male' ? 'male' : 'female'

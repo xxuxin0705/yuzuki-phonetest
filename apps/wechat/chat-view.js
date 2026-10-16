@@ -15486,6 +15486,7 @@ ${transLines.join('\n')}`);
                             <button id="wechat-detail-save-profile" type="button" ${contact ? '' : 'disabled'}>保存</button>
                         </div>
                     </section>` : ''}
+                    ${!isGroupChat && contact ? this._renderContactExtraCardsHtml(contact) : ''}
                     ${!isGroupChat ? this._renderSkinCardHtml() : ''}
                     ${!isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? `<section class="wechat-detail-card">
@@ -15564,6 +15565,7 @@ ${transLines.join('\n')}`);
         }
         this._bindBubbleStyleCard(String(currentChat.id || ''));
         this._bindSkinCard();
+        if (!isGroupChat && contact) this._bindContactExtraCards(contact);
         (document.querySelector('.phone-view-current') || document).querySelector('#wechat-pat-toggle')?.addEventListener('change', (e) => {
             const live = this.app.wechatData.getChat?.(currentChat.id);
             if (live) live.patEnabled = !!e.target.checked;
@@ -20255,6 +20257,191 @@ ${callTranscript}`;
         });
     }
 
+    // 👤 原来长按“编辑”里的内容，搬到私聊设置：角色设定 / 专属音色 / 形象参考图（改了立即保存）
+    _renderContactExtraCardsHtml(contact) {
+        const data = this.app.wechatData;
+        const cv = this.app.contactsView;
+        const id = String(contact.id || '');
+        const gender = String(data.getContactGender?.(id) || 'unknown');
+        const avatarGroup = String(data.getContactAvatarGroup?.(id) || '');
+        const supplemental = String(contact.wechatSupplementalSetting || '');
+        const providers = cv?._getTtsProviderOptions?.() || [];
+        const currentProvider = cv?._getCurrentTtsProvider?.() || String(this.app.storage?.get?.('phone-tts-provider') || 'minimax_cn');
+        const voices = (contact.ttsVoices && typeof contact.ttsVoices === 'object') ? contact.ttsVoices : {};
+        const legacyVoice = String(contact.ttsVoice || '').trim();
+        const ttsProvider = String(contact.ttsProvider || '');
+        const lang = String(contact.ttsLanguageBoost || 'auto');
+        const history = cv?._getTtsVoiceHistoryOptions?.() || '';
+        const ref = cv?._normalizeWechatReferenceImage?.(contact.naiReferenceImage || contact.referenceImage || '') || String(contact.naiReferenceImage || '');
+        const refOn = !!ref && contact.naiReferenceEnabled !== false && contact.naiReferenceEnabled !== 'false';
+        const strength = Math.max(0, Math.min(1, Number.isFinite(Number(contact.naiReferenceStrength)) ? Number(contact.naiReferenceStrength) : 0.7));
+        const tags = String(contact.naiPromptTags || contact.imageTags || '');
+        const activeVoice = String(voices[ttsProvider || currentProvider] || (!ttsProvider || ttsProvider === currentProvider ? legacyVoice : '') || '').trim();
+        const opt = (v, l, cur) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
+        return `
+            <section class="wechat-detail-card wce-card" data-collapse-key="contact-setting" data-contact-id="${this._escapeAttr(id)}">
+                <div class="wechat-detail-heading">角色设定</div>
+                <label class="wechat-detail-setting-row"><span>性别<small>没绑定音色时，按性别选全局兜底音色</small></span><select data-wce="gender">${opt('female', '女', gender === 'male' ? '' : 'female')}${opt('male', '男', gender)}</select></label>
+                <label class="wechat-detail-setting-row"><span>默认头像类型</span><select data-wce="avatarGroup">${opt('', '跟随性别', avatarGroup)}${opt('female', '普通女', avatarGroup)}${opt('male', '普通男', avatarGroup)}${opt('female_elder', '年长女', avatarGroup)}${opt('male_elder', '年长男', avatarGroup)}</select></label>
+                <div class="wce-field">
+                    <div class="wce-label">补充微信设定<small>只在和 TA 的单聊、或 TA 所在的群聊里注入</small></div>
+                    <textarea class="wce-textarea" data-wce="supplemental" rows="3" placeholder="填写只属于 TA 的身份、关系或剧情设定">${this._escapeHtml(supplemental)}</textarea>
+                </div>
+            </section>
+            <section class="wechat-detail-card wce-card" data-collapse-key="contact-voice" data-contact-id="${this._escapeAttr(id)}">
+                <div class="wechat-detail-heading">专属音色</div>
+                <div class="wce-voice-now"><span>🎙️ 正在使用</span><b>${this._escapeHtml((providers.find(p => p.id === (ttsProvider || currentProvider))?.label) || (ttsProvider || currentProvider))}</b><em>${this._escapeHtml(activeVoice || '未填写（用全局兜底音色）')}</em></div>
+                <label class="wechat-detail-setting-row"><span>语音服务商<small>留空跟随全局设置</small></span><select data-wce="ttsProvider"><option value="" ${!ttsProvider ? 'selected' : ''}>跟随全局</option>${providers.map(p => `<option value="${p.id}" ${ttsProvider === p.id ? 'selected' : ''}>${p.label}</option>`).join('')}</select></label>
+                <label class="wechat-detail-setting-row"><span>朗读语言<small>仅 MiniMax 使用</small></span><select data-wce="ttsLanguageBoost">${opt('auto', '自动识别', lang)}${opt('Chinese', '普通话', lang)}${opt('Chinese,Yue', '粤语', lang)}${opt('English', '英语', lang)}${opt('Japanese', '日语', lang)}</select></label>
+                ${history ? `<label class="wechat-detail-setting-row"><span>历史音色<small>选一个填进当前服务商</small></span><select data-wce="history"><option value="">-- 选择 --</option>${history}</select></label>` : ''}
+                <div class="wce-voices">
+                    ${providers.map(p => {
+                        const v = String(voices[p.id] || (p.id === currentProvider ? legacyVoice : '') || '');
+                        const on = p.id === (ttsProvider || currentProvider);
+                        return `<label class="wce-voice${on ? ' is-on' : ''}"><span>${this._escapeHtml(p.label)}${on ? '<i>使用中</i>' : ''}</span><input type="text" data-wce-voice="${p.id}" placeholder="${this._escapeAttr(p.placeholder || '')}" value="${this._escapeAttr(v)}"></label>`;
+                    }).join('')}
+                </div>
+                <div class="wce-hint">改完自动保存；微信语音和正文朗读都会用新音色，点播放就会按新音色重新生成。</div>
+            </section>
+            <section class="wechat-detail-card wce-card" data-collapse-key="contact-ref" data-contact-id="${this._escapeAttr(id)}">
+                <div class="wechat-detail-heading">形象参考图</div>
+                <div class="wce-ref">
+                    <button type="button" class="wce-ref-preview" data-wce-act="ref-upload" style="${ref ? `background-image:url('${this._escapeAttr(ref)}')` : ''}">${ref ? '' : '<i class="fa-regular fa-image"></i>'}</button>
+                    <div class="wce-ref-side">
+                        <div class="wce-ref-btns">
+                            <button type="button" class="wce-btn" data-wce-act="ref-upload">${ref ? '替换形象' : '上传形象'}</button>
+                            <button type="button" class="wce-btn is-danger" data-wce-act="ref-delete" ${ref ? '' : 'disabled'}>删除</button>
+                        </div>
+                        <label class="wce-check"><input type="checkbox" data-wce="refOn" ${refOn ? 'checked' : ''} ${ref ? '' : 'disabled'}> 生图时使用参考图</label>
+                    </div>
+                    <input type="file" accept="image/*" data-wce-file hidden>
+                </div>
+                <div class="wce-field">
+                    <div class="wce-label">参考强度 <b data-wce-strength-text>${strength.toFixed(2)}</b></div>
+                    <input type="range" min="0" max="1" step="0.05" value="${strength}" data-wce="strength" ${ref ? '' : 'disabled'} class="wce-range">
+                </div>
+                <div class="wce-field">
+                    <div class="wce-label">专属生图 Tag<small>生成 TA 的个人图片时拼在描述前面，固定外观；没有参考图也生效</small></div>
+                    <textarea class="wce-textarea" data-wce="tags" rows="3" placeholder="例如：1girl, long black hair, blue eyes">${this._escapeHtml(tags)}</textarea>
+                </div>
+            </section>`;
+    }
+
+    _bindContactExtraCards(contact) {
+        const data = this.app.wechatData;
+        const cv = this.app.contactsView;
+        const id = String(contact.id || '');
+        const view = document.querySelector('.phone-view-current') || document;
+        const cards = Array.from(view.querySelectorAll(`.wce-card[data-contact-id="${CSS.escape ? CSS.escape(id) : id}"]`));
+        if (!cards.length) return;
+        const q = (sel) => cards.map(c => c.querySelector(sel)).find(Boolean);
+        const qa = (sel) => cards.flatMap(c => Array.from(c.querySelectorAll(sel)));
+        const notify = (t, m, i = '✅') => this.app.phoneShell?.showNotification?.(t, m, i);
+        const persist = () => {
+            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = data;
+            data.saveData?.();
+        };
+        let ref = String(data.getContact(id)?.naiReferenceImage || '');
+
+        // 角色设定
+        q('[data-wce="gender"]')?.addEventListener('change', (e) => { data.setContactGender?.(id, e.target.value === 'male' ? 'male' : 'female'); persist(); });
+        q('[data-wce="avatarGroup"]')?.addEventListener('change', (e) => { data.setContactAvatarGroup?.(id, e.target.value); persist(); });
+        q('[data-wce="supplemental"]')?.addEventListener('change', (e) => { data.updateContact(id, { wechatSupplementalSetting: String(e.target.value || '').trim() }); persist(); notify('已保存', '补充设定已更新'); });
+
+        // 专属音色
+        const currentProvider = cv?._getCurrentTtsProvider?.() || String(this.app.storage?.get?.('phone-tts-provider') || 'minimax_cn');
+        const saveVoices = () => {
+            const ttsVoices = {};
+            qa('[data-wce-voice]').forEach(inp => { const v = String(inp.value || '').trim(); if (v) ttsVoices[inp.dataset.wceVoice] = v; });
+            const ttsProvider = String(q('[data-wce="ttsProvider"]')?.value || '').trim();
+            const ttsLanguageBoost = String(q('[data-wce="ttsLanguageBoost"]')?.value || 'auto');
+            data.updateContact(id, { ttsVoices, ttsProvider, ttsLanguageBoost, ttsVoice: String(ttsVoices[currentProvider] || '') });
+            persist();
+            try { window.VirtualPhone?.storyVoice?.onVoicesChanged?.(); } catch (e) { /* 忽略 */ }
+            const active = ttsProvider || currentProvider;
+            qa('.wce-voice').forEach(l => l.classList.toggle('is-on', l.querySelector('[data-wce-voice]')?.dataset.wceVoice === active));
+            const now = q('.wce-voice-now');
+            if (now) {
+                const label = (cv?._getTtsProviderOptions?.() || []).find(p => p.id === active)?.label || active;
+                now.querySelector('b').textContent = label;
+                now.querySelector('em').textContent = ttsVoices[active] || '未填写（用全局兜底音色）';
+            }
+        };
+        qa('[data-wce-voice]').forEach(inp => inp.addEventListener('change', () => { saveVoices(); notify('已保存', '专属音色已更新'); }));
+        q('[data-wce="ttsProvider"]')?.addEventListener('change', saveVoices);
+        q('[data-wce="ttsLanguageBoost"]')?.addEventListener('change', saveVoices);
+        q('[data-wce="history"]')?.addEventListener('change', (e) => {
+            const v = e.target.value;
+            if (!v) return;
+            const active = String(q('[data-wce="ttsProvider"]')?.value || '').trim() || currentProvider;
+            const inp = qa('[data-wce-voice]').find(i => i.dataset.wceVoice === active);
+            if (inp) inp.value = v;
+            e.target.value = '';
+            saveVoices();
+            notify('已填入', '历史音色已保存到当前服务商');
+        });
+
+        // 形象参考图
+        const readRef = () => ({
+            naiReferenceImage: ref,
+            naiReferenceEnabled: !!ref && !!q('[data-wce="refOn"]')?.checked,
+            naiReferenceStrength: Math.max(0, Math.min(1, Number(q('[data-wce="strength"]')?.value) || 0.7)),
+            naiReferenceInformationExtracted: 1,
+            naiPromptTags: String(q('[data-wce="tags"]')?.value || '').trim()
+        });
+        const saveRef = () => { data.updateContact(id, readRef()); persist(); };
+        const updateRefUi = () => {
+            const prev = q('.wce-ref-preview');
+            if (prev) { prev.style.backgroundImage = ref ? `url("${ref}")` : ''; prev.innerHTML = ref ? '' : '<i class="fa-regular fa-image"></i>'; }
+            const up = qa('[data-wce-act="ref-upload"]').find(b => b.classList.contains('wce-btn'));
+            if (up) up.textContent = ref ? '替换形象' : '上传形象';
+            const del = q('[data-wce-act="ref-delete"]');
+            if (del) del.disabled = !ref;
+            const on = q('[data-wce="refOn"]');
+            if (on) { on.disabled = !ref; if (ref) on.checked = true; }
+            const st = q('[data-wce="strength"]');
+            if (st) st.disabled = !ref;
+        };
+        const fileInput = q('[data-wce-file]');
+        qa('[data-wce-act="ref-upload"]').forEach(b => b.addEventListener('click', () => fileInput?.click()));
+        fileInput?.addEventListener('change', async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (!file) return;
+            const old = ref;
+            try {
+                notify('处理中', '正在上传个人形象...', '⏳');
+                const dataUrl = cv?._prepareWechatReferenceImageFile ? await cv._prepareWechatReferenceImageFile(file) : await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+                const blob = await (await fetch(dataUrl)).blob();
+                const safeName = String(contact.name || id || 'contact').replace(/[^\w\u4e00-\u9fff-]+/g, '_').slice(0, 24) || 'contact';
+                const url = await window.VirtualPhone?.imageManager?.uploadBlob?.(blob, `wechat_ref_${safeName}`);
+                if (!url) throw new Error('图片上传管理器未初始化');
+                ref = url;
+                updateRefUi();
+                saveRef();
+                if (old && old !== ref) window.VirtualPhone?.imageManager?.deleteManagedBackgroundByPath?.(old, { quiet: true, skipIfReferenced: true })?.catch?.(() => {});
+                notify('成功', '个人形象参考图已上传');
+            } catch (err) {
+                notify('上传失败', err?.message || '个人形象上传失败', '❌');
+            }
+        });
+        q('[data-wce-act="ref-delete"]')?.addEventListener('click', () => {
+            if (!ref) return;
+            const old = ref;
+            ref = '';
+            updateRefUi();
+            saveRef();
+            window.VirtualPhone?.imageManager?.deleteManagedBackgroundByPath?.(old, { quiet: true, skipIfReferenced: true })?.catch?.(() => {});
+        });
+        q('[data-wce="refOn"]')?.addEventListener('change', saveRef);
+        q('[data-wce="strength"]')?.addEventListener('input', (e) => {
+            const t = q('[data-wce-strength-text]');
+            if (t) t.textContent = Number(e.target.value).toFixed(2);
+        });
+        q('[data-wce="strength"]')?.addEventListener('change', saveRef);
+        q('[data-wce="tags"]')?.addEventListener('change', saveRef);
+    }
+
     // 🎨 界面风格卡片：微信 / QQ / LINE + 日间 / 夜间（所有聊天通用）
     _renderSkinTilesHtml(state) {
         return WECHAT_SKINS.map(sk => {
@@ -20369,7 +20556,7 @@ ${callTranscript}`;
             try { this.app.wechatData.storage?.set?.('wechat_settings_order_v1', JSON.stringify(map), false); } catch (e) { /* 忽略 */ }
         };
 
-        const INTERACTIVE = 'input, select, textarea, button:not(.wechat-detail-toggle), a, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
+        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
         let timer = null, dragging = null, startX = 0, startY = 0, lastY = 0, moved = false, suppressClick = false, rafId = 0;
         const cancelTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
         const autoScroll = () => {

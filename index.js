@@ -42,7 +42,7 @@ const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261009-payment-store-right-shift';
 const ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261011-wallet-credit-repayment';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m4';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -1499,7 +1499,7 @@ if (window.GGP_Loaded) {
         promptManager = new PromptManager(storage);
         ttsManager = new TtsManager(storage);
         // 🔊 正文朗读：酒馆正文里对白符号中的台词挂上播放按钮（用小手机的 TTS 配置）
-        import('./apps/story-voice/story-voice.js?v=20261020-sv3')
+        import('./apps/story-voice/story-voice.js?v=20261021-sv5')
             .then(module => module.installStoryVoice({ storage, ttsManager, phoneShell }))
             .catch(error => console.warn('⚠️ 正文朗读模块加载失败:', error));
         imageGenerationManager = new ImageGenerationManager(storage);
@@ -11537,7 +11537,7 @@ if (window.GGP_Loaded) {
                             phoneShell?.showNotification('错误', '日历模块加载失败', '❌');
                         });
                 } else if (appId === 'storyvoice') {
-                    import('./apps/story-voice/story-voice.js?v=20261020-sv3')
+                    import('./apps/story-voice/story-voice.js?v=20261021-sv5')
                         .then(module => {
                             const sv = module.installStoryVoice({ storage, ttsManager, phoneShell });
                             sv.phoneShell = phoneShell;
