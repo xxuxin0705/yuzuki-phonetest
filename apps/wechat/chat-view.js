@@ -2983,6 +2983,9 @@ renderChatRoom(chat) {
         queueMicrotask(() => this._translateExistingIncomingMessages(String(chat?.id || '')));
         const messages = this.app.wechatData.getMessages(chat.id);
         try { this._repairMixedStickerMessages(messages, chat.id); } catch (e) { console.warn('表情包修复失败', e); }
+        // 页面插入后、画出来之前就把连续气泡 / LINE 时间排好，避免先画一遍再跳一下
+        queueMicrotask(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } });
+        requestAnimationFrame(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } });
         setTimeout(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } }, 0);
         const userInfo = this.app.wechatData.getUserInfo();
         const isCurrentChatSending = this.isSending && String(this._activeSendingChatId || '') === String(chat.id || '');
@@ -9222,7 +9225,7 @@ ${transLines.join('\n')}`);
         try { this._applyLineReadMeta(box); } catch (e) { /* 忽略 */ }
     }
 
-    // ✓✓ LINE 风格的已读：每一串连续消息的最后一条下面显示时间 + 已读（只在 LINE 风格里显示）
+    // ✓✓ LINE 风格：每条消息下面显示自己的时间（我的消息被回复后加已读勾，同一行不占新高度）
     _applyLineReadMeta(box) {
         if (!box) return;
         const chatId = box.dataset.chatId || this.app.currentChat?.id;
@@ -9245,20 +9248,29 @@ ${transLines.join('\n')}`);
             if (!isMsg) return;
             const content = el.querySelector(':scope > .message-content') || el.querySelector('.message-content');
             if (!content) return;
-            content.querySelectorAll(':scope > .wx-line-meta').forEach(n => n.remove());
             const next = els[i + 1];
             const nextIsSame = next && next.classList.contains('chat-message') && !next.classList.contains('message-system') && next.dataset.sender === el.dataset.sender;
-            if (nextIsSame) return;
-            const idx = Number(el.dataset.messageIndex);
-            const msg = Number.isFinite(idx) ? messages[idx] : null;
+            let want = '';
             const isMe = el.dataset.sender === 'me';
-            // 只有我发出的消息在对方回复之后才显示已读；对方的消息只显示时间
-            const read = isMe && Number.isFinite(idx) && lastOtherIndex > idx;
-            const time = fmt(msg?.time);
-            if (!time && !read) return;
-            const meta = document.createElement('div');
+            void nextIsSame;
+            // 每条消息都带自己的时间，生成出来就固定，不会因为后面又来了消息而挪走
+            {
+                const idx = Number(el.dataset.messageIndex);
+                const msg = Number.isFinite(idx) ? messages[idx] : null;
+                // 只有我发出的消息在对方回复之后才显示已读；对方的消息只显示时间
+                const read = isMe && Number.isFinite(idx) && lastOtherIndex > idx;
+                const time = fmt(msg?.time);
+                if (time || read) want = `<span>${time}</span>${read ? check : ''}`;
+            }
+            // 只在内容真的变了才动 DOM，避免每次刷新都先删再加、气泡跳来跳去
+            const metas = Array.from(content.querySelectorAll(':scope > .wx-line-meta'));
+            const cur = metas[0];
+            metas.slice(1).forEach(n => n.remove());
+            if (!want) { if (cur) cur.remove(); return; }
+            if (cur && cur.innerHTML === want && cur === content.lastElementChild) return;
+            const meta = cur || document.createElement('div');
             meta.className = `wx-line-meta${isMe ? ' is-me' : ''}`;
-            meta.innerHTML = `<span>${time}</span>${read ? check : ''}`;
+            if (meta.innerHTML !== want) meta.innerHTML = want;
             content.appendChild(meta);
         });
     }
@@ -9268,14 +9280,25 @@ ${transLines.join('\n')}`);
         const id = String(chatId || '');
         const box = Array.from(root.querySelectorAll('#chat-messages')).find(el => String(el.dataset.chatId || '') === id) || root.querySelector('#chat-messages');
         if (!box) return;
-        this._applyContinuousBubbles(box);
-        if (box._wbxObs) return;
-        const obs = new MutationObserver(() => {
-            clearTimeout(box._wbxT);
-            box._wbxT = setTimeout(() => this._applyContinuousBubbles(box), 30);
-        });
-        obs.observe(box, { childList: true });
-        box._wbxObs = obs;
+        const apply = () => {
+            const obs = box._wbxObs;
+            obs?.disconnect();
+            try { this._applyContinuousBubbles(box); } finally {
+                obs?.observe(box, { childList: true, subtree: true });
+            }
+        };
+        if (!box._wbxObs) {
+            // 子树变化（新消息、展开/收起翻译、撤回等）都在画出来之前同步整理，不再延迟 30ms
+            const obs = new MutationObserver((list) => {
+                const onlyMeta = list.every(m => [...m.addedNodes, ...m.removedNodes].every(n => n.nodeType === 1 && n.classList?.contains('wx-line-meta')));
+                if (onlyMeta) return;
+                if (box._wbxPending) return;
+                box._wbxPending = true;
+                queueMicrotask(() => { box._wbxPending = false; if (box.isConnected) apply(); });
+            });
+            box._wbxObs = obs;
+        }
+        apply();
     }
 
     // 旧消息里“文字+表情包”混在一起（或表情标签被翻译成外语）的，打开聊天时拆开

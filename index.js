@@ -42,7 +42,7 @@ const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261009-payment-store-right-shift';
 const ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m7';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m8';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -6135,9 +6135,42 @@ if (window.GGP_Loaded) {
         panel.addEventListener('click', handlePanelClick);
     }
 
+    // 🔥 记住手指是在手机里面按下的：点输入框弹出键盘时页面会挪位，
+    // 随后补发的 click 可能落到手机外面，不能因此把手机关掉
+    let _phoneLastDownInside = false;
+    let _phoneLastDownAt = 0;
+    const _isInsidePhonePath = (path = []) => path.some(el =>
+        el && el.classList && (el.classList.contains('phone-in-panel') || el.classList.contains('phone-body-panel'))
+    );
+    const _rememberPhoneDown = (e) => {
+        try {
+            _phoneLastDownInside = _isInsidePhonePath(e.composedPath ? e.composedPath() : []);
+            _phoneLastDownAt = Date.now();
+        } catch (err) { /* 忽略 */ }
+    };
+    document.addEventListener('pointerdown', _rememberPhoneDown, true);
+    document.addEventListener('touchstart', _rememberPhoneDown, { capture: true, passive: true });
+    document.addEventListener('mousedown', _rememberPhoneDown, true);
+
     // 🔥 处理面板点击事件：点击手机外部关闭手机
     function handlePanelClick(e) {
         if (isDesktopPhonePanelDragEnabled()) {
+            return;
+        }
+
+        // 按下时在手机里（比如点输入框、键盘弹起导致页面挪动）→ 不关
+        if (_phoneLastDownInside && Date.now() - _phoneLastDownAt < 1500) {
+            return;
+        }
+        // 点到的元素已经被刷新掉了（不在页面上）→ 无法判断，不关
+        if (e.target && e.target.isConnected === false) {
+            return;
+        }
+        // 手机里的输入框正在输入（键盘开着）→ 第一下只收起键盘，不关手机
+        const typingPanel = document.getElementById('phone-panel');
+        const active = document.activeElement;
+        if (typingPanel?.contains?.(active) && isPhoneTypingTarget(active)) {
+            active.blur?.();
             return;
         }
 
