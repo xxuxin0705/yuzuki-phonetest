@@ -10,13 +10,13 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m10';
+import { ChatView } from './chat-view.js?v=20261021-m12';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261021-m10';
+import { MomentsView } from './moments-view.js?v=20261021-m11';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m10';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m11';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -3962,6 +3962,14 @@ export class WechatApp {
 .moment-location { margin-top: 6px; font-size: 12px; color: #576b95; }
 .moment-location i { font-size: 11px; margin-right: 2px; }
 .moment-trans-fold { margin-top: 4px; }
+.mtx .mtx-z { display: none; }
+.mtx.is-zh .mtx-o { display: none; }
+.mtx.is-zh .mtx-z { display: inline; }
+.mtx-btn { display: inline; border: 0; background: none; padding: 0 0 0 6px; margin: 0; color: #576b95; font-size: .78em; line-height: inherit; cursor: pointer; white-space: nowrap; vertical-align: baseline; font-family: inherit; }
+.moment-edit-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.moment-edit-img { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; background: #f2f2f2; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #888; text-align: center; padding: 2px; box-sizing: border-box; }
+.moment-edit-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.moment-edit-img button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border: 0; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 20px; padding: 0; cursor: pointer; z-index: 1; }
 .moment-trans-btn { background: none; border: 0; padding: 0; color: #576b95; font-size: 12px; cursor: pointer; }
 .moment-trans-body { display: none; margin-top: 4px; padding: 6px 8px; background: rgba(0,0,0,.035); border-radius: 6px; font-size: 13.5px; color: #555; line-height: 1.5; word-break: break-word; }
 .moment-trans-fold.expanded .moment-trans-body { display: block; }

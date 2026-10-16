@@ -305,7 +305,9 @@ html[data-wx-moments="qq"] .moment-item .mz-say img { width: 100% !important; he
 
 /* ---- LINE（ins 推文风格）---- */
 html[data-wx-moments="line"] .moments-page.mz-skin-line { background: #fff !important; }
-html[data-wx-moments="line"] .ins-top { padding: 70px 16px 6px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f0f0; }
+html[data-wx-moments="line"] .wechat-app:is(:has(.moments-page.mz-skin-line), :has(.ins-profile-page)) > .wechat-header.moments-header-overlay { position: relative !important; background: #fff !important; border-bottom: .5px solid #efefef !important; backdrop-filter: none !important; }
+html[data-wx-moments="line"] .wechat-app:is(:has(.moments-page.mz-skin-line), :has(.ins-profile-page)) > .wechat-header.moments-header-overlay .wechat-header-title-text { opacity: 0 !important; }
+html[data-wx-moments="line"] .ins-top { padding: 10px 16px 6px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f0f0; }
 html[data-wx-moments="line"] .ins-logo { font-size: 24px; font-weight: 700; letter-spacing: 1px; color: #111; font-family: "Brush Script MT", "Snell Roundhand", "Segoe Script", cursive, serif; }
 html[data-wx-moments="line"] .ins-me { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; background: #f2f2f2; font-size: 15px; }
 html[data-wx-moments="line"] .ins-me > *, html[data-wx-moments="line"] .ins-me img { width: 100% !important; height: 100% !important; object-fit: cover; border-radius: 50% !important; }
@@ -331,6 +333,7 @@ html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff
 .ins-acts button.is-on svg path { fill: currentColor; }
 .ins-likes { padding: 2px 14px; font-size: 13.5px; font-weight: 400; color: #111; line-height: 1.45; }
 .ins-likes b { font-weight: 700; }
+.ins-caption.ins-caption-top { padding: 2px 14px 10px; font-size: 14.5px; line-height: 1.55; color: #111; word-break: break-word; }
 .ins-acts-gap { flex: 1; }
 .ins-acts button.ins-sub { color: #8e8e8e; font-size: 15px; width: 22px; justify-content: center; }
 .ins-acts button.ins-sub.is-on { color: #0095f6; }
@@ -346,7 +349,7 @@ html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff
 .ins-time { padding: 6px 14px 0; font-size: 11px; color: #999; letter-spacing: .2px; }
 
 /* ins 个人主页：头像在最上面 → 名字 → 签名 → 动态 / 获赞 / 关注 / 粉丝 */
-.ins-pf { padding: 84px 20px 14px; text-align: center; background: #fff; }
+.ins-pf { padding: 20px 20px 14px; text-align: center; background: #fff; }
 .ins-pf-avatar { width: 92px; height: 92px; margin: 0 auto; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #f2f2f2; font-size: 38px; box-shadow: 0 0 0 3px #fff, 0 0 0 5px #e4405f; }
 .ins-pf-avatar > *, .ins-pf-avatar img { width: 100% !important; height: 100% !important; object-fit: cover; border-radius: 50% !important; }
 .ins-pf-name { margin-top: 16px; font-size: 18px; font-weight: 700; color: #111; cursor: pointer; word-break: break-word; }

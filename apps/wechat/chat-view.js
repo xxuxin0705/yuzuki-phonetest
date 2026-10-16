@@ -1,6 +1,6 @@
 import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup.js';
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
-import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m10';
+import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m11';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
@@ -5525,26 +5525,45 @@ ${ownSource}`;
     }
 
     // 😀 根据用户最新消息的语气挑一个表情（模型漏贴时的兜底）
-    _pickFallbackReactionEmoji(text = '') {
+    // 模型漏贴时的兜底：看「对方说了什么」+「角色这一轮自己回了什么」，按角色的态度挑表情
+    _pickFallbackReactionEmoji(text = '', replyText = '') {
         const t = String(text || '');
+        const r = String(replyText || '');
+        const pick = (list) => list[Math.floor(Math.random() * list.length)];
+        // 角色回复里自己用了表情：大概率顺着用
+        const replyEmojis = r.match(/\p{Extended_Pictographic}/gu) || [];
+        if (replyEmojis.length && Math.random() < 0.6) return pick(replyEmojis);
+        const tone = (() => {
+            if (/嘿嘿|嘻嘻|略{2,}|哈哈|笑死|乖|宝贝|宝宝|亲一个|亲亲|么么|再说一遍|你也太|小笨蛋|可爱|撒娇|吃醋|😝|😜|😘|😏|🤪/.test(r)) return 'playful';
+            if (/哼|你才|闭嘴|别烦|走开|滚|讨厌|生气|气死|烦死|不理你|😤|😠|💢|🙄/.test(r)) return 'annoyed';
+            if (/呜|委屈|哭|难过|伤心|对不起|抱歉|😭|🥺|😢/.test(r)) return 'hurt';
+            if (/害羞|脸红|才没有|不要说了|🫣|😳/.test(r)) return 'shy';
+            if (/想你|爱你|喜欢你|抱抱|心疼|乖乖|🥰|❤️|😍/.test(r)) return 'tender';
+            return '';
+        })();
+        const insulted = /猪|笨蛋|傻|蠢|白痴|有病|神经|滚|讨厌|烦死|闭嘴|去死|垃圾|丑|呆子|憨/.test(t);
+        if (insulted) {
+            const byTone = { playful: ['😘', '😝', '😜', '🤪', '😏', '😆'], annoyed: ['😤', '🙄', '💢', '😠', '😑'], hurt: ['🥺', '😭', '😢'], shy: ['😳', '🫣'], tender: ['🥰', '😌', '🤗'] };
+            return pick(byTone[tone] || ['🙄', '😤', '😑', '😝']);
+        }
         const rules = [
-            [/哈哈|笑死|hhh|233|草|绷不住|xswl|好好笑|笑/i, ['😂', '🤣']],
-            [/晚安|睡了|睡觉|困/, ['😴', '🌙']],
+            [/哈哈|笑死|hhh|233|绷不住|xswl|好好笑/i, ['😂', '🤣', '😆']],
+            [/晚安|睡了|睡觉|困/, ['😴', '🌙', '🥱']],
             [/早安|早上好|早啊|起床/, ['☀️', '🥰']],
-            [/谢谢|多谢|感谢|辛苦/, ['🥰', '🙏']],
-            [/爱你|喜欢你|想你|亲亲|抱抱|么么/, ['❤️', '🥰', '😘']],
-            [/难过|伤心|哭|呜|委屈|不开心|烦/, ['🥺', '🤗']],
-            [/生气|气死|讨厌|滚|烦死/, ['😤', '😳']],
-            [/好耶|太棒|成功|过了|赢|恭喜|生日/, ['🎉', '👏']],
-            [/[?？]$|吗[?？]?$|什么|为什么|怎么/, ['🤔']],
-            [/真的|天哪|居然|竟然|卧槽|!{2,}|！{2,}/, ['😮', '😳']],
+            [/谢谢|多谢|感谢|辛苦/, ['🥰', '🙏', '🤗']],
+            [/爱你|喜欢你|想你|亲亲|抱抱|么么/, tone === 'shy' ? ['😳', '🫣'] : tone === 'annoyed' ? ['🙄', '😏'] : ['❤️', '🥰', '😘']],
+            [/难过|伤心|哭|呜|委屈|不开心/, ['🥺', '🤗', '🫂']],
+            [/生气|气死|烦/, tone === 'playful' ? ['😝', '😘'] : ['😳', '🥺', '😶']],
+            [/好耶|太棒|成功|过了|赢|恭喜|生日/, ['🎉', '👏', '🥳']],
+            [/真的|天哪|居然|竟然|卧槽|!{2,}|！{2,}/, ['😮', '😳', '🤯']],
+            [/[?？]$|吗[?？]?$|什么|为什么|怎么/, tone === 'playful' ? ['😏', '🤭'] : ['🤔', '👀']],
             [/好的|行|可以|嗯|ok|收到/i, ['👌', '👍']]
         ];
         for (const [re, list] of rules) {
-            if (re.test(t)) return list[Math.floor(Math.random() * list.length)];
+            if (re.test(t)) return pick(list);
         }
-        const defaults = ['❤️', '🥰', '👍', '😊'];
-        return defaults[Math.floor(Math.random() * defaults.length)];
+        const byTone = { playful: ['😏', '😝', '🤭'], annoyed: ['🙄', '😑'], hurt: ['🥺'], shy: ['😳', '🫣'], tender: ['🥰', '❤️', '🤗'] };
+        return pick(byTone[tone] || ['👀', '🤔', '👍', '😌']);
     }
 
     _applyFallbackReaction(chatId, { isGroupChat = false, senderName = '', isViewing = false } = {}) {
@@ -5558,7 +5577,12 @@ ${ownSource}`;
         const target = [...messages].reverse().find(m => m && m.type !== 'system' && (m.from === 'me' || this._isCurrentWechatUserName?.(m.from)) && String(m.content || '').trim());
         if (!target?.id) return;
         const byKey = isGroupChat ? (this._resolveGroupMemberKey(chat, by) || by) : by;
-        const emoji = this._pickFallbackReactionEmoji(target.content);
+        // 角色这一轮自己的回复：用来判断 TA 的态度（犯贱、生气、委屈、害羞……）
+        const targetIdx = messages.indexOf(target);
+        const replyText = messages.slice(targetIdx + 1)
+            .filter(m => m && m.from !== 'me' && !this._isCurrentWechatUserName?.(m.from) && (!isGroupChat || m.from === by || m.from === byKey))
+            .map(m => String(m.content || '')).join(' ');
+        const emoji = this._pickFallbackReactionEmoji(target.content, replyText);
         data.setMessageReaction(chatId, target.id, emoji, byKey, true);
         state.used += 1;
         if (isViewing) {
@@ -5618,7 +5642,7 @@ ${ownSource}`;
         if (reactionRound === false) {
             rules.push('【表情回应·本轮不用】本轮不要输出 [表情回应:...] 标签，直接正常回复文字即可。');
         } else {
-            rules.push('【表情回应·本轮要贴】回复之前，先看对方最新发来的消息，挑一个最贴合语气和角色性格的表情贴上去，输出标签 [表情回应:emoji]，例如 [表情回应:🥰]；默认回应对方最近一条消息，也可用 [表情回应:emoji|消息内容片段] 指定目标。表情从黄豆脸、手势、爱心、白旗、勾叉、庆祝这类聊天常用表情里选，不要千篇一律只用 👍。标签单独占一行或跟在正文后都可以，不占回复条数。' +
+            rules.push('【表情回应·本轮要贴】回复之前，先想清楚「这个角色此刻真实的反应」再贴表情：结合角色人设、你们的关系、当前剧情氛围，以及对方这句话的真实意图（开玩笑、撒娇、真生气、挑衅、试探、调情……）。同一句话在不同语境下反应完全不同——比如被骂“你是猪吗”：傲娇/嘴硬的可能 😤🙄💢，犯贱/爱逗人的可能故意 😘😝😆🤪，宠溺的可能 🥰😌，委屈的可能 🥺😭；被夸时嘴硬的可能 😏🙄、害羞的可能 🫣😳；被撩、暧昧时可能 🥵😳🤤。贴的表情必须和你本轮回复文字的态度一致，不要套固定模板，也不要无脑用微笑类。输出标签 [表情回应:emoji]，例如 [表情回应:🥰]；默认回应对方最近一条消息，也可用 [表情回应:emoji|消息内容片段] 指定目标。表情从黄豆脸、手势、爱心、白旗、勾叉、庆祝这类聊天常用表情里选，不要千篇一律只用 👍。标签单独占一行或跟在正文后都可以，不占回复条数。' +
                 (isGroupChat
                     ? '群聊里每轮最多 3 个表情回应：可以是不同成员对用户的消息贴，也可以是成员之间互相贴（用“|消息内容片段”指定被回应的那条群消息）；标签写在贴表情的那个成员自己的发言行里，系统会记录是谁贴的。'
                     : '本轮贴一个即可。'));
@@ -7874,6 +7898,20 @@ ${transLines.join('\n')}`);
             .replace(/\s+/g, '');
     }
 
+    // 表情包名称 → 情绪大类（用来防止“生气”被模糊匹配成“微笑”）
+    _stickerMood(text = '') {
+        const t = String(text || '');
+        const groups = [
+            ['angry', /生气|愤怒|气死|发火|怒|暴躁|炸毛|揍|打你|凶|哼/],
+            ['speechless', /无语|问号|疑惑|疑问|黑人问号|？|\?|懵|迷惑|不解|啥|什么鬼|白眼|翻白眼|嫌弃|鄙视|呵呵|冷漠|看傻子|尴尬|汗|裂开|离谱|震惊|惊/],
+            ['sad', /哭|难过|伤心|委屈|心碎|失落|可怜|泪|呜|悲|emo|丧/i],
+            ['happy', /笑|开心|高兴|快乐|哈哈|嘻嘻|嘿嘿|得意|好耶|耶|喜欢|爱你|爱心|比心|亲亲|么么|撒娇|害羞|可爱|乖|赞|棒|期待|兴奋|满意|微笑/],
+            ['sleepy', /困|睡|晚安|累|躺/]
+        ];
+        for (const [k, re] of groups) if (re.test(t)) return k;
+        return '';
+    }
+
     findCustomEmojiByKeyword(keyword) {
         const normalizedKeyword = this.normalizeCustomEmojiKeyword(keyword);
         if (!normalizedKeyword) return null;
@@ -7892,13 +7930,25 @@ ${transLines.join('\n')}`);
         );
         if (exactMatch) return exactMatch;
 
-        return customEmojis.find(emoji =>
-            normalizedFields(emoji).some(field =>
-                field.length >= 2
-                && normalizedKeyword.length >= 2
-                && (field.includes(normalizedKeyword) || normalizedKeyword.includes(field))
-            )
-        ) || null;
+        // 模糊匹配：按重合程度打分，情绪对不上（比如要“生气”却匹配到“微笑”）的直接不要
+        const wantMood = this._stickerMood(keyword);
+        let best = null;
+        let bestScore = 0;
+        customEmojis.forEach(emoji => {
+            const fields = normalizedFields(emoji);
+            const mood = this._stickerMood(`${emoji?.name || ''} ${emoji?.description || ''}`);
+            if (wantMood && mood && wantMood !== mood) return;
+            fields.forEach(field => {
+                if (field.length < 2 || normalizedKeyword.length < 2) return;
+                let score = 0;
+                if (field.includes(normalizedKeyword)) score = normalizedKeyword.length / field.length + 1;
+                else if (normalizedKeyword.includes(field)) score = field.length / normalizedKeyword.length;
+                // 被包含的那段太短（比如 6 个字里只对上 2 个字）不算数
+                if (score > 0 && score < 1 && field.length < 3 && normalizedKeyword.length > field.length * 2) score = 0;
+                if (score > bestScore) { bestScore = score; best = emoji; }
+            });
+        });
+        return best;
     }
 
     normalizeStickerDirectImageUrl(rawUrl) {
@@ -14256,7 +14306,8 @@ ${transLines.join('\n')}`);
         const customEmojiNames = Array.isArray(myCustomEmojis)
             ? myCustomEmojis.map(e => String(e?.description || e?.name || '').trim()).filter(Boolean)
             : [];
-        const customEmojiList = customEmojiNames.length > 0 ? customEmojiNames.join('、') : '暂无可用自定义表情包';
+        const customEmojiList = (customEmojiNames.length > 0 ? customEmojiNames.join('、') : '暂无可用自定义表情包')
+            + '\n（表情包要表现发送者此刻真实的态度：结合角色人设、你们的关系、剧情氛围和对方这句话的真实意图来选。同样是被骂，傲娇的可能发生气、翻白眼，犯贱的可能故意发亲亲、坏笑、略略略，委屈的可能发哭哭；表情包的情绪要和这一轮回复文字的语气一致。清单里没有合适的，就自己写一个准确描述情绪和动作的名称（如“坏笑着飞吻”“翻白眼”“委屈巴巴”），不要随便拿不相干的开心微笑凑数。）';
         const personalImageTagInfo = this._buildWechatPersonalImageTagInfo({ targetChat, isGroupChat });
         let systemPrompt = '';
         const overrideReplacements = {
@@ -14924,7 +14975,7 @@ ${transLines.join('\n')}`);
         if (!isProactive) {
             const round = this._reactionRoundState?.[chatId];
             if (round?.allowed) {
-                lines.push('\n- 【表情回应】本轮要贴：先看用户最新消息，挑一个贴合语气的表情输出 [表情回应:emoji]（不占条数）。');
+                lines.push('\n- 【表情回应】本轮要贴：按角色人设、关系、剧情氛围和用户这句话的真实意图，贴一个表现角色此刻真实态度的表情（同样被骂，犯贱的可以 😘😝，傲娇的 😤🙄，委屈的 🥺），输出 [表情回应:emoji]（不占条数），要和本轮回复文字的语气一致。');
             } else if (round) {
                 lines.push('\n- 【表情回应】主动消息不需要贴表情；用户交互回合允许贴表情。');
             }

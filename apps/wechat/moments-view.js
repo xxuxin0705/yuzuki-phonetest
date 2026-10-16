@@ -155,6 +155,7 @@ export class MomentsView {
                     <div class="ins-avatar" data-moment-profile="${this._escapeAttr(profileKey)}" role="button" tabindex="0">${this.app.renderAvatar(avatar, '👤', moment.name)}</div>
                     <div class="ins-name" data-moment-profile="${this._escapeAttr(profileKey)}" role="button" tabindex="0">${this._escapeHtml(shownName)}${location ? `<span class="ins-loc">${this._escapeHtml(location)}</span>` : ''}</div>
                 </div>
+                ${images.length && t ? `<div class="ins-caption ins-caption-top">${t.main}</div>` : ''}
                 ${images.length ? `<div class="ins-media">${this.renderImages(images, moment)}</div>` : (t ? `<div class="ins-textcard">${t.main}</div>` : '')}
                 <div class="ins-acts">
                     <button type="button" data-mz-act="like" data-moment-id="${mid}" class="${liked ? 'is-on' : ''}" aria-label="Like">${heart}</button>
@@ -167,7 +168,6 @@ export class MomentsView {
                     <button type="button" class="ins-sub" data-mz-act="delete" data-moment-id="${mid}" aria-label="Delete" title="Delete"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h15"/><path d="M9 6.5V4.5h6v2"/><path d="M6.5 6.5 7.5 20h9l1-13.5"/><path d="M10 10.5v6M14 10.5v6"/></svg></button>
                 </div>
                 ${this._renderInsLikesHtml(moment)}
-                ${images.length && t ? `<div class="ins-caption"><b data-moment-profile="${this._escapeAttr(profileKey)}">${this._escapeHtml(shownName)}</b>${t.main}</div>` : ''}
                 ${t ? t.fold : ''}
                 ${this.renderInteractions(moment)}
                 <div class="ins-time">${this._escapeHtml(this.formatTime(moment.time))}</div>
@@ -444,22 +444,43 @@ export class MomentsView {
         return { on, autoExpand: !!t.autoExpandTranslation, label };
     }
 
-    // 正文 / 评论：开了翻译 → 先显示译文语言，“翻译”展开中文；没开 → 只显示中文，没有翻译按钮
+    // 正文 / 评论：开了翻译 → 先显示译文（外语），紧跟一个「查看翻译」；点一下换成中文、按钮变「查看原文」，再点换回来
+    //   我自己发的评论如果翻译过（带 [翻译:] 标签），同样可以切换
     _renderTranslatableText(author, rawText, { size = 16, inline = false } = {}) {
+        void inline;
         const raw = String(rawText || '');
         const hasTag = /\[\s*翻译\s*[:：]|【\s*翻译\s*[:：]/.test(raw);
         const parsed = hasTag ? parseWechatTranslationContent(raw) : { speechText: raw, translationText: '' };
         const body = String(parsed.speechText || '').trim();
         const zh = String(parsed.translationText || '').trim();
         const trans = this._getAuthorTranslation(author);
+        const mine = this._isSelfName(author);
         const norm = v => String(v || '').replace(/[\s，。！？、,.!?~～…"“”'‘’「」]/g, '');
-        if (!trans.on || !zh || norm(body) === norm(zh)) {
+        const canToggle = !!zh && norm(body) !== norm(zh) && (trans.on || mine);
+        if (!canToggle) {
             // 没开翻译：有中文译文就直接显示中文
-            return { main: this._renderEmojiText(trans.on ? body : (zh || body), size), fold: '' };
+            return { main: this._renderEmojiText(trans.on || mine ? body : (zh || body), size), fold: '' };
         }
-        const open = trans.autoExpand;
-        const fold = `<div class="moment-trans-fold${open ? ' expanded' : ''}${inline ? ' is-inline' : ''}"><button type="button" class="moment-trans-btn">${open ? '收起翻译' : '翻译'}</button><div class="moment-trans-body">${this._renderEmojiText(zh, size - 1)}</div></div>`;
-        return { main: this._renderEmojiText(body, size), fold };
+        this._ensureTransToggleBound();
+        const startZh = !!trans.autoExpand;
+        const main = `<span class="mtx${startZh ? ' is-zh' : ''}"><span class="mtx-o">${this._renderEmojiText(body, size)}</span><span class="mtx-z">${this._renderEmojiText(zh, size)}</span><button type="button" class="mtx-btn">${startZh ? '查看原文' : '查看翻译'}</button></span>`;
+        return { main, fold: '' };
+    }
+
+    // 「查看翻译 / 查看原文」切换：全局只绑一次，正文、评论、详情页、主页都能用
+    _ensureTransToggleBound() {
+        if (window.__yzMomentTransBound) return;
+        window.__yzMomentTransBound = true;
+        document.addEventListener('click', (e) => {
+            const btn = e.target?.closest?.('.mtx-btn');
+            if (!btn) return;
+            e.stopPropagation();
+            e.preventDefault();
+            const box = btn.closest('.mtx');
+            const zh = !box.classList.contains('is-zh');
+            box.classList.toggle('is-zh', zh);
+            btn.textContent = zh ? '查看原文' : '查看翻译';
+        }, true);
     }
 
     // 渲染单条朋友圈
@@ -2346,6 +2367,11 @@ export class MomentsView {
                 <div class="moment-dialog-title">编辑帖子</div>
                 <div class="moment-dialog-sub">${this._escapeHtml(moment.name || '')}</div>
                 <label class="moment-field"><span>文案</span><textarea data-f="text" rows="5">${this._escapeHtml(moment.text || '')}</textarea></label>
+                ${(moment.images || []).length ? `<div class="moment-field"><span>图片（点 × 删除）</span><div class="moment-edit-imgs">${(moment.images || []).map((img, i) => {
+                    const url = this._momentThumbUrl(moment, i);
+                    const desc = this._parseMomentImageItem(img)?.descriptionText || '';
+                    return `<div class="moment-edit-img" data-img-idx="${i}">${url ? `<img src="${this._escapeAttr(url)}" alt="">` : `<span>${this._escapeHtml(desc.slice(0, 16) || '图片')}</span>`}<button type="button" data-img-del="${i}" aria-label="删除这张图">×</button></div>`;
+                }).join('')}</div></div>` : ''}
                 <label class="moment-field"><span>位置</span><input data-f="location" type="text" placeholder="不填则不显示" value="${this._escapeAttr(moment.location || '')}"></label>
                 <label class="moment-field"><span>发布时间</span><input data-f="time" type="text" placeholder="如：2026年9月15日 23:45" value="${this._escapeAttr(timeText)}"></label>
                 <div class="moment-dialog-actions">
@@ -2353,11 +2379,26 @@ export class MomentsView {
                     <button type="button" class="is-primary" data-ok>保存</button>
                 </div>
             </div>`);
+        // 删除图片：先在弹窗里标记，保存时才真正删掉
+        const removed = new Set();
+        mask.querySelectorAll('[data-img-del]').forEach(btn => btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const i = Number(btn.dataset.imgDel);
+            removed.add(i);
+            btn.closest('.moment-edit-img')?.remove();
+        }));
         mask.querySelector('[data-ok]')?.addEventListener('click', () => {
             const live = this.app.wechatData.getMoment(momentId);
             if (!live) return mask.remove();
             const get = f => String(mask.querySelector(`[data-f="${f}"]`)?.value || '');
-            const cleaned = this._cleanMomentTextAndImages(get('text').trim(), live.images);
+            const oldImages = Array.isArray(live.images) ? live.images : [];
+            const keep = oldImages.map((_, i) => i).filter(i => !removed.has(i));
+            const keptImages = keep.map(i => oldImages[i]);
+            if (removed.size && Array.isArray(live.imageGenerationStates)) {
+                live.imageGenerationStates = keep.map(i => live.imageGenerationStates[i]);
+            }
+            const cleaned = this._cleanMomentTextAndImages(get('text').trim(), keptImages);
             live.text = cleaned.text;
             live.images = cleaned.images;
             live.location = get('location').trim();
@@ -2723,6 +2764,34 @@ export class MomentsView {
         inputBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    // 🌐 我的评论：对方（被回复的人，没有就是发帖人）私聊里开了「自动翻译我发出的消息」，
+    //   就把评论翻成对应语言显示，「查看翻译」能看回中文原文
+    _translateMyComment(moment, commentObj, replyTo = null) {
+        try {
+            const target = String(replyTo || (this._isSelfMoment(moment) ? '' : moment?.name) || '').trim();
+            if (!target || this._isSelfName(target)) return;
+            const t = this.app.wechatData.getMemberTranslationSettings?.(target) || {};
+            const lang = String(t.translateOutTo || '').trim();
+            if (!t.autoTranslateOut || !lang || lang === 'zh-CN') return;
+            const translator = this.app.chatView?._translateTextViaProvider?.bind(this.app.chatView);
+            if (!translator) return;
+            const original = String(commentObj.text || '').trim();
+            if (!original || /\[\s*翻译\s*[:：]/.test(original)) return;
+            translator(original, lang).then(out => {
+                const translated = String(out || '').trim();
+                if (!translated || translated === original) return;
+                const live = this.app.wechatData.getMoment(moment?.id) || moment;
+                const list = Array.isArray(live?.commentList) ? live.commentList : [];
+                const target2 = list.includes(commentObj) ? commentObj
+                    : [...list].reverse().find(c => this._isSelfName(c?.name) && String(c?.text || '').trim() === original);
+                if (!target2) return;
+                target2.text = `${translated} [翻译:${original}]`;
+                this.app.wechatData.saveData();
+                this._rerender();
+            }).catch(err => console.warn('⚠️ 朋友圈评论翻译失败:', err));
+        } catch (e) { /* 忽略 */ }
+    }
+
     // 提交内嵌评论
     submitInlineComment(text, inputBox) {
         const comment = text?.trim();
@@ -2734,11 +2803,13 @@ export class MomentsView {
         if (!moment.commentList) moment.commentList = [];
 
         const userInfo = this.app.wechatData.getUserInfo();
-        moment.commentList.push({
+        const myComment = {
             name: userInfo.name,
             text: comment,
             replyTo: this.currentReplyTo || null
-        });
+        };
+        moment.commentList.push(myComment);
+        this._translateMyComment(moment, myComment, this.currentReplyTo || null);
 
         moment.comments = moment.commentList.length;
         this.app.wechatData.saveData();
@@ -2772,11 +2843,13 @@ export class MomentsView {
         if (!moment.commentList) moment.commentList = [];
 
         const userInfo = this.app.wechatData.getUserInfo();
-        moment.commentList.push({
+        const myComment = {
             name: userInfo.name,
             text: comment,
             replyTo: this.currentReplyTo || null
-        });
+        };
+        moment.commentList.push(myComment);
+        this._translateMyComment(moment, myComment, this.currentReplyTo || null);
 
         moment.comments = moment.commentList.length;
         this.app.wechatData.saveData();
@@ -3183,7 +3256,7 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
             else plain.push(name);
         });
         if (!rows.length) return '\n\n【语言】所有朋友圈正文和评论都用简体中文，不要附 [翻译:] 标签。';
-        return `\n\n【语言·先译文后中文】以下好友发朋友圈正文、写评论/回复时必须直接用指定语言书写，并在该段文字末尾附上简体中文译文标签 [翻译:中文译文]（例如：今日は疲れた [翻译:今天好累]）；其他人${plain.length ? `（${plain.slice(0, 20).join('、')}）` : ''}直接用中文、不要加 [翻译:] 标签：\n${rows.join('\n')}\n图片只放进 images 数组，正文里不要写 [图片] 标签。`;
+        return `\n\n【语言·先译文后中文（必须遵守）】以下好友无论是发朋友圈正文，还是写评论、回复别人的评论（commentList 里的 text），都必须直接用指定语言书写，并在该段文字末尾附上简体中文译文标签 [翻译:中文译文]（例如：今日は疲れた [翻译:今天好累]）。看评论者是谁，就按谁的语言写，不能因为发帖人说中文就改用中文；其他人${plain.length ? `（${plain.slice(0, 20).join('、')}）` : ''}直接用中文、不要加 [翻译:] 标签：\n${rows.join('\n')}\n评论示例：{"name":"${(rows[0] || '').replace(/^- (.*?)：.*$/, '$1')}","text":"（用TA的语言写的评论） [翻译:中文意思]"}\n图片只放进 images 数组，正文里不要写 [图片] 标签。`;
     }
 
     _momentTextForPrompt(text = '') {
