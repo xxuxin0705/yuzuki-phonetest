@@ -20,8 +20,13 @@ const DEFAULTS = Object.freeze({
     readUser: false,
     markSpeaker: true,
     analysisMode: 'none', // none = 不分析（正文里的 [[名字|语气]]）；deep = 正文写完后整楼深度分析
-    deepProfile: '',      // 深度分析用哪条连接：'' = 跟随酒馆当前
-    deepTimeout: 150
+    deepProfile: '',      // 深度分析用哪条连接：'' = 跟随酒馆当前；'__custom__' = 自己填的 API；其他 = 酒馆连接配置
+    deepApiUrl: '',
+    deepApiKey: '',
+    deepModel: '',
+    deepModels: [],
+    deepTimeout: 150,
+    deepAuto: false       // true = 每轮写完自动分析并生成语音；false = 点 ▶ / ↻ 时才分析这一楼
 });
 const MARK_RE = /\[\[([^\[\]\n]{1,120})\]\][ \t]*[:：]?[ \t]*/g;
 
@@ -238,7 +243,7 @@ export class StoryVoice {
         }).finally(() => {
             this._deepJobs.delete(hash);
             this.processById(id);
-            if (!this._streaming) this._prefetchMessage(id);
+            if (!this._streaming && this.getSettings().deepAuto) this._prefetchMessage(id);
         });
         return job;
     }
@@ -255,7 +260,9 @@ export class StoryVoice {
         const profile = String(this.getSettings().deepProfile || '');
         const sys = messages.find(m => m.role === 'system')?.content || '';
         const user = messages.filter(m => m.role !== 'system').map(m => m.content).join('\n');
+        const ctl = new AbortController();
         const run = (async () => {
+            if (profile === '__custom__') return this._customChat(messages, { maxTokens, signal: ctl.signal });
             const svc = ctx?.ConnectionManagerRequestService;
             if (profile && svc?.sendRequest) {
                 const res = await svc.sendRequest(profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false });
@@ -270,7 +277,77 @@ export class StoryVoice {
         })();
         let timer;
         const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`分析超过 ${Math.round(timeout / 1000)} 秒没有完成`)), timeout); });
-        try { return String(await Promise.race([run, limit]) || ''); } finally { clearTimeout(timer); }
+        try { return String(await Promise.race([run, limit]) || ''); } finally { clearTimeout(timer); ctl.abort(); }
+    }
+
+    // ---------- 自定义 API（OpenAI 兼容）----------
+    // 填的地址可能是 https://xx.com、https://xx.com/v1、…/v1/chat/completions，统一成 …/v1 这种
+    _apiBase(url = '') {
+        let u = String(url || '').trim().replace(/\/+$/, '');
+        u = u.replace(/\/(?:chat\/completions|completions|models)$/i, '').replace(/\/+$/, '');
+        return u;
+    }
+
+    // 浏览器直连被跨域挡住时，改走酒馆自带的转发（config.yaml 里 enableCorsProxy: true）
+    async _apiFetch(url, init = {}) {
+        if (!this._apiViaProxy) {
+            try { return await fetch(url, init); }
+            catch (e) {
+                if (init.signal?.aborted || e?.name === 'AbortError') throw e;
+                if (!(e instanceof TypeError)) throw e;
+            }
+        }
+        const ctx = window.SillyTavern?.getContext?.();
+        let headers = { ...(init.headers || {}) };
+        try { headers = { ...(ctx?.getRequestHeaders?.() || {}), ...headers }; } catch (e) { /* 忽略 */ }
+        const res = await fetch(`/proxy/${url}`, { ...init, headers });
+        if (res.status === 404 && !this._apiViaProxy) throw new Error('浏览器不能直接访问这个地址（跨域），酒馆转发也没开：在酒馆 config.yaml 里把 enableCorsProxy 改成 true 并重启，或换一个允许跨域的地址');
+        this._apiViaProxy = true;
+        return res;
+    }
+
+    async fetchModels(url, key) {
+        const base = this._apiBase(url);
+        if (!/^https?:\/\//i.test(base)) throw new Error('请先填写以 http 开头的 API 地址');
+        const headers = key ? { Authorization: `Bearer ${key}` } : {};
+        const tryList = [base];
+        if (!/\/v\d+[a-z]*$/i.test(base)) tryList.push(`${base}/v1`);
+        let lastErr = null;
+        for (const b of tryList) {
+            try {
+                const res = await this._apiFetch(`${b}/models`, { headers });
+                const text = await res.text();
+                if (!res.ok) { lastErr = new Error(`HTTP ${res.status}：${text.slice(0, 160)}`); continue; }
+                let json = null;
+                try { json = JSON.parse(text); } catch (e) { lastErr = new Error('返回的不是模型列表'); continue; }
+                const list = (Array.isArray(json?.data) ? json.data : Array.isArray(json?.models) ? json.models : Array.isArray(json) ? json : [])
+                    .map(m => String(m?.id || m?.name || m || '').replace(/^models\//, '')).filter(Boolean);
+                if (!list.length) { lastErr = new Error('没有拉到模型'); continue; }
+                return { base: b, models: [...new Set(list)].sort() };
+            } catch (e) { lastErr = e; }
+        }
+        throw lastErr || new Error('拉取失败');
+    }
+
+    async _customChat(messages, { maxTokens = 6000, signal } = {}) {
+        const s = this.getSettings();
+        const base = this._apiBase(s.deepApiUrl);
+        if (!base) throw new Error('深度分析选了自定义 API，但还没填地址');
+        if (!s.deepModel) throw new Error('深度分析选了自定义 API，但还没选模型');
+        const res = await this._apiFetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(s.deepApiKey ? { Authorization: `Bearer ${s.deepApiKey}` } : {}) },
+            signal,
+            body: JSON.stringify({ model: s.deepModel, messages, temperature: 0.6, max_tokens: maxTokens, stream: false })
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(`自定义 API HTTP ${res.status}：${text.slice(0, 160)}`);
+        let json = null;
+        try { json = JSON.parse(text); } catch (e) { throw new Error('自定义 API 返回的不是 JSON'); }
+        const msg = json?.choices?.[0]?.message;
+        const out = msg?.content ?? json?.choices?.[0]?.text ?? json?.content?.[0]?.text ?? '';
+        if (!String(out || '').trim()) throw new Error(`自定义 API 没有返回内容${json?.choices?.[0]?.finish_reason ? `（${json.choices[0].finish_reason}）` : ''}`);
+        return Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out);
     }
 
     // 连接管理器里存的连接配置（深度分析可以单独选一条便宜/快的模型）
@@ -294,6 +371,7 @@ export class StoryVoice {
         let obj = {};
         try { obj = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
         const s = { ...DEFAULTS, ...(obj && typeof obj === 'object' ? obj : {}) };
+        s.deepModels = Array.isArray(s.deepModels) ? s.deepModels.map(String).filter(Boolean).slice(0, 500) : [];
         s.speakers = Array.isArray(s.speakers) ? s.speakers.filter(x => x && typeof x === 'object').map(x => ({ name: String(x.name || '').trim(), voice: String(x.voice || '').trim() })) : [];
         return s;
     }
@@ -417,6 +495,26 @@ export class StoryVoice {
         if (speaker && speaker !== bar.dataset.speaker) this._saveOverride(bar, speaker);
         btn?.classList.add('is-busy');
         bar.classList.add('is-loading');
+        let analyzed = false;
+        if (this.getSettings().analysisMode === 'deep' && !bar.dataset.deep) {
+            const mid = Number(bar.dataset.mesid);
+            const line = bar.dataset.line;
+            const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
+            if (msg && !this._deepEntry(msg)) {
+                this._toast('正在分析情绪', '分析好、语音生成好会提示你');
+                await this._startDeep(mid).catch(() => null);
+                analyzed = true;
+                const fresh = document.querySelector(`#chat .mes[mesid="${mid}"] .mes_text .yzsv-bar[data-line="${line}"]`);
+                if (fresh && fresh !== bar) {
+                    bar.classList.remove('is-loading');
+                    btn?.classList.remove('is-busy');
+                    bar = fresh;
+                    btn = fresh.querySelector('.yzsv-regen');
+                    btn?.classList.add('is-busy');
+                    bar.classList.add('is-loading');
+                }
+            }
+        }
         const job = (async () => {
             const { vi, parts } = this._lineJob(await this._voiceFor(bar.dataset.speaker || ''), bar.dataset.text, bar.dataset.cue || '', this._barDeep(bar));
             const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, { regen: true })));
@@ -433,6 +531,7 @@ export class StoryVoice {
             btn?.classList.remove('is-busy');
             bar.classList.remove('is-loading');
         }
+        if (analyzed) this._toast('语音好了 🎧', '已按分析的情绪生成，开始播放');
         this.playBars([bar], { trigger: bar.querySelector('.yzsv-play') });
     }
 
@@ -528,8 +627,8 @@ export class StoryVoice {
                     const s = this.getSettings();
                     const msg = chat[id];
                     if (s.enabled && msg && !msg.is_system) {
-                        if (s.analysisMode === 'deep') this._startDeep(id);
-                        else this._prefetchMessage(id);
+                        if (s.analysisMode !== 'deep') this._prefetchMessage(id);
+                        else if (s.deepAuto) this._startDeep(id);
                     }
                 }, 250);
             });
@@ -988,7 +1087,7 @@ export class StoryVoice {
             if (!raw) return;
             // 深度分析：不边写边生成，等正文闭合（</content>）就整楼分析
             if (s.analysisMode === 'deep') {
-                if (s.deepProfile && /<\/content>/i.test(raw) && this._deepStartedFor !== `${id}:${this._deepHashOf(msg)}`) {
+                if (s.deepAuto && s.deepProfile && /<\/content>/i.test(raw) && this._deepStartedFor !== `${id}:${this._deepHashOf(msg)}`) {
                     this._deepStartedFor = `${id}:${this._deepHashOf(msg)}`;
                     const goDeep = () => this._startDeep(id);
                     if (this._wxData) goDeep(); else this._getWechatData().catch(() => null).then(goDeep);
@@ -1339,15 +1438,21 @@ export class StoryVoice {
         trigger?.classList.add('is-active');
         // 每句台词：长句拆成几段并行合成，合成完拼成一整段再播（不会播到一半断掉）；
         // 播这一句的时候，下一句已经在后台合成
-        // 深度分析还没出结果：等它一下（最多按设置的上限），出来了按分析的演法读
+        // 深度分析还没出结果：点播放时才分析的就现在开始；等它出来按分析的演法读
+        let announce = false;
         if (this.getSettings().analysisMode === 'deep') {
             const mid = Number(bars[0]?.dataset?.mesid);
             const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
             const h = msg ? this._deepHashOf(msg) : '';
+            const needStart = h && !this._deepJobs.has(h) && !this._deepEntry(msg);
+            if (needStart) this._startDeep(mid);
             if (h && this._deepJobs.has(h)) {
+                announce = true;
                 bars.forEach(b => b.classList.add('is-loading'));
-                this._toast('正在分析情绪', '分析完就开始读');
+                trigger?.classList.add('is-busy');
+                this._toast('正在分析情绪', '分析好、语音生成好会提示你');
                 await this._deepJobs.get(h).catch(() => null);
+                trigger?.classList.remove('is-busy');
                 bars.forEach(b => b.classList.remove('is-loading'));
                 if (this.playing !== run) return;
                 const fresh = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mid}"] .mes_text .yzsv-bar`));
@@ -1380,6 +1485,7 @@ export class StoryVoice {
                 const q = queue[i];
                 q.bar.classList.add('is-loading');
                 const urls = await jobs[i];
+                if (announce) { announce = false; this._toast('语音好了 🎧', '已按分析的情绪生成，开始播放'); }
                 start(i + 1); start(i + 2);
                 if (this.playing !== run) return;
                 q.bar.classList.remove('is-loading');
@@ -1557,6 +1663,15 @@ export class StoryVoice {
 .yzsv-field label { display: block; font-size: 12.5px; color: #555; margin-bottom: 6px; font-weight: 600; }
 .yzsv-input { width: 100%; box-sizing: border-box; border: 1px solid #ececf2; border-radius: 11px; padding: 9px 11px; font-size: 13px; background: #f8f8fb; color: #222; outline: none; }
 .yzsv-input:focus { border-color: #a18cd1; background: #fff; }
+select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #999 50%), linear-gradient(135deg, #999 50%, transparent 50%); background-position: calc(100% - 16px) 17px, calc(100% - 11px) 17px; background-size: 5px 5px; background-repeat: no-repeat; text-overflow: ellipsis; }
+.yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-only-none[hidden] { display: none !important; }
+.yzsv-key { display: flex; gap: 8px; align-items: center; }
+.yzsv-key .yzsv-input { flex: 1; min-width: 0; }
+.yzsv-eye { flex: 0 0 40px; height: 40px; border: 1px solid #ececf2; border-radius: 11px; background: #f8f8fb; color: #777; cursor: pointer; font-size: 14px; }
+.yzsv-eye { display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.yzsv-eye .yzsv-eye-slash { display: none; }
+.yzsv-eye.is-hidden .yzsv-eye-slash { display: inline; }
+.yzsv-fetch { flex: 0 0 auto; height: 40px; white-space: nowrap; }
 .yzsv-spk { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 12px; background: #f8f8fb; margin-bottom: 8px; }
 .yzsv-spk-av { flex: 0 0 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #a18cd1, #fbc2eb); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
 .yzsv-spk .yzsv-input { background: #fff; padding: 7px 9px; }
@@ -1616,15 +1731,42 @@ export class StoryVoiceApp {
                             </div>
                             <input type="hidden" data-k="analysisMode" value="${s.analysisMode === 'deep' ? 'deep' : 'none'}">
                         </div>
-                        <div class="yzsv-note" style="margin:-4px 0 12px;">不分析：按正文里模型顺手写的 [[名字|语气]] 读，边写边生成，最快。<br>深度分析：正文写完（&lt;/content&gt; 闭合）后，把整楼交给模型当配音导演，读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。每楼多一次模型调用，分析完才生成语音。</div>
+                        <div class="yzsv-note yzsv-only-none" ${s.analysisMode === 'deep' ? 'hidden' : ''} style="margin:-4px 0 4px;">按正文里模型顺手写的 [[名字|语气]] 读，边写边生成，最快，不额外调用模型。</div>
+                        <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
+                        <div class="yzsv-field"><label>什么时候分析</label>
+                            <div class="yzsv-seg">
+                                <button type="button" data-auto="0" class="${!s.deepAuto ? 'is-on' : ''}">点播放时才分析</button>
+                                <button type="button" data-auto="1" class="${s.deepAuto ? 'is-on' : ''}">每轮自动分析</button>
+                            </div>
+                            <input type="hidden" data-k="deepAuto" value="${s.deepAuto ? '1' : '0'}">
+                        </div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">点播放时才分析：每楼照常先挂 ▶ 和 ↻，点了哪一楼才调用副 API 分析那一楼，分析完生成语音、弹出提示并开始播放，不点就不花钱。<br>每轮自动分析：每次回复写完就自动分析并提前生成语音，点 ▶ 马上能听，但每轮都会调用一次副 API。</div>
                         <div class="yzsv-field"><label>深度分析用的连接</label>
                             <select class="yzsv-input" data-k="deepProfile">
                                 <option value="">跟随酒馆当前的 API</option>
-                                ${this.sv.connectionProfiles().map(p => `<option value="${esc(p.id)}" ${s.deepProfile === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+                                <option value="__custom__" ${s.deepProfile === '__custom__' ? 'selected' : ''}>自定义 API（自己填地址和密钥）</option>
+                                ${this.sv.connectionProfiles().map(p => `<option value="${esc(p.id)}" ${s.deepProfile === p.id ? 'selected' : ''}>酒馆连接 · ${esc(p.name)}</option>`).join('')}
                             </select>
                         </div>
+                        <div class="yzsv-api" ${s.deepProfile === '__custom__' ? '' : 'hidden'}>
+                            <div class="yzsv-field"><label>API 地址</label><input class="yzsv-input" data-k="deepApiUrl" value="${esc(s.deepApiUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" autocomplete="off"></div>
+                            <div class="yzsv-field"><label>API 密钥</label>
+                                <div class="yzsv-key"><input class="yzsv-input" type="password" data-k="deepApiKey" value="${esc(s.deepApiKey)}" placeholder="sk-..." spellcheck="false" autocomplete="new-password"><button type="button" class="yzsv-eye is-hidden" title="显示 / 隐藏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="yzsv-eye-slash" d="M4 4l16 16"/></svg></button></div>
+                            </div>
+                            <div class="yzsv-field"><label>模型</label>
+                                <div class="yzsv-key">
+                                    <select class="yzsv-input" data-k="deepModel">
+                                        ${(s.deepModels.length || s.deepModel) ? [...new Set([s.deepModel, ...s.deepModels].filter(Boolean))].map(m => `<option value="${esc(m)}" ${m === s.deepModel ? 'selected' : ''}>${esc(m)}</option>`).join('') : '<option value="">先拉取模型</option>'}
+                                    </select>
+                                    <button type="button" class="yzsv-mini yzsv-fetch" id="yzsv-fetch">${s.deepModels.length ? '重新拉取' : '拉取模型'}</button>
+                                </div>
+                            </div>
+                            <div class="yzsv-btns" style="margin-bottom:10px;"><button type="button" class="yzsv-mini" id="yzsv-api-test">测试连接</button></div>
+                        </div>
                         <div class="yzsv-field"><label>单次分析最长等待（秒）</label><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
-                        <div class="yzsv-note">连接在酒馆「连接配置管理」里保存，可以给分析单独选一条快一点的模型。分析结果会缓存，正文没改就不会重复调用；楼层下面可以点「重新分析」。</div>
+                        <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果会缓存，正文没改就不会重复调用；楼层下面可以点「重新分析」。</div>
+                        </div>
                     </div>
 
                     <div class="yzsv-sec">对白符号 · 跳过符号</div>
@@ -1683,6 +1825,11 @@ export class StoryVoiceApp {
             emotionCue: !!val('emotionCue')?.checked,
             analysisMode: String(val('analysisMode')?.value || 'none') === 'deep' ? 'deep' : 'none',
             deepProfile: String(val('deepProfile')?.value || ''),
+            deepApiUrl: String(val('deepApiUrl')?.value || '').trim(),
+            deepApiKey: String(val('deepApiKey')?.value || '').trim(),
+            deepModel: String(val('deepModel')?.value || '').trim(),
+            deepModels: this.sv.getSettings().deepModels,
+            deepAuto: String(val('deepAuto')?.value || '0') === '1',
             deepTimeout: Math.min(600, Math.max(30, Number(val('deepTimeout')?.value) || 150)),
             quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
             skips: String(val('skips')?.value || '').trim(),
@@ -1784,10 +1931,66 @@ export class StoryVoiceApp {
             root.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('is-on', x === b));
             const h = root.querySelector('[data-k="analysisMode"]');
             if (h) h.value = b.dataset.mode;
+            const deepBox = root.querySelector('.yzsv-deepbox');
+            if (deepBox) deepBox.hidden = b.dataset.mode !== 'deep';
+            const noneNote = root.querySelector('.yzsv-only-none');
+            if (noneNote) noneNote.hidden = b.dataset.mode === 'deep';
             this.sv.saveSettings(this._collect());
             toast('已保存', b.dataset.mode === 'deep' ? '正文写完后先深度分析情绪再朗读' : '不分析，按正文标记直接读');
         }));
-        root.querySelector('select[data-k="deepProfile"]')?.addEventListener('change', () => this.sv.saveSettings(this._collect()));
+        root.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-auto]').forEach(x => x.classList.toggle('is-on', x === b));
+            const h = root.querySelector('[data-k="deepAuto"]');
+            if (h) h.value = b.dataset.auto;
+            this.sv.saveSettings(this._collect());
+            toast('已保存', b.dataset.auto === '1' ? '每轮写完自动分析并生成语音' : '点播放时才分析那一楼');
+        }));
+        root.querySelector('select[data-k="deepProfile"]')?.addEventListener('change', (e) => {
+            const box = root.querySelector('.yzsv-api');
+            if (box) box.hidden = e.target.value !== '__custom__';
+            this.sv.saveSettings(this._collect());
+        });
+        root.querySelector('select[data-k="deepModel"]')?.addEventListener('change', () => { this.sv.saveSettings(this._collect()); toast('已保存', `深度分析用 ${root.querySelector('select[data-k="deepModel"]').value}`); });
+        root.querySelector('.yzsv-eye')?.addEventListener('click', (e) => {
+            const inp = root.querySelector('[data-k="deepApiKey"]');
+            if (!inp) return;
+            const show = inp.type === 'password';
+            inp.type = show ? 'text' : 'password';
+            e.currentTarget.classList.toggle('is-hidden', !show);
+        });
+        root.querySelector('#yzsv-fetch')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const cur = this._collect();
+            btn.disabled = true;
+            const old = btn.textContent;
+            btn.textContent = '拉取中…';
+            try {
+                const { base, models } = await this.sv.fetchModels(cur.deepApiUrl, cur.deepApiKey);
+                const keep = models.includes(cur.deepModel) ? cur.deepModel : models[0];
+                const sel = root.querySelector('select[data-k="deepModel"]');
+                if (sel) sel.innerHTML = models.map(m => `<option value="${esc(m)}" ${m === keep ? 'selected' : ''}>${esc(m)}</option>`).join('');
+                const urlInp = root.querySelector('[data-k="deepApiUrl"]');
+                if (urlInp && base !== this.sv._apiBase(cur.deepApiUrl)) urlInp.value = base;
+                this.sv.saveSettings({ ...this._collect(), deepModels: models, deepModel: keep });
+                btn.textContent = '重新拉取';
+                toast('拉取成功', `共 ${models.length} 个模型，已选 ${keep}`, '✅');
+            } catch (err) {
+                btn.textContent = old;
+                toast('拉取失败', String(err?.message || err).slice(0, 160), '⚠️');
+            } finally { btn.disabled = false; }
+        });
+        root.querySelector('#yzsv-api-test')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            this.sv.saveSettings(this._collect());
+            btn.disabled = true;
+            btn.textContent = '测试中…';
+            try {
+                const out = await this.sv._customChat([{ role: 'user', content: '只回复两个字：收到' }], { maxTokens: 20 });
+                toast('连接正常', `模型回复：${String(out).trim().slice(0, 40)}`, '✅');
+            } catch (err) {
+                toast('连接失败', String(err?.message || err).slice(0, 160), '⚠️');
+            } finally { btn.disabled = false; btn.textContent = '测试连接'; }
+        });
         root.querySelectorAll('input.yzsv-input[data-k]').forEach(inp => inp.addEventListener('change', () => this.sv.saveSettings(this._collect())));
         root.querySelector('#yzsv-test')?.addEventListener('click', async () => {
             const s = this.sv.saveSettings(this._collect());
