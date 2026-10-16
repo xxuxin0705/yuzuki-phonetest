@@ -192,10 +192,11 @@ export class TtsManager {
         const appId = this._getStoredProviderValue(provider, 'app-id', 'phone-tts-volc-app-id');
         const resourceId = this._getStoredProviderValue(provider, 'resource-id', 'phone-tts-volc-resource-id') || 'seed-tts-2.0';
         const relayUrl = String(options.relayUrl || this._getStoredProviderValue(provider, 'relay-url') || '').trim();
+        // 正文朗读的「自定义 OpenAI 兼容」渠道：地址和 Key 由调用方直接给
         return {
             provider,
-            apiKey,
-            apiUrl,
+            apiKey: String(options.apiKey || '').trim() || apiKey,
+            apiUrl: String(options.apiUrl || '').trim() || apiUrl,
             model,
             voice,
             appId,

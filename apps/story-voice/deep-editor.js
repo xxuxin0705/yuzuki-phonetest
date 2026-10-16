@@ -159,6 +159,8 @@ function injectStyle() {
 .yzsv-ed-chips[hidden] { display: none !important; }
 .yzsv-ed-chips button[data-preset] { background: #fff4f0; border-color: #f4d9cf; color: #b0603f; }
 .yzsv-ed-chips button[data-preset].is-nsfw, .yzsv-ed-chips.is-nsfw button { background: #fdeef3; border-color: #f2bfd0; color: #c0396b; }
+.yzsv-ed-chips button[data-preset].is-sel { background: #3b82f6 !important; border-color: #3b82f6 !important; color: #fff !important; box-shadow: 0 2px 6px rgba(59,130,246,.35); }
+.yzsv-ed-chips button[data-preset].is-sel::before { filter: brightness(1.6); }
 .yzsv-ed-chips button[data-preset].is-nsfw::before, .yzsv-ed-tabs button[data-tab="nsfw"]::before { content: '🔞'; font-size: 10px; margin-right: 2px; }
 .yzsv-ed-tabs button[data-tab="nsfw"] { color: #c0396b; }
 .yzsv-ed-tabs button[data-tab="nsfw"].is-on { background: #fdeef3; }
@@ -230,7 +232,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-set"><span>张力</span><div class="yzsv-ed-seg" data-k="t">${TENSIONS.map(([n, l]) => `<button type="button" data-v="${n}" class="${n === t ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-set"><span>语速</span><div class="yzsv-ed-seg" data-k="pace">${PACES.map(([k, l]) => `<button type="button" data-v="${k}" class="${k === pace ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-tabs">${[['preset', '一键演法'], ...groups.map(g => [g.key, g.label])].map(([k, l], j) => `<button type="button" data-tab="${k}" class="${(k === 'preset') ? 'is-on' : ''}">${l}</button>`).join('')}</div>
-            <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" class="${p.nsfw ? 'is-nsfw' : ''}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
+            <div class="yzsv-ed-chips" data-pane="preset">${presets.map((p, j) => `<button type="button" data-preset="${j}" class="${p.nsfw ? 'is-nsfw' : ''}${v.preset === p.label ? ' is-sel' : ''}" title="张力 ${p.t} · ${esc(p.p)}${p.tags.length ? ' · ' + esc(p.tags.map(x => `[${x}]`).join('')) : ''}">${esc(p.label)}</button>`).join('')}</div>
             ${groups.map(g => `<div class="yzsv-ed-chips${g.key === 'nsfw' ? ' is-nsfw' : ''}" data-pane="${g.key}" hidden>${g.items.map(([l, v]) => `<button type="button" data-ins="${esc(v)}" title="${esc(v)}">${esc(l)}</button>`).join('')}</div>`).join('')}
             <div class="yzsv-ed-hint">情绪、声音放在要生效的字前面（光标在哪就插在哪，没点过就插在句首）；一键演法会换掉句首的标签并设好张力和语速。</div>
             <div class="yzsv-ed-sent" hidden></div>
@@ -274,7 +276,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const r = read(row);
         const old = entry.lines[r.text] || {};
         const script = r.script && r.script !== r.text ? r.script : '';
-        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, t: r.t, s: script, amb: r.amb, ambSet: true };
+        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, t: r.t, s: script, amb: r.amb, ambSet: true, preset: row._preset !== undefined ? row._preset : (old.preset || '') };
         if (!r.amb) delete next.amb;
         const changed = ['role', 'pace', 't', 's', 'amb'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
         if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
@@ -438,6 +440,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (presetBtn) {
             const p = presets[Number(presetBtn.dataset.preset)];
             applyPreset(row, ta, p);
+            // 选中的一键演法标蓝；之后改张力、语速都不会取消选中
+            row.querySelectorAll('[data-preset]').forEach(b => b.classList.toggle('is-sel', b === presetBtn));
+            row._preset = p?.label || '';
             if (p?.nsfw) toNsfw();
             return;
         }
@@ -450,6 +455,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             return;
         }
         if (e.target.closest('.yzsv-ed-reset')) {
+            row.querySelectorAll('[data-preset].is-sel').forEach(b => b.classList.remove('is-sel'));
+            row._preset = '';
             const ta = row.querySelector('.yzsv-ed-script');
             ta.value = ta.value.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim() || row.dataset.text;
             return;

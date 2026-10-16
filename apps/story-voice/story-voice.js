@@ -3,7 +3,7 @@
 
 import { startAmbience, AMBIENCE_LABELS } from './ambience.js?v=20261021-am1';
 import { adaptScript } from './tts-adapt.js?v=20261021-ad2';
-import { openDeepEditor } from './deep-editor.js?v=20261021-ed10';
+import { openDeepEditor } from './deep-editor.js?v=20261021-ed11';
 import { gateCue, STORY_TONES } from './deep-analysis.js?v=20261021-dp8';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp8';
 
@@ -29,6 +29,10 @@ const DEFAULTS = Object.freeze({
     nsfw: false,          // 旧设置，已不用（情节由分析判断）
     ttsProvider: '',      // 正文朗读用哪个语音渠道：'' = 跟随小手机「设置 → 语音」
     ttsModels: {},        // 每个渠道单独指定的模型：{ fish: 's2.1-pro', minimax_cn: 'speech-2.8-hd' }
+    customUrl: '',        // 第三方（OpenAI 兼容）语音接口
+    customKey: '',
+    customModel: '',
+    customModels: [],
     ambienceOn: true,     // 播放时垫环境声（深度分析自动判断；简单 / 手动在 🎭 里选）
     ambienceVol: 30,
     autoOno: true,        // 简单分析：按语气自动加拟声词（笑→哈哈，哭→呜……）
@@ -374,6 +378,27 @@ export class StoryVoice {
         return res;
     }
 
+    // 语音渠道的模型列表
+    async fetchTtsModels(channel) {
+        const st = this.getSettings();
+        const known = (TTS_CHANNELS.find(c => c.id === channel) || {}).models || [];
+        if (channel === 'fish') {
+            const res = await this._apiFetch('https://api.fish.audio/compat/v1/models', {});
+            const json = await res.json().catch(() => null);
+            const ids = (json?.data || []).map(m => String(m?.id || '').replace(/^fish-audio\//, '')).filter(Boolean);
+            return ids.length ? ids : known;
+        }
+        let url = '', key = '';
+        if (channel === 'custom_openai') { url = st.customUrl; key = st.customKey; }
+        else if (channel === 'openai' || channel === 'nimo') {
+            const c = this.tts?._resolveConfig?.({ provider: channel }) || {};
+            url = c.apiUrl; key = c.apiKey;
+        } else return known; // MiniMax、豆包、IndexTTS 没有模型列表接口，用常用的
+        const base = String(url || '').replace(/\/+$/, '').replace(/\/(?:audio\/speech|chat\/completions|models)$/i, '');
+        const { models } = await this.fetchModels(base, key);
+        return models;
+    }
+
     async fetchModels(url, key) {
         const base = this._apiBase(url);
         if (!/^https?:\/\//i.test(base)) throw new Error('请先填写以 http 开头的 API 地址');
@@ -487,6 +512,7 @@ export class StoryVoice {
         s.nsfw = !!s.nsfw;
         s.ttsProvider = String(s.ttsProvider || '').trim();
         s.ttsModels = s.ttsModels && typeof s.ttsModels === 'object' ? s.ttsModels : {};
+        s.customModels = Array.isArray(s.customModels) ? s.customModels.map(String).filter(Boolean).slice(0, 300) : [];
         s.deepModels = Array.isArray(s.deepModels) ? s.deepModels.map(String).filter(Boolean).slice(0, 500) : [];
         s.speakers = Array.isArray(s.speakers) ? s.speakers.filter(x => x && typeof x === 'object').map(x => ({ name: String(x.name || '').trim(), voice: String(x.voice || '').trim() })) : [];
         return s;
@@ -1356,7 +1382,19 @@ export class StoryVoice {
     // 按小手机的规则算出某人（联系人或“我”）当前该用的音色
     // 正文朗读用的渠道：朗读 App 里选的，没选就跟随小手机语音设置
     _storyProvider() {
-        return this.getSettings().ttsProvider || String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn').trim() || 'minimax_cn';
+        const p = this.getSettings().ttsProvider;
+        if (p === 'custom_openai') return 'openai'; // 第三方 OpenAI 兼容：按 OpenAI 的方式发
+        return p || String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn').trim() || 'minimax_cn';
+    }
+
+    // 第三方渠道：完整的 /audio/speech 地址
+    _customSpeechUrl() {
+        let u = String(this.getSettings().customUrl || '').trim().replace(/\/+$/, '');
+        if (!u) return '';
+        if (/\/audio\/speech$/i.test(u)) return u;
+        u = u.replace(/\/(?:models|chat\/completions)$/i, '');
+        if (!/\/v\d+[a-z]*$/i.test(u)) u += '/v1';
+        return `${u}/audio/speech`;
     }
 
     _pickVoice(obj = {}) {
@@ -1366,6 +1404,11 @@ export class StoryVoice {
         const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
         const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
         if (String(voices[globalProvider] || '').trim()) return { voice: String(voices[globalProvider]).trim(), provider: globalProvider, languageBoost: lang };
+        // 朗读 App 里明确选了渠道：一律走这个渠道（这个渠道没单独填音色，就借用别处填的音色 ID）
+        if (this.getSettings().ttsProvider) {
+            const any = (has[0] && String(has[0][1]).trim()) || String(obj.ttsVoice || '').trim();
+            return any ? { voice: any, provider: globalProvider, languageBoost: lang } : null;
+        }
         const provider = bound || globalProvider;
         if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang };
         if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang };
@@ -1447,7 +1490,7 @@ export class StoryVoice {
     async _synth(text, voiceInfo, { regen = false, signal } = {}) {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
         let vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
-        const provider = vi.provider || this._storyProvider();
+        const provider = this.getSettings().ttsProvider ? this._storyProvider() : (vi.provider || this._storyProvider());
         const prov = vi.provider || provider;
         let fish = null;
         let extra = null;
@@ -1480,7 +1523,7 @@ export class StoryVoice {
         }
         vi = fish ? { ...vi, fish } : vi;
         if (extra) vi = { ...vi, extra };
-        const key = `${provider}\u0001${this.getSettings().ttsModels?.[vi.provider || provider] || ''}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${fish ? JSON.stringify(fish) : ''}\u0001${extra ? JSON.stringify(extra) : ''}\u0001${text}`;
+        const key = `${this.getSettings().ttsProvider || ''}\u0001${provider}\u0001${this.getSettings().ttsProvider === 'custom_openai' ? `${this.getSettings().customUrl}|${this.getSettings().customModel}` : (this.getSettings().ttsModels?.[provider] || '')}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${fish ? JSON.stringify(fish) : ''}\u0001${extra ? JSON.stringify(extra) : ''}\u0001${text}`;
         // 记下「这一句最后实际发给语音接口的是什么」，编辑面板里可以看到，方便查不对的地方
         const sentInfo = { text, provider: prov, model: this._modelOf(prov), fish: fish || null, extra: extra || null, at: Date.now() };
         if (!regen && this.cache.has(key)) { this._noteSent({ ...sentInfo, cached: true }); return this.cache.get(key); }
@@ -1497,9 +1540,18 @@ export class StoryVoice {
         const token = (this._gen.get(key) || 0) + 1;
         this._gen.set(key, token);
         const opts = { voice: vi.voice || undefined, signal };
-        opts.provider = vi.provider || this._storyProvider();
-        const mdl = this.getSettings().ttsModels?.[opts.provider];
-        if (mdl) opts.model = mdl;
+        const st = this.getSettings();
+        // 选了渠道：强制走它（别让联系人里绑的旧渠道抢走）
+        opts.provider = st.ttsProvider ? this._storyProvider() : (vi.provider || this._storyProvider());
+        if (st.ttsProvider === 'custom_openai') {
+            opts.apiUrl = this._customSpeechUrl();
+            opts.apiKey = st.customKey || '';
+            if (st.customModel) opts.model = st.customModel;
+            if (!opts.apiUrl) throw new Error('第三方语音渠道还没填接口地址（朗读 App → 语音渠道）');
+        } else {
+            const mdl = st.ttsModels?.[opts.provider];
+            if (mdl) opts.model = mdl;
+        }
         if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
         if (vi.fish) opts.fish = vi.fish;
         // 重新生成：让 Fish 的随机性稍微变一下，避免接口直接给回一模一样的音频
@@ -1587,6 +1639,7 @@ export class StoryVoice {
     }
 
     _modelOf(provider = '') {
+        if (this.getSettings().ttsProvider === 'custom_openai' && provider === 'openai') return this.getSettings().customModel || '';
         const own = this.getSettings().ttsModels?.[provider];
         if (own) return own;
         try { return String(this.tts?._resolveConfig?.({ provider })?.model || ''); } catch (e) { return ''; }
@@ -1965,7 +2018,11 @@ export class StoryVoice {
 .yzsv-row > span:first-child { flex: 1; min-width: 0; font-size: 14px; }
 .yzsv-row small, .yzsv-note { display: block; color: #9a9aa6; font-size: 11px; line-height: 1.5; margin-top: 3px; font-weight: 400; }
 .yzsv-switch { position: relative; flex: 0 0 44px; width: 44px; height: 26px; }
-.yzsv-switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.yzsv-switch input, .yzsv-switch input[type=checkbox] { position: absolute !important; opacity: 0 !important; inset: 0 !important; width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; cursor: pointer; -webkit-appearance: none !important; appearance: none !important; background: transparent !important; border: 0 !important; box-shadow: none !important; outline: none !important; z-index: 2; }
+.yzsv-switch input::before, .yzsv-switch input::after { display: none !important; content: none !important; }
+.yzsv-chips-mini { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.yzsv-chips-mini button { border: 1px solid #e3def2; background: #f7f5fc; color: #6b54a8; border-radius: 999px; padding: 3px 9px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
+.yzsv-chips-mini button.is-on { background: #3b82f6; border-color: #3b82f6; color: #fff; }
 .yzsv-switch i { position: absolute; inset: 0; border-radius: 13px; background: #e2e2e8; transition: background .2s; pointer-events: none; }
 .yzsv-switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .2s; }
 .yzsv-switch input:checked + i { background: #a18cd1; }
@@ -2016,7 +2073,8 @@ const TTS_CHANNELS = [
     { id: 'openai', label: 'OpenAI 兼容', models: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'] },
     { id: 'volcengine', label: '豆包 / 火山引擎', models: [] },
     { id: 'nimo', label: '小米 MiMo', models: ['mimo-v2.5-tts'] },
-    { id: 'indextts', label: 'IndexTTS（本地）', models: ['index-tts2'] }
+    { id: 'indextts', label: 'IndexTTS（本地）', models: ['index-tts2'] },
+    { id: 'custom_openai', label: '第三方（OpenAI 兼容）', models: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'] }
 ];
 
 export class StoryVoiceApp {
@@ -2058,11 +2116,8 @@ export class StoryVoiceApp {
                                 ${[['', '跟随小手机「设置 → 语音」'], ...TTS_CHANNELS.map(c => [c.id, c.label])].map(([v, l]) => `<option value="${v}" ${s.ttsProvider === v ? 'selected' : ''}>${l}${v ? this._channelState(v) : ` （现在是 ${esc((TTS_CHANNELS.find(c => c.id === String(this.sv.storage?.get?.('phone-tts-provider') || ''))?.label) || String(this.sv.storage?.get?.('phone-tts-provider') || '未设置'))}）`}</option>`).join('')}
                             </select>
                         </div>
-                        <div class="yzsv-field"><label>这个渠道用的模型</label>
-                            <input class="yzsv-input" data-k="ttsModel" list="yzsv-model-list" value="${esc(s.ttsModels?.[this.sv._storyProvider()] || '')}" placeholder="留空 = 用「设置 → 语音」里填的（${esc(this.sv._modelOf(this.sv._storyProvider()) || '默认')}）" spellcheck="false" autocomplete="off">
-                            <datalist id="yzsv-model-list">${(TTS_CHANNELS.find(c => c.id === this.sv._storyProvider())?.models || []).map(m => `<option value="${esc(m)}">`).join('')}</datalist>
-                        </div>
-                        <div class="yzsv-note">只改正文朗读，不影响微信语音消息、通话。API 地址和 Key 还是在小手机「设置 → 语音」里给对应渠道填一次；角色的音色 ID 要是这个渠道的（微信联系人可以给每个渠道各填一个，会自动用对应的那个）。<br>想要情绪标签效果最好：Fish 选 s2.1-pro / s2-pro；MiniMax 选 speech-2.8-hd（只有 2.8 认叹气、笑、喘这些声音）；OpenAI 选 gpt-4o-mini-tts。</div>
+                        ${this._channelFields(s)}
+                        <div class="yzsv-note">只改正文朗读，不影响微信语音消息、通话。选了渠道后一律走它，角色音色 ID 要填这个渠道的（微信联系人可以给每个渠道各填一个）。<br>想要情绪标签效果最好：Fish 选 s2.1-pro / s2-pro；MiniMax 选 speech-2.8-hd；OpenAI 选 gpt-4o-mini-tts。</div>
                     </div>
 
                     <div class="yzsv-sec">情绪分析</div>
@@ -2160,8 +2215,39 @@ export class StoryVoiceApp {
         return document.querySelector('.phone-view-current') || document;
     }
 
+    // 选中渠道下面的地址 / Key / 模型
+    _channelFields(s) {
+        const ch = s.ttsProvider || String(this.sv.storage?.get?.('phone-tts-provider') || 'minimax_cn');
+        const eye = '<button type="button" class="yzsv-eye is-hidden" data-eye title="显示 / 隐藏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="yzsv-eye-slash" d="M4 4l16 16"/></svg></button>';
+        const meta = TTS_CHANNELS.find(c => c.id === ch) || { models: [] };
+        let url = '', key = '', model = '', placeholder = '';
+        if (ch === 'custom_openai') {
+            url = s.customUrl; key = s.customKey; model = s.customModel;
+            placeholder = '例：gpt-4o-mini-tts';
+        } else {
+            let c = {};
+            try { c = this.sv.tts?._resolveConfig?.({ provider: ch }) || {}; } catch (e) { c = {}; }
+            url = c.apiUrl || ''; key = c.apiKey || '';
+            model = s.ttsModels?.[ch] || '';
+            placeholder = `留空 = 用「设置 → 语音」里的（${c.model || '默认'}）`;
+        }
+        const list = [...new Set([...(ch === 'custom_openai' ? s.customModels : []), ...(this._fetched?.[ch] || []), ...meta.models])];
+        return `
+            <div class="yzsv-chan" data-chan="${esc(ch)}">
+                <div class="yzsv-field"><label>接口地址${ch === 'custom_openai' ? '' : '（和「设置 → 语音」同步）'}</label><input class="yzsv-input" data-ch="url" value="${esc(url)}" placeholder="${ch === 'custom_openai' ? 'https://example.com/v1' : '这个渠道的接口地址'}" spellcheck="false" autocomplete="off"></div>
+                <div class="yzsv-field"><label>API Key${key ? '' : ' <span style="color:#d0605a">（还没填）</span>'}</label><div class="yzsv-key"><input class="yzsv-input" type="password" data-ch="key" value="${esc(key)}" placeholder="sk-..." spellcheck="false" autocomplete="new-password">${eye}</div></div>
+                <div class="yzsv-field"><label>模型</label>
+                    <div class="yzsv-key"><input class="yzsv-input" data-ch="model" list="yzsv-model-list" value="${esc(model)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><button type="button" class="yzsv-mini yzsv-fetch" data-ch-fetch>${this._fetched?.[ch] ? '重新拉取' : '拉取模型'}</button></div>
+                    <datalist id="yzsv-model-list">${list.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
+                    ${list.length ? `<div class="yzsv-chips-mini">${list.slice(0, 24).map(m => `<button type="button" data-ch-pick="${esc(m)}" class="${m === model ? 'is-on' : ''}">${esc(m)}</button>`).join('')}</div>` : ''}
+                </div>
+                ${ch === 'custom_openai' ? '<div class="yzsv-note" style="margin-top:-4px">第三方渠道按 OpenAI 的 /v1/audio/speech 格式请求；角色音色填这个服务的音色名（如 alloy、nova，或服务商给的音色 ID）。</div>' : ''}
+            </div>`;
+    }
+
     // 下拉里提示这个渠道有没有配好 Key
     _channelState(provider) {
+        if (provider === 'custom_openai') { const st = this.sv.getSettings(); return st.customUrl ? (st.customKey ? ' ✓ 已配置' : ' （还没填 Key）') : ' （还没填地址）'; }
         try {
             const c = this.sv.tts?._resolveConfig?.({ provider });
             if (!c) return '';
@@ -2198,13 +2284,6 @@ export class StoryVoiceApp {
             voice: String(val('voice')?.value || '').trim(),
             npcMode: String(val('npcMode')?.value || 'only') === 'npc' ? 'npc' : 'only',
             ttsProvider: String(val('ttsProvider')?.value || ''),
-            ttsModels: (() => {
-                const prev = { ...(this.sv.getSettings().ttsModels || {}) };
-                const prov = String(val('ttsProvider')?.value || '') || String(this.sv.storage?.get?.('phone-tts-provider') || 'minimax_cn');
-                const m = String(val('ttsModel')?.value || '').trim();
-                if (m) prev[prov] = m; else delete prev[prov];
-                return prev;
-            })(),
             npcMale: String(val('npcMale')?.value || '').trim(),
             npcFemale: String(val('npcFemale')?.value || '').trim(),
             speakers
@@ -2317,13 +2396,67 @@ export class StoryVoiceApp {
             this.sv.saveSettings(this._collect());
             toast('已保存', b.dataset.auto === '1' ? '每轮写完自动分析并生成语音' : '点播放时才分析那一楼');
         }));
+        // 渠道的地址 / Key / 模型：第三方存在朗读设置里；小手机已有的渠道直接写回「设置 → 语音」
+        const chanBox = root.querySelector('.yzsv-chan');
+        const saveChan = () => {
+            if (!chanBox) return;
+            const ch = chanBox.dataset.chan;
+            const get = (k) => String(chanBox.querySelector(`[data-ch="${k}"]`)?.value || '').trim();
+            if (ch === 'custom_openai') {
+                this.sv.saveSettings({ customUrl: get('url'), customKey: get('key'), customModel: get('model') });
+            } else {
+                const store = this.sv.storage;
+                const keyOf = (f) => this.sv.tts?._getProviderConfigKey?.(ch, f) || `phone-tts-${ch}-${f}`;
+                try { store?.set?.(keyOf('url'), get('url')); store?.set?.(keyOf('key'), get('key')); } catch (e) { /* 忽略 */ }
+                const models = { ...(this.sv.getSettings().ttsModels || {}) };
+                if (get('model')) models[ch] = get('model'); else delete models[ch];
+                this.sv.saveSettings({ ttsModels: models });
+            }
+            // 「已配置 / 还没填」的提示跟着更新
+            const opt = root.querySelector(`select[data-k="ttsProvider"] option[value="${ch}"]`);
+            const meta = TTS_CHANNELS.find(c => c.id === ch);
+            if (opt && meta) opt.textContent = `${meta.label}${this._channelState(ch)}`;
+            const keyLabel = chanBox.querySelector('[data-ch="key"]')?.closest('.yzsv-field')?.querySelector('label');
+            if (keyLabel) keyLabel.innerHTML = `API Key${get('key') ? '' : ' <span style="color:#d0605a">（还没填）</span>'}`;
+        };
+        chanBox?.querySelectorAll('[data-ch]').forEach(inp => inp.addEventListener('change', (e) => { e.stopPropagation(); saveChan(); }));
+        chanBox?.querySelector('[data-eye]')?.addEventListener('click', (e) => {
+            const inp = chanBox.querySelector('[data-ch="key"]');
+            const show = inp.type === 'password';
+            inp.type = show ? 'text' : 'password';
+            e.currentTarget.classList.toggle('is-hidden', !show);
+        });
+        chanBox?.querySelectorAll('[data-ch-pick]').forEach(b => b.addEventListener('click', () => {
+            const inp = chanBox.querySelector('[data-ch="model"]');
+            inp.value = b.dataset.chPick;
+            chanBox.querySelectorAll('[data-ch-pick]').forEach(x => x.classList.toggle('is-on', x === b));
+            saveChan();
+            toast('已保存', `正文朗读用模型 ${b.dataset.chPick}`);
+        }));
+        chanBox?.querySelector('[data-ch-fetch]')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            saveChan();
+            btn.disabled = true;
+            btn.textContent = '拉取中…';
+            try {
+                const ch = chanBox.dataset.chan;
+                const models = await this.sv.fetchTtsModels(ch);
+                this._fetched = { ...(this._fetched || {}), [ch]: models };
+                if (ch === 'custom_openai') this.sv.saveSettings({ customModels: models });
+                const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
+                this.render();
+                const nb = this._root().querySelector('.yzsv-body');
+                if (nb) nb.scrollTop = top;
+                toast('拉取成功', `${models.length} 个模型，点一下就选中`, '✅');
+            } catch (err) {
+                btn.disabled = false;
+                btn.textContent = '重新拉取';
+                toast('拉取失败', String(err?.message || err).slice(0, 160), '⚠️');
+            }
+        });
         root.querySelector('select[data-k="ttsProvider"]')?.addEventListener('change', () => {
             const next = this._collect();
-            // 换渠道：模型框换成那个渠道自己的
             const prov = next.ttsProvider || String(this.sv.storage?.get?.('phone-tts-provider') || 'minimax_cn');
-            const inp = root.querySelector('[data-k="ttsModel"]');
-            if (inp) inp.value = '';
-            delete next.ttsModels; // 不把旧渠道的模型写到新渠道上
             this.sv.saveSettings({ ttsProvider: next.ttsProvider });
             const body = root.querySelector('.yzsv-body');
             const top = body?.scrollTop || 0;
