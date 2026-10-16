@@ -282,7 +282,9 @@ export class StoryVoice {
             if (ev.CHAT_CHANGED) es.on(ev.CHAT_CHANGED, () => { this.stop(); this._wxDirty = true; this._getWechatData().catch(() => null).then(() => { this.updatePrompt(); setTimeout(() => this.refreshAll(), 400); }); });
             if (ev.MESSAGE_DELETED) es.on(ev.MESSAGE_DELETED, () => this.stop());
             if (ev.STREAM_TOKEN_RECEIVED) es.on(ev.STREAM_TOKEN_RECEIVED, () => this._onStreamToken());
+            ['GENERATION_STOPPED', 'CHARACTER_MESSAGE_RENDERED', 'CHAT_CHANGED'].forEach(name => { if (ev[name]) es.on(ev[name], () => { this._streaming = false; }); });
             if (ev.GENERATION_ENDED) es.on(ev.GENERATION_ENDED, () => {
+                this._streaming = false;
                 const chat = window.SillyTavern?.getContext?.()?.chat || [];
                 const id = chat.length - 1;
                 setTimeout(() => {
@@ -412,7 +414,7 @@ export class StoryVoice {
         return { marks, lines };
     }
 
-    processElement(mesEl) {
+    processElement(mesEl, { live = false } = {}) {
         const box = mesEl?.querySelector?.('.mes_text');
         if (!box) return;
         this._clear(box);
@@ -458,6 +460,8 @@ export class StoryVoice {
         this._lineContext = this._lineContext || new Map();
         // 只给对得上音色的台词挂按钮（说话人在微信里没填音色ID就不显示）
         lines = lines.filter(r => this._hasVoice(this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker));
+        // 还在生成中：只给语音已经准备好的台词挂按钮
+        if (live) lines = lines.filter(r => this._ready?.has(this._readyKey(this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker, r.text)));
 
         // 从后往前改（插按钮、藏标记），前面的位置不会被打乱
         const ops = [
@@ -486,7 +490,7 @@ export class StoryVoice {
             range.insertNode(bar);
         });
 
-        if (lines.length > 1) {
+        if (!live && lines.length > 1) {
             const all = document.createElement('div');
             all.className = 'yzsv-all';
             all.innerHTML = `<button type="button" class="yzsv-btn yzsv-playall">▶ 朗读本条全部对白（${lines.length} 句）</button>`;
@@ -617,6 +621,10 @@ export class StoryVoice {
                 try {
                     const vi = await this._voiceFor(job.speaker);
                     await Promise.all(splitSpeech(job.text).map(part => this._synth(part, vi)));
+                    this._ready = this._ready || new Set();
+                    this._ready.add(this._readyKey(job.speaker, job.text));
+                    if (this._ready.size > 2000) this._ready = new Set([...this._ready].slice(-1000));
+                    if (this._streaming) this._scheduleLive();
                 } catch (err) {
                     console.warn('[正文朗读] 提前生成失败:', err);
                     this._prefetchSeen?.delete(`${job.speaker}\u0001${job.text}`);
@@ -658,9 +666,8 @@ export class StoryVoice {
 
     // 流式生成中：藏掉 [[名字]]；每句台词一说完（引号闭合）就马上开始生成语音
     _onStreamToken() {
-        if (!this._markRaf) {
-            this._markRaf = requestAnimationFrame(() => { this._markRaf = 0; this._hideLiveMarks(); });
-        }
+        this._streaming = true;
+        this._scheduleLive();
         if (this._streamTimer) return;
         this._streamTimer = setTimeout(() => {
             this._streamTimer = null;
@@ -677,6 +684,23 @@ export class StoryVoice {
             if (this._wxData) go();
             else this._getWechatData().catch(() => null).then(go);
         }, 150);
+    }
+
+    // 生成中：每次正文刷新后，把已经生成好语音的台词按钮挂回去（藏掉 [[名字]]）
+    _scheduleLive() {
+        if (this._markRaf) return;
+        this._markRaf = requestAnimationFrame(() => {
+            this._markRaf = 0;
+            this._hideLiveMarks();
+            if (!this._streaming) return;
+            const chat = window.SillyTavern?.getContext?.()?.chat || [];
+            const el = document.querySelector(`#chat .mes[mesid="${chat.length - 1}"]`);
+            if (el) { try { this.processElement(el, { live: true }); } catch (e) { /* 忽略 */ } }
+        });
+    }
+
+    _readyKey(speaker, text) {
+        return `${speaker || ''}\u0001${text || ''}`;
     }
 
     _hideLiveMarks() {
