@@ -10,13 +10,13 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m9';
+import { ChatView } from './chat-view.js?v=20261021-m10';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261020-m2';
+import { MomentsView } from './moments-view.js?v=20261021-m10';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261020-m2';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m10';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -3156,12 +3156,12 @@ export class WechatApp {
     gap: 3px;
 }
 
-/* 引用消息：更醒目的引用块（气泡上方）与输入框上方的引用条 */
+/* 引用消息：更醒目的引用块（气泡下方）与输入框上方的引用条 */
 .wechat-app .wechat-quote-block {
     display: block;
     box-sizing: border-box;
     max-width: min(240px, 100%);
-    margin: 0 0 4px;
+    margin-top: 4px;
     padding: 6px 10px 6px 11px;
     border-radius: 6px;
     border-left: 3px solid var(--wx-quote, #5b8def);

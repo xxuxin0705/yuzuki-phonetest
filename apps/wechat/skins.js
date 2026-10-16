@@ -329,7 +329,13 @@ html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff
 .ins-acts button { border: 0; background: none; padding: 0; color: #111; cursor: pointer; display: flex; }
 .ins-acts button.is-on { color: #ed4956; }
 .ins-acts button.is-on svg path { fill: currentColor; }
-.ins-likes { padding: 2px 14px; font-size: 13.5px; font-weight: 700; color: #111; }
+.ins-likes { padding: 2px 14px; font-size: 13.5px; font-weight: 400; color: #111; line-height: 1.45; }
+.ins-likes b { font-weight: 700; }
+.ins-acts-gap { flex: 1; }
+.ins-acts button.ins-sub { color: #8e8e8e; font-size: 15px; width: 22px; justify-content: center; }
+.ins-acts button.ins-sub.is-on { color: #0095f6; }
+.ins-acts button.ins-sub.is-on svg path:first-child { fill: currentColor; }
+.ins-acts { gap: 14px; }
 .ins-caption { padding: 2px 14px; font-size: 14px; line-height: 1.5; color: #222; word-break: break-word; }
 .ins-caption b { font-weight: 700; margin-right: 6px; cursor: pointer; }
 .ins-post .moment-trans-fold { margin: 2px 14px 0 !important; }
@@ -351,7 +357,8 @@ html[data-wx-moments="line"] .moments-feed { padding: 0 0 24px; background: #fff
 .ins-pf-stats span { display: block; margin-top: 2px; font-size: 12px; color: #8e8e8e; }
 .ins-pf-hint { margin-top: 8px; font-size: 10.5px; color: #bbb; }
 .ins-pf-btns { display: flex; gap: 8px; margin-top: 12px; }
-.ins-pf-btns button { flex: 1; border: 0; background: #efefef; border-radius: 9px; padding: 8px 0; font-size: 13px; font-weight: 600; color: #111; cursor: pointer; }
+.ins-pf-btns button { flex: 1; border: 0; background: #efefef; border-radius: 8px; padding: 7px 0; font-size: 13px; font-weight: 600; color: #262626; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.ins-pf-btns button i { font-size: 14px; }
 .ins-pf-tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid #eee; background: #fff; }
 .ins-pf-tabs button { border: 0; background: none; padding: 10px 0; color: #c2c2c2; cursor: pointer; display: flex; justify-content: center; }
 .ins-pf-tabs button.active { color: #111; box-shadow: inset 0 -2px 0 #111; }

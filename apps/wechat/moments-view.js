@@ -70,8 +70,8 @@ export class MomentsView {
                 <div class="moments-feed" style="background: ${hasBackdrop || momentsSkin !== 'wechat' ? 'transparent' : '#fff'};">
                     ${moments.length === 0 ? `
                         <div class="moments-empty-tip" style="${hasBackdrop ? 'background: rgba(255,255,255,0.34); backdrop-filter: blur(12px) saturate(135%); -webkit-backdrop-filter: blur(12px) saturate(135%); border: 1px solid rgba(255,255,255,0.34); border-radius: 12px; margin: 20px;' : ''}">
-                            <p>朋友圈空空如也</p>
-                            <p class="tip-sub">点右上角的魔法棒生成朋友圈</p>
+                            <p>${momentsSkin === 'line' ? 'No posts yet' : '朋友圈空空如也'}</p>
+                            <p class="tip-sub">${momentsSkin === 'line' ? 'Tap the magic wand to generate posts' : '点右上角的魔法棒生成朋友圈'}</p>
                         </div>
                     ` : moments.map(moment => (momentsSkin === 'line' ? this._renderInsPostHtml(moment) : this.renderMomentItem(moment, hasBackdrop && momentsSkin === 'wechat'))).join('')}
                 </div>`}
@@ -128,7 +128,7 @@ export class MomentsView {
     // LINE（ins 推文风格）：顶部标题
     _renderInsTopHtml() {
         const info = this.app.wechatData.getUserInfo() || {};
-        return `<div class="ins-top"><span class="ins-logo">动态</span><span class="ins-me" data-moment-profile="__me__" role="button" tabindex="0">${this.app.renderAvatar(info.avatar, '😊', info.name)}</span></div>`;
+        return `<div class="ins-top"><span class="ins-logo">Moments</span><span class="ins-me" data-moment-profile="__me__" role="button" tabindex="0">${this.app.renderAvatar(info.avatar, '😊', info.name)}</span></div>`;
     }
 
     // ins 推文：头像+名字 → 大图 → 赞/评论/分享 → 赞数 → 配文 → 评论 → 时间
@@ -146,25 +146,58 @@ export class MomentsView {
         const heart = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 20.3s-7.5-4.6-7.5-10.1C4.5 7.3 6.6 5.3 9 5.3c1.3 0 2.4.6 3 1.6.6-1 1.7-1.6 3-1.6 2.4 0 4.5 2 4.5 4.9 0 5.5-7.5 10.1-7.5 10.1z"/></svg>`;
         const bubble = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M20 11.5a8 8 0 1 1-3.6-6.7A8 8 0 0 1 20 11.5z"/><path d="M20 20l-2.6-3"/></svg>`;
         const plane = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M21 3 10 13.5M21 3l-6.5 18-4.5-7.5L2.5 9z"/></svg>`;
+        const mid = this._escapeAttr(moment.id);
+        const pinned = this._isPinned(moment.id);
+        void likeCount;
         return `
             <div class="moment-item ins-post" data-moment-id="${this._escapeAttr(moment.id)}">
                 <div class="ins-head">
                     <div class="ins-avatar" data-moment-profile="${this._escapeAttr(profileKey)}" role="button" tabindex="0">${this.app.renderAvatar(avatar, '👤', moment.name)}</div>
                     <div class="ins-name" data-moment-profile="${this._escapeAttr(profileKey)}" role="button" tabindex="0">${this._escapeHtml(shownName)}${location ? `<span class="ins-loc">${this._escapeHtml(location)}</span>` : ''}</div>
-                    <div class="moment-action-btn" data-moment-id="${this._escapeAttr(moment.id)}"><i class="fa-solid fa-ellipsis"></i></div>
                 </div>
                 ${images.length ? `<div class="ins-media">${this.renderImages(images, moment)}</div>` : (t ? `<div class="ins-textcard">${t.main}</div>` : '')}
                 <div class="ins-acts">
-                    <button type="button" data-mz-act="like" data-moment-id="${this._escapeAttr(moment.id)}" class="${liked ? 'is-on' : ''}" aria-label="赞">${heart}</button>
-                    <button type="button" data-mz-act="comment" data-moment-id="${this._escapeAttr(moment.id)}" aria-label="评论">${bubble}</button>
-                    <button type="button" data-mz-act="share" data-moment-id="${this._escapeAttr(moment.id)}" aria-label="分享">${plane}</button>
+                    <button type="button" data-mz-act="like" data-moment-id="${mid}" class="${liked ? 'is-on' : ''}" aria-label="Like">${heart}</button>
+                    <button type="button" data-mz-act="comment" data-moment-id="${mid}" aria-label="Comment">${bubble}</button>
+                    ${this._isMomentShareable(moment) ? `<button type="button" data-mz-act="share" data-moment-id="${mid}" aria-label="Share">${plane}</button>` : ''}
+                    <span class="ins-acts-gap"></span>
+                    ${this._isPrivateMoment(moment) ? '' : `<button type="button" class="ins-sub" data-mz-act="ai" data-moment-id="${mid}" aria-label="Friends react" title="Friends react"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 15 9"/><path d="m14 4 1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/><path d="m19 12 .6 1.2 1.2.6-1.2.6-.6 1.2-.6-1.2-1.2-.6 1.2-.6z"/></svg></button>`}
+                    <button type="button" class="ins-sub${pinned ? ' is-on' : ''}" data-mz-act="pin" data-moment-id="${mid}" aria-label="${pinned ? 'Unpin' : 'Pin'}" title="${pinned ? 'Unpin' : 'Pin'}"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3.5h6l-1 5 3.5 3.5h-11L10 8.5z"/><path d="M12 12v8.5"/></svg></button>
+                    <button type="button" class="ins-sub" data-mz-act="edit" data-moment-id="${mid}" aria-label="Edit" title="Edit"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg></button>
+                    <button type="button" class="ins-sub" data-mz-act="delete" data-moment-id="${mid}" aria-label="Delete" title="Delete"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h15"/><path d="M9 6.5V4.5h6v2"/><path d="M6.5 6.5 7.5 20h9l1-13.5"/><path d="M10 10.5v6M14 10.5v6"/></svg></button>
                 </div>
-                ${likeCount ? `<div class="ins-likes">${likeCount} 次赞</div>` : ''}
+                ${this._renderInsLikesHtml(moment)}
                 ${images.length && t ? `<div class="ins-caption"><b data-moment-profile="${this._escapeAttr(profileKey)}">${this._escapeHtml(shownName)}</b>${t.main}</div>` : ''}
                 ${t ? t.fold : ''}
                 ${this.renderInteractions(moment)}
                 <div class="ins-time">${this._escapeHtml(this.formatTime(moment.time))}</div>
             </div>`;
+    }
+
+    // ins 的点赞数：认识的人 + 自动生成的路人点赞（按动态固定，不会每次刷新都变）
+    _insExtraLikes(moment) {
+        const v = Number(moment?.insExtraLikes);
+        if (Number.isFinite(v) && v >= 0) return v;
+        const h = this._insHash(`likes_${moment?.id || moment?.text || ''}`);
+        const self = this._isSelfMoment(moment);
+        return self ? 3 + (h % 58) : 8 + (h % 240);
+    }
+
+    _insLikeTotal(moment) {
+        return (moment?.likeList?.length || 0) + this._insExtraLikes(moment);
+    }
+
+    // “Liked by A, B and 23 others”
+    _renderInsLikesHtml(moment) {
+        const names = (Array.isArray(moment?.likeList) ? moment.likeList : []).map(n => this._displayName(n)).filter(Boolean);
+        const total = this._insLikeTotal(moment);
+        if (!total) return '';
+        const fmt = (n) => n >= 10000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K` : n.toLocaleString('en-US');
+        if (!names.length) return `<div class="ins-likes"><b>${fmt(total)} likes</b></div>`;
+        const shown = names.slice(0, 2);
+        const others = total - shown.length;
+        const who = shown.map(n => `<b>${this._escapeHtml(n)}</b>`).join(', ');
+        return `<div class="ins-likes">Liked by ${who}${others > 0 ? ` and <b>${fmt(others)} other${others > 1 ? 's' : ''}</b>` : ''}</div>`;
     }
 
     // ins 主页资料：可编辑（名字 / 签名 / 动态 / 获赞 / 关注 / 粉丝）
@@ -201,7 +234,7 @@ export class MomentsView {
         }
         const p = this._getInsProfile(self ? '__me__' : key);
         const h = this._insHash(self ? `me_${name}` : key);
-        const likes = list.reduce((n, m) => n + (m.likeList?.length || 0), 0);
+        const likes = list.reduce((n, m) => n + this._insLikeTotal(m), 0);
         const pick = (v, d) => (v === '' || v === undefined || v === null ? d : v);
         return {
             self,
@@ -232,16 +265,16 @@ export class MomentsView {
                 <div class="ins-pf">
                     <div class="ins-pf-avatar">${this.app.renderAvatar(d.avatar, d.self ? '😊' : '👤', d.name)}</div>
                     <div class="ins-pf-name" data-ins-edit="name" role="button" tabindex="0">${this._escapeHtml(d.name)}</div>
-                    <div class="ins-pf-sign" data-ins-edit="sign" role="button" tabindex="0">${this._escapeHtml(d.sign || '编辑个性签名')}</div>
-                    <div class="ins-pf-stats">${stat('posts', '动态')}${stat('likes', '获赞')}${stat('following', '关注')}${stat('followers', '粉丝')}</div>
-                    <div class="ins-pf-hint">点名字、签名或数字都可以修改</div>
-                    ${d.self ? `<div class="ins-pf-btns"><button type="button" data-mz-act="post">发动态</button><button type="button" data-mz-act="generate">生成动态</button></div>` : ''}
+                    <div class="ins-pf-sign" data-ins-edit="sign" role="button" tabindex="0">${this._escapeHtml(d.sign || 'Add bio')}</div>
+                    <div class="ins-pf-stats">${stat('posts', 'Posts')}${stat('likes', 'Likes')}${stat('following', 'Following')}${stat('followers', 'Followers')}</div>
+                    <div class="ins-pf-hint">Tap name, bio or numbers to edit</div>
+                    ${d.self ? `<div class="ins-pf-btns"><button type="button" data-mz-act="post"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M12 8v8M8 12h8"/></svg> New post</button></div>` : ''}
                 </div>
                 <div class="ins-pf-tabs">
                     <button type="button" class="${view === 'grid' ? 'active' : ''}" data-ins-view="grid" aria-label="宫格"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/></svg></button>
                     <button type="button" class="${view === 'list' ? 'active' : ''}" data-ins-view="list" aria-label="列表"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h14"/></svg></button>
                 </div>
-                ${!d.list.length ? `<div class="ins-empty">${d.self ? '还没有动态' : 'TA 还没有动态'}</div>` : (view === 'grid' ? `<div class="ins-grid">${tiles}</div>` : `<div class="moments-feed">${d.list.map(m => this._renderInsPostHtml(m)).join('')}</div>`)}
+                ${!d.list.length ? `<div class="ins-empty">${d.self ? 'No posts yet' : 'No posts yet'}</div>` : (view === 'grid' ? `<div class="ins-grid">${tiles}</div>` : `<div class="moments-feed">${d.list.map(m => this._renderInsPostHtml(m)).join('')}</div>`)}
             </div>`;
         const reopen = () => this.showInsProfilePage(key);
         this._showSubPage(this._renderSubPageShell(body, { title: '' }), 'wechat-moments-ins-profile', reopen);
@@ -258,18 +291,18 @@ export class MomentsView {
     }
 
     _editInsProfileField(key, field, current, done) {
-        const labels = { name: '名字', sign: '个性签名', posts: '动态数', likes: '获赞数', following: '关注数', followers: '粉丝数' };
+        const labels = { name: 'Name', sign: 'Bio', posts: 'Posts', likes: 'Likes', following: 'Following', followers: 'Followers' };
         const isNum = ['posts', 'likes', 'following', 'followers'].includes(field);
         const mask = this._mountMomentSheet(`
             <div class="moment-dialog" role="dialog">
-                <div class="moment-dialog-title">修改${labels[field] || ''}</div>
+                <div class="moment-dialog-title">Edit ${labels[field] || ''}</div>
                 <label class="moment-field">${field === 'sign'
-                    ? `<textarea data-f="v" rows="3" maxlength="80" placeholder="写点什么吧">${this._escapeHtml(current || '')}</textarea>`
-                    : `<input data-f="v" type="text" maxlength="${isNum ? 12 : 24}" value="${this._escapeAttr(current || '')}" placeholder="${isNum ? '可以写 1.2k、5万 这样' : ''}">`}</label>
+                    ? `<textarea data-f="v" rows="3" maxlength="80" placeholder="Write something…">${this._escapeHtml(current || '')}</textarea>`
+                    : `<input data-f="v" type="text" maxlength="${isNum ? 12 : 24}" value="${this._escapeAttr(current || '')}" placeholder="${isNum ? 'e.g. 1.2K, 52K' : ''}">`}</label>
                 <div class="moment-dialog-actions">
-                    <button type="button" data-reset>恢复默认</button>
-                    <button type="button" data-sheet-close>取消</button>
-                    <button type="button" class="is-primary" data-ok>保存</button>
+                    <button type="button" data-reset>Reset</button>
+                    <button type="button" data-sheet-close>Cancel</button>
+                    <button type="button" class="is-primary" data-ok>Save</button>
                 </div>
             </div>`);
         const write = (value) => {
@@ -317,6 +350,14 @@ export class MomentsView {
             if (!id) return;
             if (act === 'like') return this.toggleLike(id);
             if (act === 'comment') return this.showCommentInput(id);
+            if (act === 'ai') {
+                const m = this.app.wechatData.getMoment(id);
+                this.triggerAIReaction(id, 'post', m?.text || '').catch(() => {});
+                return;
+            }
+            if (act === 'pin') return this.togglePinMoment(id);
+            if (act === 'edit') return this.showEditMomentSheet(id);
+            if (act === 'delete') return this.confirmDeleteMoment(id);
             if (act === 'share') {
                 const m = this.app.wechatData.getMoment(id);
                 if (this._isMomentShareable(m)) return this.showShareMomentSheet(id);
@@ -3289,6 +3330,7 @@ ${memoryLines.slice(0, 10).join('\n')}
             const recentExisting = (this.app.wechatData.getMoments() || []).slice(0, 12)
                 .map(m => `- ${m.name}：${this._momentTextForPrompt(m.text).slice(0, 40)}`).join('\n');
             if (recentExisting) promptWithLang += `\n\n【已发布的动态（不要重复或高度相似）】\n${recentExisting}`;
+            promptWithLang += '\n\n【配图不是必须的】像真人一样：很多动态只发文字（这时 images 写空数组 []），只有确实拍了照片、适合配图的内容才配图；本次大约一半左右的动态是纯文字，按角色习惯决定，不要每条都配图。';
 
 
             // 调用AI
