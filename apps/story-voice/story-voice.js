@@ -8,14 +8,16 @@ const DEFAULTS = Object.freeze({
     quotes: '「」, 『』, “”',
     skips: '（）, ()',
     voice: '',
-    npcMode: 'npc',       // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
+    npcMode: 'npc', 
+    emotionCue: true,   // 让模型给每句台词写语气，合成时交给 Fish（S2 用 [语气]）
+      // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
     npcMale: '',
     npcFemale: '',
     speakers: [],
     readUser: false,
     markSpeaker: true
 });
-const MARK_RE = /\[\[([^\[\]\n]{1,24})\]\][ \t]*[:：]?[ \t]*/g;
+const MARK_RE = /\[\[([^\[\]\n]{1,60})\]\][ \t]*[:：]?[ \t]*/g;
 const PROMPT_KEY = 'yzsv_speaker_mark';
 const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
 
@@ -102,7 +104,8 @@ export class StoryVoice {
         this._installed = false;
         this.speakerOverrides = this._loadOverrides();
         this._genderOf = this._loadGenders();
-        this._speakerMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
+        this._speakerMemo = new Map();
+        this._cueMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
     }
 
     // ---------- 设置 ----------
@@ -229,7 +232,7 @@ export class StoryVoice {
         btn?.classList.add('is-busy');
         bar.classList.add('is-loading');
         const job = (async () => {
-            const vi = await this._voiceFor(bar.dataset.speaker || '');
+            const vi = { ...(await this._voiceFor(bar.dataset.speaker || '')), cue: bar.dataset.cue || '' };
             const urls = await Promise.all(splitSpeech(bar.dataset.text).map(part => this._synthRetry(part, vi, { regen: true })));
             return this._joinAudio(urls);
         })();
@@ -386,18 +389,23 @@ export class StoryVoice {
     }
 
     // 从一段正文文字里找出台词和说话人（显示的正文、生成中的原文都用它）
-    _analyze(full, { id = -1, msg = null, useMemo = true, hints = null } = {}) {
+    _analyze(full, { id = -1, msg = null, useMemo = true, hints = null, cueHints = null } = {}) {
         const s = this.getSettings();
         // 模型标的说话人 [[角色名]]：记下来，显示时藏掉
         const marks = [];
         for (const m of full.matchAll(MARK_RE)) {
             // [[名字/男]]、[[名字|女]]、[[名字（男）]] 都认：名字 + 性别
-            const raw = m[1].trim();
-            const gm = raw.match(/^(.+?)\s*(?:[\/|｜]\s*|[（(]\s*)(男|女|m|f|male|female)\s*[)）]?$/i);
-            const name = gm ? gm[1].trim() : raw;
-            const g = gm ? (/^(男|m|male)$/i.test(gm[2]) ? 'm' : 'f') : '';
+            // 也认 [[名字/女|语气]]、[[名字|语气]]：竖线后面是这句话的情绪语气
+            const parts = m[1].split(/[|｜]/).map(x => x.trim()).filter(Boolean);
+            let head = parts.shift() || '';
+            let cue = '';
+            let g = '';
+            parts.forEach(x => { if (/^(男|女|m|f|male|female)$/i.test(x)) g = /^(男|m|male)$/i.test(x) ? 'm' : 'f'; else cue = cue ? `${cue}，${x}` : x; });
+            const gm = head.match(/^(.+?)\s*(?:\/\s*|[（(]\s*)(男|女|m|f|male|female)\s*[)）]?$/i);
+            if (gm) { head = gm[1].trim(); g = g || (/^(男|m|male)$/i.test(gm[2]) ? 'm' : 'f'); }
+            const name = head;
             if (g && useMemo) this._setGender(name, g);
-            marks.push({ start: m.index, end: m.index + m[0].length, name });
+            marks.push({ start: m.index, end: m.index + m[0].length, name, cue: cue.slice(0, 40) });
         }
 
         const skips = findRanges(full, parsePairs(s.skips), 3000);
@@ -447,8 +455,10 @@ export class StoryVoice {
             const mark = marks.find(mk => mk.end <= r.start && r.start - mk.end <= 2 && !/\S/.test(full.slice(mk.end, r.start)));
             if (mark) {
                 r.speaker = this._canonicalName(mark.name) || mark.name;
+                r.cue = mark.cue || '';
                 r.marked = true;
                 if (useMemo) this._speakerMemo.set(`${id}:${i}:${r.text}`, r.speaker);
+                if (useMemo && r.cue) this._cueMemo.set(`${id}:${i}:${r.text}`, r.cue);
                 if (this._speakerMemo.size > 2000) this._speakerMemo.delete(this._speakerMemo.keys().next().value);
                 prevEnd = r.end; lastSpeaker = r.speaker;
                 return;
@@ -457,6 +467,7 @@ export class StoryVoice {
             const memo = this._speakerMemo.get(`${id}:${i}:${r.text}`) || hints?.get(r.text);
             if (memo) {
                 r.speaker = memo;
+                r.cue = this._cueMemo.get(`${id}:${i}:${r.text}`) || cueHints?.get(r.text) || '';
                 r.marked = true;
                 prevEnd = r.end; lastSpeaker = r.speaker;
                 return;
@@ -518,13 +529,18 @@ export class StoryVoice {
 
         // 聊天记录原文里的 [[名字]] 一直都在，显示的正文里就算被藏掉了也能照着认
         let hints = null;
+        let cueHints = null;
         if (msg?.mes && String(msg.mes).includes('[[')) {
             hints = new Map();
             try {
-                this._analyze(this._rawToText(msg.mes), { id, msg, useMemo: false }).lines.forEach(r => { if (r.marked && !hints.has(r.text)) hints.set(r.text, r.speaker); });
+                cueHints = new Map();
+                this._analyze(this._rawToText(msg.mes), { id, msg, useMemo: false }).lines.forEach(r => {
+                    if (r.marked && !hints.has(r.text)) hints.set(r.text, r.speaker);
+                    if (r.cue && !cueHints.has(r.text)) cueHints.set(r.text, r.cue);
+                });
             } catch (e) { hints = null; }
         }
-        const { marks, lines: found } = this._analyze(full, { id, msg, hints });
+        const { marks, lines: found } = this._analyze(full, { id, msg, hints, cueHints });
         let lines = found;
         if (!lines.length) { [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end)); return; }
 
@@ -551,6 +567,7 @@ export class StoryVoice {
             bar.dataset.text = r.text;
             const override = this.speakerOverrides[this._overrideKey(id, r.index, r.text)];
             bar.dataset.speaker = override || r.speaker;
+            if (r.cue) bar.dataset.cue = r.cue;
             bar.dataset.manualSpeaker = override ? '1' : '0';
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
@@ -604,6 +621,7 @@ export class StoryVoice {
             userName ? `用户角色说的话标 [[${userName}]]。` : '',
             s.npcMode === 'npc' ? `下面名单以外的配角、路人、NPC，在名字后面加性别：[[名字/男]] 或 [[名字/女]]（例：[[店员/女]]${qa}……${qb}）。` : '',
             names.length ? `同一角色始终用同一个名字：${names.join('、')}。` : '',
+            s.emotionCue ? `再在名字后面用竖线写上这句话说出口时的语气：[[名字|语气]]。语气要结合当时的情景、人物此刻的心理和两人的关系来判断（是真生气还是嘴硬、是调侃还是心疼、是强装镇定还是快哭了），写成 2~12 个字的表演提示，用和台词相同的语言写，例：[[${names[0] || '角色名'}|からかうように笑って]]${qa}……${qb}、[[某某|ため息まじりに、少し寂しげに]]、中文台词就写 [[某某|压低声音，带着哭腔]]。同一角色每句的语气要跟着剧情变化，不要句句一样。` : '',
             '旁白、动作、心理描写、括号里的译文都不要标；不要解释这个标记，也不要漏标。'
         ].filter(Boolean).join('\n');
         ctx.setExtensionPrompt(PROMPT_KEY, text, types.IN_CHAT ?? 1, 0, false, roles.SYSTEM ?? 0);
@@ -674,12 +692,12 @@ export class StoryVoice {
         if (!this.getSettings().enabled) return;
         this._prefetchQ = this._prefetchQ || [];
         this._prefetchSeen = this._prefetchSeen || new Set();
-        items.forEach(({ speaker, text }) => {
+        items.forEach(({ speaker, text, cue }) => {
             if (!text || !this._hasVoice(speaker)) return;
             const key = `${speaker}\u0001${text}`;
             if (this._prefetchSeen.has(key)) return;
             this._prefetchSeen.add(key);
-            this._prefetchQ.push({ speaker, text });
+            this._prefetchQ.push({ speaker, text, cue: cue || '' });
         });
         if (this._prefetchSeen.size > 1000) this._prefetchSeen = new Set([...this._prefetchSeen].slice(-500));
         this._pumpPrefetch();
@@ -692,7 +710,7 @@ export class StoryVoice {
             this._prefetchActive += 1;
             (async () => {
                 try {
-                    const vi = await this._voiceFor(job.speaker);
+                    const vi = { ...(await this._voiceFor(job.speaker)), cue: job.cue || '' };
                     await Promise.all(splitSpeech(job.text).map(part => this._synth(part, vi)));
                     this._ready = this._ready || new Set();
                     this._ready.add(this._readyKey(job.speaker, job.text));
@@ -727,14 +745,14 @@ export class StoryVoice {
     // 找出已经说完（引号闭合）的台词，马上提前生成
     _prefetchRaw(raw, id, msg) {
         const { lines } = this._analyze(this._rawToText(raw), { id, msg });
-        this._prefetchLines(lines.map(r => ({ speaker: this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker, text: r.text })));
+        this._prefetchLines(lines.map(r => ({ speaker: this.speakerOverrides[this._overrideKey(id, r.index, r.text)] || r.speaker, text: r.text, cue: r.cue || '' })));
     }
 
     // 已经挂好按钮的楼层：把按钮对应的台词提前生成
     _prefetchMessage(id) {
         const el = document.querySelector(`#chat .mes[mesid="${id}"]`);
         const bars = Array.from(el?.querySelectorAll('.mes_text .yzsv-bar') || []);
-        this._prefetchLines(bars.map(b => ({ speaker: b.dataset.speaker || '', text: b.dataset.text || '' })));
+        this._prefetchLines(bars.map(b => ({ speaker: b.dataset.speaker || '', text: b.dataset.text || '', cue: b.dataset.cue || '' })));
     }
 
     // 流式生成中：藏掉 [[名字]]；每句台词一说完（引号闭合）就马上开始生成语音
@@ -912,7 +930,8 @@ export class StoryVoice {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
         const vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
         const provider = vi.provider || String(this.storage?.get?.('phone-tts-provider') || '');
-        text = this._applyReadings(text);
+        text = this._applyReadings(this._cleanSpeech(text));
+        text = this._withCue(text, vi.cue, vi.provider || provider);
         const key = `${provider}\u0001${vi.voice || ''}\u0001${vi.languageBoost || ''}\u0001${text}`;
         if (!regen && this.cache.has(key)) return this.cache.get(key);
         this._inflight = this._inflight || new Map();
@@ -949,6 +968,50 @@ export class StoryVoice {
         const playingNow = () => { try { return this.audio.src === url && !this.audio.paused; } catch (e) { return false; } };
         const go = () => { if (playingNow()) { setTimeout(go, 30000); return; } try { URL.revokeObjectURL(url); } catch (e) { /* 忽略 */ } };
         setTimeout(go, 30000);
+    }
+
+    // 合成前把容易读出怪声（喘气、拖长音）的符号收拾一下
+    _cleanSpeech(text = '') {
+        let t = String(text || '');
+        t = t.replace(/\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}\u200d\ufe0f]/gu, '');
+        t = t.replace(/[♡♥♪♫★☆◆◇■□●○※]/g, '');
+        t = t.replace(/^[\s…‥．.。、，,—―\-~～]+/, '');           // 开头的省略号、破折号不读
+        t = t.replace(/(?:…|‥|\.{3,}|。{2,}|・{3,}){1,}/g, '、');      // 中间的省略号当成短停顿
+        t = t.replace(/[—―]{1,}/g, '、');
+        t = t.replace(/([！!？?])\1+/g, '$1').replace(/([~～])\1+/g, '$1');
+        t = t.replace(/、+/g, '、').replace(/、([。！？!?])/g, '$1').replace(/[、\s]+$/, '');
+        return t.trim() || String(text || '').trim();
+    }
+
+    // 给 Fish 加语气：S2 / S2.1 用 [自由描述]（和台词同一种语言），S1 只认固定的英文情绪 (tag)
+    _withCue(text, cue = '', provider = '') {
+        const c = String(cue || '').trim();
+        if (!c || !this.getSettings().emotionCue || provider !== 'fish') return text;
+        let model = '';
+        try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
+        if (/drama/i.test(model)) return text;
+        if (/^s1\b|speech-1/i.test(model)) {
+            const tag = this._cueToS1(c);
+            return tag ? `(${tag}) ${text}` : text;
+        }
+        return `[${c.replace(/[\[\]]/g, '')}] ${text}`;
+    }
+
+    _cueToS1(cue = '') {
+        const table = [
+            [/哭|泣|涙|sob|cry/i, 'sobbing'], [/叹|ため息|sigh/i, 'sighing'], [/低语|小声|悄悄|ささや|小声|whisper/i, 'whispering'],
+            [/喊|叫|怒鸣|叫ん|shout/i, 'shouting'], [/笑出声|大笑|爆笑|laugh/i, 'laughing'], [/轻笑|くすっ|chuckl/i, 'chuckling'],
+            [/暴怒|激怒|furious/i, 'furious'], [/生气|怒|苛立|angry/i, 'angry'], [/不耐烦|イライラ|impatient/i, 'impatient'],
+            [/讽刺|嘲|皮肉|sarcas/i, 'sarcastic'], [/轻蔑|鄙视|冷笑|見下|disdain|sneer/i, 'disdainful'], [/调侃|揶揄|からか|戏谑|tease|amus/i, 'amused'],
+            [/得意|骄傲|自慢|proud/i, 'proud'], [/兴奋|激动|興奮|excit/i, 'excited'], [/开心|高兴|嬉し|楽し|joy|happy/i, 'joyful'],
+            [/温柔|柔らか|优しい|優しく|soft|gentle/i, 'soft tone'], [/安慰|慰め|comfort/i, 'comforting'], [/真诚|真剣|sincere/i, 'sincere'],
+            [/害羞|照れ|恥ずかし|embarrass/i, 'embarrassed'], [/尴尬|気まず|awkward/i, 'awkward'], [/委屈|不満|拗ね|upset/i, 'upset'],
+            [/难过|伤心|悲し|sad/i, 'sad'], [/害怕|恐|怖|scared/i, 'scared'], [/紧张|緊張|nervous/i, 'nervous'], [/担心|心配|worr/i, 'worried'],
+            [/慌|焦|panic/i, 'panicked'], [/惊|驚|surpris/i, 'surprised'], [/疑惑|困惑|不思議|confus/i, 'confused'], [/犹豫|ためら|hesita/i, 'hesitating'],
+            [/冷淡|無関心|冷た|indifferent/i, 'indifferent'], [/严肃|真面目|serious/i, 'serious'], [/平静|落ち着|relax|calm/i, 'relaxed']
+        ];
+        for (const [re, tag] of table) if (re.test(cue)) return tag;
+        return '';
     }
 
     // 名字读音：微信联系人 / 我的音色里填的「写法 → 读音」，合成前替换
@@ -1008,7 +1071,7 @@ export class StoryVoice {
             if (!voiceMemo.has(sp)) voiceMemo.set(sp, await this._voiceFor(sp));
             if (this.playing !== run) return;
             const parts = splitSpeech(bar.dataset.text);
-            if (parts.length) queue.push({ bar, parts, voice: voiceMemo.get(sp) });
+            if (parts.length) queue.push({ bar, parts, voice: { ...voiceMemo.get(sp), cue: bar.dataset.cue || '' } });
         }
         const jobs = new Array(queue.length);
         const start = (i) => {
@@ -1245,6 +1308,7 @@ export class StoryVoiceApp {
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
                         ${sw('markSpeaker', '让模型标出说话人', '写正文时在台词前加 [[角色名]]，显示时自动藏起来')}
+                        ${sw('emotionCue', '按情景读出语气', '让模型给每句台词写上语气（生气、调侃、哽咽……），Fish 按语气来念')}
                         ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
                     </div>
 
@@ -1301,6 +1365,7 @@ export class StoryVoiceApp {
             enabled: !!val('enabled')?.checked,
             readUser: !!val('readUser')?.checked,
             markSpeaker: !!val('markSpeaker')?.checked,
+            emotionCue: !!val('emotionCue')?.checked,
             quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
             skips: String(val('skips')?.value || '').trim(),
             voice: String(val('voice')?.value || '').trim(),
