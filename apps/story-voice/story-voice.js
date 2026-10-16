@@ -10,7 +10,6 @@ const DEFAULTS = Object.freeze({
     voice: '',
     speakers: [],
     readUser: false,
-    autoPlay: false,
     markSpeaker: true
 });
 const MARK_RE = /\[\[([^\[\]\n]{1,24})\]\][ \t]*[:：]?[ \t]*/g;
@@ -227,7 +226,7 @@ export class StoryVoice {
             ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED', 'MESSAGE_SWIPED'].forEach(name => {
                 if (ev[name]) es.on(ev[name], (id) => later(id, name === 'MESSAGE_EDITED' ? 300 : 120));
             });
-            if (ev.CHAT_CHANGED) es.on(ev.CHAT_CHANGED, () => { this.stop(); this.updatePrompt(); setTimeout(() => this.refreshAll(), 400); });
+            if (ev.CHAT_CHANGED) es.on(ev.CHAT_CHANGED, () => { this.stop(); this._wxDirty = true; this._getWechatData().catch(() => null).then(() => { this.updatePrompt(); setTimeout(() => this.refreshAll(), 400); }); });
             if (ev.MESSAGE_DELETED) es.on(ev.MESSAGE_DELETED, () => this.stop());
             if (ev.STREAM_TOKEN_RECEIVED) es.on(ev.STREAM_TOKEN_RECEIVED, () => this._onStreamToken());
             if (ev.GENERATION_ENDED) es.on(ev.GENERATION_ENDED, () => {
@@ -238,7 +237,6 @@ export class StoryVoice {
                     const s = this.getSettings();
                     const msg = chat[id];
                     if (s.enabled && msg && !msg.is_system) this._prefetchMessage(id);
-                    if (s.enabled && s.autoPlay && msg && !msg.is_user && !msg.is_system) this.playMessage(id);
                 }, 250);
             });
         }
@@ -262,6 +260,7 @@ export class StoryVoice {
     // 微信里改了音色ID：重新判断哪些台词能显示按钮
     onVoicesChanged() {
         clearTimeout(this._voiceRefreshTimer);
+        this._wxDirty = true;
         this._voiceRefreshTimer = setTimeout(() => {
             if (this.playing) this.stop();
             this.refreshAll();
@@ -283,7 +282,7 @@ export class StoryVoice {
     }
 
     // 从一段正文文字里找出台词和说话人（显示的正文、生成中的原文都用它）
-    _analyze(full, { id = -1, msg = null, useMemo = true } = {}) {
+    _analyze(full, { id = -1, msg = null, useMemo = true, hints = null } = {}) {
         const s = this.getSettings();
         // 模型标的说话人 [[角色名]]：记下来，显示时藏掉
         const marks = [];
@@ -329,8 +328,8 @@ export class StoryVoice {
                 prevEnd = r.end;
                 return;
             }
-            // 1.5) 之前处理时模型标过（标记已经藏掉了）
-            const memo = this._speakerMemo.get(`${id}:${i}:${r.text}`);
+            // 1.5) 之前处理时模型标过（标记已经藏掉了），或者聊天记录原文里标过
+            const memo = this._speakerMemo.get(`${id}:${i}:${r.text}`) || hints?.get(r.text);
             if (memo) {
                 r.speaker = memo;
                 r.marked = true;
@@ -390,7 +389,15 @@ export class StoryVoice {
         }
         if (!full.trim()) return;
 
-        const { marks, lines: found } = this._analyze(full, { id, msg });
+        // 聊天记录原文里的 [[名字]] 一直都在，显示的正文里就算被藏掉了也能照着认
+        let hints = null;
+        if (msg?.mes && String(msg.mes).includes('[[')) {
+            hints = new Map();
+            try {
+                this._analyze(this._rawToText(msg.mes), { id, msg, useMemo: false }).lines.forEach(r => { if (r.marked && !hints.has(r.text)) hints.set(r.text, r.speaker); });
+            } catch (e) { hints = null; }
+        }
+        const { marks, lines: found } = this._analyze(full, { id, msg, hints });
         let lines = found;
         if (!lines.length) { [...marks].reverse().forEach(mk => this._deleteText(nodes, mk.start, mk.end)); return; }
 
@@ -588,7 +595,7 @@ export class StoryVoice {
             const raw = String(msg.mes || '');
             if (!raw) return;
             const go = () => this._prefetchRaw(raw, id, msg);
-            if (window.VirtualPhone?.wechatApp?.wechatData || window.VirtualPhone?.cachedWechatData) go();
+            if (this._wxData) go();
             else this._getWechatData().catch(() => null).then(go);
         }, 150);
     }
@@ -603,21 +610,40 @@ export class StoryVoice {
         }
     }
 
-    // 拿到微信数据（没打开过微信时自己加载一份，和小手机共用）
-    async _getWechatData() {
-        const vp = window.VirtualPhone || {};
-        let data = vp.wechatApp?.wechatData || vp.cachedWechatData || null;
-        if (data) return data;
-        if (!this.storage) return null;
-        try {
-            const mod = await import('../wechat/wechat-data.js?v=20261011-wallet-credit-repayment');
-            data = window.VirtualPhone?.wechatApp?.wechatData || window.VirtualPhone?.cachedWechatData || new mod.WechatData(this.storage);
-            if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = data;
-            return data;
-        } catch (e) {
-            console.warn('[正文朗读] 读取微信联系人失败:', e);
-            return null;
+    // 当前酒馆聊天的标识：换聊天后微信数据（联系人、音色）也要跟着换
+    _chatSig() {
+        const ctx = window.SillyTavern?.getContext?.() || {};
+        let key = '';
+        try { key = String(this.storage?.getContextKey?.() || ''); } catch (e) { key = ''; }
+        return `${ctx.chatId || ''}|${ctx.characterId ?? ''}|${ctx.groupId ?? ''}|${key}`;
+    }
+
+    // 自己单独读一份微信数据（只读，不碰小手机里正在用的那份），聊天一换就重新读
+    _wx() {
+        const d = this._wxData;
+        if (!d) return null;
+        const sig = this._chatSig();
+        if (sig !== this._wxSig || this._wxDirty) {
+            try { d.data = d.loadData(); } catch (e) { /* 忽略 */ }
+            this._wxSig = sig;
+            this._wxDirty = false;
         }
+        return d;
+    }
+
+    async _getWechatData() {
+        if (this._wxData) return this._wx();
+        if (!this.storage) return null;
+        if (!this._wxLoading) {
+            this._wxLoading = import('../wechat/wechat-data.js?v=20261011-wallet-credit-repayment').then(mod => {
+                this._wxData = new mod.WechatData(this.storage);
+                this._wxSig = this._chatSig();
+                this._wxDirty = false;
+                return this._wxData;
+            }).catch(e => { console.warn('[正文朗读] 读取微信联系人失败:', e); this._wxLoading = null; return null; });
+        }
+        await this._wxLoading;
+        return this._wx();
     }
 
     // 按小手机的规则算出某人（联系人或“我”）当前该用的音色
@@ -641,8 +667,7 @@ export class StoryVoice {
 
     // 微信里填了音色的人：联系人（真实姓名 + 自己加的可识别名字）和“我”
     _wechatVoiceContacts() {
-        const vp = window.VirtualPhone || {};
-        const data = vp.wechatApp?.wechatData || vp.cachedWechatData;
+        const data = this._wx();
         const out = [];
         let list = [];
         try { list = data?.getContacts?.() || []; } catch (e) { list = []; }
@@ -975,7 +1000,6 @@ export class StoryVoiceApp {
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
                         ${sw('markSpeaker', '让模型标出说话人', '写正文时在台词前加 [[角色名]]，显示时自动藏起来')}
-                        ${sw('autoPlay', '新回复自动朗读', '回复生成完后按顺序读出全部对白')}
                         ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
                     </div>
 
@@ -1020,7 +1044,6 @@ export class StoryVoiceApp {
         })).filter(x => x.name || x.voice);
         return {
             enabled: !!val('enabled')?.checked,
-            autoPlay: !!val('autoPlay')?.checked,
             readUser: !!val('readUser')?.checked,
             markSpeaker: !!val('markSpeaker')?.checked,
             quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
