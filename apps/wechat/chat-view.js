@@ -11925,6 +11925,7 @@ ${transLines.join('\n')}`);
                         });
                         this._storeWechatTtsCache(cacheKey, blobUrl);
                     }
+                    bubble.dataset.ttsUrl = blobUrl; // 记下这条语音，长按「收藏」时用
 
                     // 播放音频
                     this.audioPlayer.src = blobUrl;
@@ -16152,6 +16153,32 @@ ${transLines.join('\n')}`);
         });
     }
 
+    // 收藏语音消息到「朗读」App 的语音收藏
+    async _favoriteVoiceMessage(message, messageElement) {
+        const sv = window.VirtualPhone?.storyVoice;
+        if (!sv?.addFavorite) { this.app.phoneShell.showNotification('收藏失败', '正文朗读模块还没加载', '⚠️'); return; }
+        const bubble = messageElement?.querySelector?.('.message-voice');
+        const text = stripWechatTranslationContent(bubble?.dataset?.text || message?.content || '');
+        const url = bubble?.dataset?.ttsUrl || '';
+        if (!url) {
+            // 还没播过：先播一次（会生成语音），播完再收藏
+            this.app.phoneShell.showNotification('先听一下', '正在生成这条语音，生成好会自动收藏', '⭐');
+            bubble?.click?.();
+            const t0 = Date.now();
+            const wait = () => new Promise(r => setTimeout(r, 300));
+            while (!bubble?.dataset?.ttsUrl && Date.now() - t0 < 60000) await wait();
+            if (!bubble?.dataset?.ttsUrl) { this.app.phoneShell.showNotification('收藏失败', '这条语音没有生成出来', '⚠️'); return; }
+        }
+        const isMe = messageElement?.classList?.contains('message-right');
+        let speaker = '';
+        if (isMe) speaker = String(this.app.wechatData?.getUserInfo?.()?.name || this.app.wechatData?.data?.userInfo?.name || '我');
+        else {
+            const senderEl = messageElement?.querySelector?.('.message-sender-name') || messageElement?.querySelector?.('.message-sender');
+            speaker = String(senderEl?.innerText || message?.sender || this.app.currentChat?.name || '').trim();
+        }
+        await sv.addFavorite({ text, speaker, source: 'wechat', chat: String(this.app.currentChat?.name || ''), url: bubble.dataset.ttsUrl });
+    }
+
     showMessageMenu(messageIndex) {
         const currentView = this.getCurrentWechatView();
         const messagesDiv = currentView?.querySelector('#chat-messages');
@@ -16220,6 +16247,9 @@ ${transLines.join('\n')}`);
         }
         if (isTextMessage) {
             buttonsHtml += `<button type="button" class="msg-action-btn" data-action="translate" data-index="${messageIndex}" data-message-id="${this._escapeAttr(messageId)}" style="background: transparent; color: #333; border: none; border-right: 0.5px solid rgba(0,0,0,0.08); padding: 4px 8px; font-size: 11px; cursor: pointer;">翻译</button>`;
+        }
+        if (message.type === 'voice') {
+            buttonsHtml += `<button type="button" class="msg-action-btn" data-action="fav-voice" data-index="${messageIndex}" data-message-id="${this._escapeAttr(messageId)}" style="background: transparent; color: #333; border: none; border-right: 0.5px solid rgba(0,0,0,0.08); padding: 4px 8px; font-size: 11px; cursor: pointer;">收藏</button>`;
         }
         buttonsHtml += `<button type="button" class="msg-action-btn" data-action="react" data-index="${messageIndex}" data-message-id="${this._escapeAttr(messageId)}" style="background: transparent; color: #333; border: none; border-right: 0.5px solid rgba(0,0,0,0.08); padding: 4px 8px; font-size: 11px; cursor: pointer;">贴表情</button>`;
         if (hasCallTranscript) {
@@ -16333,6 +16363,8 @@ ${transLines.join('\n')}`);
                     this._showReactionPickerForMessage(actionMessageId || reactTarget?.id, messageElement);
                 } else if (action === 'view') {
                     this.viewCallTranscript(safeIndex, actionMessageId);
+                } else if (action === 'fav-voice') {
+                    this._favoriteVoiceMessage(messages?.[safeIndex], messageElement);
                 }
             });
         });

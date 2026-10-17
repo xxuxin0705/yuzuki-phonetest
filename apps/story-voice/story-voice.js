@@ -1,6 +1,7 @@
 // 🔊 正文朗读：在酒馆正文里，把「对白符号」里的台词挂上 ▶播放 / ↻重新生成 按钮，用小手机的 TTS（Fish 等）读出来。
 // 只改页面显示，不改聊天记录；引擎、API Key 沿用小手机「设置 → 语音」里的配置。
 
+import { favStore, needsTranslation } from './fav-store.js?v=20261021-fv1';
 import { startAmbience, AMBIENCE_LABELS } from './ambience.js?v=20261021-am1';
 import { adaptScript } from './tts-adapt.js?v=20261021-ad2';
 import { openDeepEditor } from './deep-editor.js?v=20261021-ed11';
@@ -29,6 +30,8 @@ const DEFAULTS = Object.freeze({
     nsfw: false,          // 旧设置，已不用（情节由分析判断）
     ttsProvider: '',      // 正文朗读用哪个语音渠道：'' = 跟随小手机「设置 → 语音」
     ttsModels: {},        // 每个渠道单独指定的模型：{ fish: 's2.1-pro', minimax_cn: 'speech-2.8-hd' }
+    lineEdit: true,       // 每句台词后面显示 🎭（单句调整）
+    deepPresets: [],      // 深度分析保存的接口：[{ id, name, url, key, model }]
     customUrl: '',        // 第三方（OpenAI 兼容）语音接口
     customKey: '',
     customModel: '',
@@ -512,6 +515,10 @@ export class StoryVoice {
         s.nsfw = !!s.nsfw;
         s.ttsProvider = String(s.ttsProvider || '').trim();
         s.ttsModels = s.ttsModels && typeof s.ttsModels === 'object' ? s.ttsModels : {};
+        s.markSpeaker = true;                          // 说话人标记一直要（认人靠它）
+        s.emotionCue = s.analysisMode === 'simple';    // 语气只有简单分析需要正文模型写
+        s.lineEdit = s.lineEdit !== false;
+        s.deepPresets = Array.isArray(s.deepPresets) ? s.deepPresets.filter(x => x && x.id) : [];
         s.customModels = Array.isArray(s.customModels) ? s.customModels.map(String).filter(Boolean).slice(0, 300) : [];
         s.deepModels = Array.isArray(s.deepModels) ? s.deepModels.map(String).filter(Boolean).slice(0, 500) : [];
         s.speakers = Array.isArray(s.speakers) ? s.speakers.filter(x => x && typeof x === 'object').map(x => ({ name: String(x.name || '').trim(), voice: String(x.voice || '').trim() })) : [];
@@ -706,7 +713,7 @@ export class StoryVoice {
             ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
-            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button></div>`;
+            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">⭐ 收藏这句语音</button></div>`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
@@ -718,6 +725,12 @@ export class StoryVoice {
         const outside = (e) => { if (!pop.contains(e.target)) close(); };
         setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
         pop.addEventListener('click', (e) => {
+            if (e.target.closest('button[data-fav]')) {
+                e.stopPropagation();
+                close();
+                this.favoriteBar(bar);
+                return;
+            }
             if (e.target.closest('button[data-edit]')) {
                 e.stopPropagation();
                 close();
@@ -1055,7 +1068,7 @@ export class StoryVoice {
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
             this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
-            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
+            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -1141,6 +1154,19 @@ export class StoryVoice {
         // 长按 ↻ 选说话人
         let pressTimer = null;
         const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+        // 长按 ▶ = 收藏这句语音
+        box.addEventListener('pointerdown', (e) => {
+            const pb = e.target.closest('.yzsv-play');
+            if (!pb) return;
+            cancelPress();
+            pressTimer = setTimeout(() => {
+                pressTimer = null;
+                const bar = pb.closest('.yzsv-bar');
+                if (!bar) return;
+                this._longPressAt = Date.now();
+                this.favoriteBar(bar);
+            }, 550);
+        }, true);
         box.addEventListener('pointerdown', (e) => {
             const btn = e.target.closest('.yzsv-regen');
             if (!btn) return;
@@ -1155,6 +1181,7 @@ export class StoryVoice {
         }, true);
         ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => box.addEventListener(t, cancelPress, true));
         box.addEventListener('contextmenu', (e) => {
+            if (e.target.closest('.yzsv-play')) { e.preventDefault(); return; }
             const btn = e.target.closest('.yzsv-regen');
             if (!btn) return;
             e.preventDefault();
@@ -1165,7 +1192,7 @@ export class StoryVoice {
         box.addEventListener('click', (e) => {
             const btn = e.target.closest('.yzsv-btn, .yzsv-deep-open');
             if (!btn) return;
-            if (btn.classList.contains('yzsv-regen') && Date.now() - (this._longPressAt || 0) < 700) { e.preventDefault(); e.stopPropagation(); return; }
+            if ((btn.classList.contains('yzsv-regen') || btn.classList.contains('yzsv-play')) && Date.now() - (this._longPressAt || 0) < 700) { e.preventDefault(); e.stopPropagation(); return; }
             e.preventDefault();
             e.stopPropagation();
             this._unlockAudio();
@@ -1626,6 +1653,50 @@ export class StoryVoice {
         return t;
     }
 
+    // ---------- 语音收藏 ----------
+    async favoriteBar(bar) {
+        try {
+            const text = bar.dataset.text || '';
+            const speaker = bar.dataset.speaker || '';
+            if (await favStore.find(text, speaker, 'story')) { this._toast('已经收藏过了', '在「朗读」App 的语音收藏里'); return; }
+            this._toast('正在收藏…', '把这句语音存到本地');
+            const deep = this._barDeep(bar);
+            const { vi, parts } = this._lineJob(await this._voiceFor(speaker), text, bar.dataset.cue || '', deep);
+            const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, {})));
+            const joined = await this._joinAudio(urls);
+            const blobs = await Promise.all(joined.map(u => fetch(u).then(r => r.blob())));
+            const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
+            const chat = String(window.SillyTavern?.getContext?.()?.name2 || '');
+            await favStore.add({ text, speaker, source: 'story', chat, blob, rate: PACE_SPEED[deep?.p] || 1 });
+            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}`, 'success');
+        } catch (err) {
+            this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
+        }
+    }
+
+    // 小手机里的语音（微信语音消息等）也能收藏：blob 或 url 二选一
+    async addFavorite({ text = '', speaker = '', source = 'wechat', chat = '', blob = null, url = '' } = {}) {
+        try {
+            if (!blob && url) blob = await fetch(url).then(r => r.blob());
+            if (!blob) throw new Error('没有拿到音频');
+            if (await favStore.find(text, speaker, source)) { this._toast('已经收藏过了', '在「朗读」App 的语音收藏里'); return null; }
+            const rec = await favStore.add({ text, speaker, source, chat, blob, rate: 1 });
+            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${String(text).slice(0, 30)}`, 'success');
+            return rec;
+        } catch (err) {
+            this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
+            return null;
+        }
+    }
+
+    async translateText(text = '') {
+        const out = await this._callModel([
+            { role: 'system', content: '你是翻译。把用户给的一句台词翻译成自然、口语化的简体中文，保留语气和情绪，只输出译文，不要解释、不要加引号。' },
+            { role: 'user', content: String(text) }
+        ], { timeout: 60000, maxTokens: 400 });
+        return String(out || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim().replace(/^["「『]|["」』]$/g, '');
+    }
+
     // 编辑面板保存后：这句下次播放不用缓存
     markFresh(mesid, line) {
         this._forceFresh = this._forceFresh || new Set();
@@ -2025,8 +2096,9 @@ export class StoryVoice {
 .yzsv-chips-mini button.is-on { background: #3b82f6; border-color: #3b82f6; color: #fff; }
 .yzsv-switch i { position: absolute; inset: 0; border-radius: 13px; background: #e2e2e8; transition: background .2s; pointer-events: none; }
 .yzsv-switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .2s; }
-.yzsv-switch input:checked + i { background: #a18cd1; }
-.yzsv-switch input:checked + i::after { transform: translateX(18px); }
+.yzsv-switch.is-on i { background: #a18cd1; }
+.yzsv-switch.is-on i::after { transform: translateX(18px); }
+[data-sw-row] { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .yzsv-field { margin-bottom: 12px; }
 .yzsv-field:last-child { margin-bottom: 0; }
 .yzsv-field label { display: block; font-size: 12.5px; color: #555; margin-bottom: 6px; font-weight: 600; }
@@ -2036,6 +2108,20 @@ select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -we
 .yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden] { display: none !important; }
 .yzsv-cfg { font-size: .7em; }
 .yzsv-range { width: 100%; accent-color: #a18cd1; }
+.yzsv-favbtn { display: flex; align-items: center; gap: 8px; width: 100%; margin: 12px 0 2px; padding: 12px 14px; border: 0; border-radius: 16px; background: #fff; box-shadow: 0 2px 10px rgba(120,100,180,.08); cursor: pointer; text-align: left; font-family: inherit; color: #333; }
+.yzsv-favbtn span { font-size: 14.5px; font-weight: 600; flex: 0 0 auto; }
+.yzsv-favbtn small { flex: 1; min-width: 0; font-size: 11.5px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yzsv-favbtn i { font-style: normal; color: #bbb; font-size: 18px; }
+.yzsv-fav { background: #fff; border-radius: 16px; padding: 12px 14px; margin-bottom: 10px; box-shadow: 0 2px 10px rgba(120,100,180,.06); }
+.yzsv-fav-top { display: flex; align-items: baseline; gap: 8px; }
+.yzsv-fav-top b { font-size: 14px; color: #6b54a8; }
+.yzsv-fav-top span { font-size: 11px; color: #aaa; }
+.yzsv-fav-text { margin-top: 6px; font-size: 14px; line-height: 1.6; color: #222; word-break: break-word; }
+.yzsv-fav-trans { margin-top: 6px; padding: 7px 10px; border-radius: 10px; background: #f5f2fc; font-size: 13px; line-height: 1.55; color: #555; }
+.yzsv-fav-trans[hidden] { display: none; }
+.yzsv-fav-acts { display: flex; gap: 8px; margin-top: 9px; }
+.yzsv-fav-acts button { border: 0; border-radius: 9px; padding: 6px 12px; font-size: 12.5px; background: #f1eefa; color: #6b54a8; cursor: pointer; font-family: inherit; }
+.yzsv-fav-acts button.danger { margin-left: auto; background: #fbeeee; color: #c0504a; }
 .yzsv-regen-tip { font-size: .72em; opacity: .85; margin-left: 4px; padding: 1px 7px; border-radius: 999px; background: rgba(161,140,209,.25); white-space: nowrap; }
 .yzsv-bar.is-regen .yzsv-regen { animation: yzsvSpin 1s linear infinite; }
 @keyframes yzsvSpin { to { transform: rotate(360deg); } }
@@ -2086,7 +2172,7 @@ export class StoryVoiceApp {
     render() {
         const s = this.sv.getSettings();
         const spk = s.speakers.length ? s.speakers : [{ name: '', voice: '' }];
-        const sw = (k, title, desc) => `<label class="yzsv-row"><span>${title}<small>${desc}</small></span><span class="yzsv-switch"><input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}><i></i></span></label>`;
+        const sw = (k, title, desc, style = '') => `<div class="yzsv-row" data-sw-row style="${style}"><span>${title}<small>${desc}</small></span><span class="yzsv-switch${s[k] ? ' is-on' : ''}" role="switch" aria-checked="${s[k] ? 'true' : 'false'}" data-k="${k}"><i></i></span></div>`;
         const row = (x) => `<div class="yzsv-spk"><span class="yzsv-spk-av">${esc((x.name || '?').slice(0, 1))}</span><input class="yzsv-input" data-spk="name" placeholder="角色名" value="${esc(x.name)}"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID" value="${esc(x.voice)}"><button type="button" class="yzsv-spk-del" data-spk-del title="删除">✕</button></div>`;
         const count = s.speakers.filter(x => x.name && x.voice).length;
         const html = `
@@ -2100,13 +2186,13 @@ export class StoryVoiceApp {
                         <div class="yzsv-hero-icon">🔊</div>
                         <div><b>${s.enabled ? '朗读已开启' : '朗读已关闭'}</b><small>角色音色 ${count} 个 · 对白符号 ${esc(s.quotes || '未设置')}</small></div>
                     </div>
+                    <button type="button" class="yzsv-favbtn" id="yzsv-open-favs"><span>⭐ 语音收藏</span><small>长按正文里的 ▶、或微信语音的「收藏」就能存进来</small><i>›</i></button>
 
                     <div class="yzsv-sec">基础</div>
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
-                        ${sw('markSpeaker', '让模型标出说话人', '写正文时在台词前加 [[角色名]]，显示时自动藏起来')}
-                        ${sw('emotionCue', '按情景读出语气', '简单分析用：让模型给每句台词写上语气，Fish 按语气来念')}
                         ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
+                        ${sw('lineEdit', '每句后面显示 🎭', '单句调整演法的按钮；关掉后每句只剩 ▶ ↻，想调时在楼层下面的「逐句调整」或长按 ↻ 里进')}
                     </div>
 
                     <div class="yzsv-sec">语音渠道</div>
@@ -2133,9 +2219,9 @@ export class StoryVoiceApp {
                         <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写台词时顺手标上 [[名字|语气]]，边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
 
-                        <label class="yzsv-row" style="padding:0 0 10px;"><span>环境声<small>播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析按正文场景自动选；简单 / 手动在 🎭 里给这一楼选</small></span><span class="yzsv-switch"><input type="checkbox" data-k="ambienceOn" ${s.ambienceOn ? 'checked' : ''}><i></i></span></label>
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析和简单分析按正文场景自动选；手动在 🎭 里给这一楼选', 'padding:0 0 10px;')}
                         <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
-                        <label class="yzsv-row" style="padding:0 0 10px;"><span>自动加拟声词<small>简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加</small></span><span class="yzsv-switch"><input type="checkbox" data-k="autoOno" ${s.autoOno ? 'checked' : ''}><i></i></span></label>
+                        ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
                         <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
                         <div class="yzsv-field"><label>什么时候分析</label>
@@ -2154,6 +2240,16 @@ export class StoryVoiceApp {
                             </select>
                         </div>
                         <div class="yzsv-api" ${s.deepProfile === '__custom__' ? '' : 'hidden'}>
+                            <div class="yzsv-field"><label>已保存的接口（点一下切换）</label>
+                                <div class="yzsv-key">
+                                    <select class="yzsv-input" data-deep-preset>
+                                        <option value="">${s.deepPresets.length ? '— 选一个快速切换 —' : '还没保存过'}</option>
+                                        ${s.deepPresets.map(p => `<option value="${esc(p.id)}" ${p.url === s.deepApiUrl && p.model === s.deepModel && p.key === s.deepApiKey ? 'selected' : ''}>${esc(p.name)}（${esc(p.model || '未选模型')}）</option>`).join('')}
+                                    </select>
+                                    <button type="button" class="yzsv-mini yzsv-fetch" data-deep-preset-save>保存当前</button>
+                                    <button type="button" class="yzsv-mini yzsv-fetch" data-deep-preset-del title="删除选中的">删除</button>
+                                </div>
+                            </div>
                             <div class="yzsv-field"><label>API 地址</label><input class="yzsv-input" data-k="deepApiUrl" value="${esc(s.deepApiUrl)}" placeholder="https://api.example.com/v1" spellcheck="false" autocomplete="off"></div>
                             <div class="yzsv-field"><label>API 密钥</label>
                                 <div class="yzsv-key"><input class="yzsv-input" type="password" data-k="deepApiKey" value="${esc(s.deepApiKey)}" placeholder="sk-..." spellcheck="false" autocomplete="new-password"><button type="button" class="yzsv-eye is-hidden" title="显示 / 隐藏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="yzsv-eye-slash" d="M4 4l16 16"/></svg></button></div>
@@ -2215,6 +2311,86 @@ export class StoryVoiceApp {
         return document.querySelector('.phone-view-current') || document;
     }
 
+    // ---------- 语音收藏页 ----------
+    async renderFavs() {
+        let list = [];
+        try { list = await favStore.all(); } catch (e) { list = []; }
+        const fmt = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+        const html = `
+            <div class="yzsv-page">
+                <div class="yzsv-head">
+                    <button class="yzsv-back" id="yzsv-fav-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
+                    <div class="yzsv-head-title">语音收藏</div>
+                </div>
+                <div class="yzsv-body app-body">
+                    ${list.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:40px 10px;">还没有收藏<br>正文里长按某句的 ▶，或者长按 ↻ 选「⭐ 收藏这句语音」；微信里长按语音消息选「收藏」</div>'}
+                    ${list.map(x => `
+                        <div class="yzsv-fav" data-id="${esc(x.id)}">
+                            <div class="yzsv-fav-top"><b>${esc(x.speaker || '未知')}</b><span>${x.source === 'wechat' ? '微信语音' : '正文'}${x.chat ? ` · ${esc(x.chat)}` : ''} · ${fmt(x.at)}</span></div>
+                            <div class="yzsv-fav-text">${esc(x.text)}</div>
+                            ${needsTranslation(x.text) ? `<div class="yzsv-fav-trans" ${x.translation ? '' : 'hidden'}>${esc(x.translation || '')}</div>` : ''}
+                            <div class="yzsv-fav-acts">
+                                <button type="button" data-fav-play>▶ 播放</button>
+                                ${needsTranslation(x.text) ? `<button type="button" data-fav-trans>${x.translation ? '隐藏翻译' : '查看翻译'}</button>` : ''}
+                                <button type="button" data-fav-del class="danger">删除</button>
+                            </div>
+                        </div>`).join('')}
+                </div>
+            </div>`;
+        this.phoneShell.setContent(html, 'story-voice');
+        const root = this._root();
+        this._fixScroll(root);
+        const toast = (t, m, i = '⭐') => this.phoneShell?.showNotification?.(t, m, i);
+        root.querySelector('#yzsv-fav-back')?.addEventListener('click', () => { this._favAudio?.pause(); this.render(); });
+        const byId = new Map(list.map(x => [x.id, x]));
+        root.querySelectorAll('.yzsv-fav').forEach(card => {
+            const rec = byId.get(card.dataset.id);
+            card.querySelector('[data-fav-play]')?.addEventListener('click', (e) => {
+                const btn = e.currentTarget;
+                this._favAudio = this._favAudio || new Audio();
+                const a = this._favAudio;
+                if (this._favPlaying === rec.id && !a.paused) { a.pause(); btn.textContent = '▶ 播放'; return; }
+                root.querySelectorAll('[data-fav-play]').forEach(b => { b.textContent = '▶ 播放'; });
+                try { if (this._favUrl) URL.revokeObjectURL(this._favUrl); } catch (err) { /* 忽略 */ }
+                this._favUrl = URL.createObjectURL(rec.blob);
+                a.src = this._favUrl;
+                try { a.preservesPitch = true; a.defaultPlaybackRate = rec.rate || 1; a.playbackRate = rec.rate || 1; } catch (err) { /* 忽略 */ }
+                this._favPlaying = rec.id;
+                btn.textContent = '■ 停止';
+                a.onended = () => { btn.textContent = '▶ 播放'; };
+                a.play().catch(err => { btn.textContent = '▶ 播放'; toast('播放失败', String(err?.message || err)); });
+            });
+            card.querySelector('[data-fav-trans]')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                const box = card.querySelector('.yzsv-fav-trans');
+                if (!box) return;
+                if (!box.hidden && rec.translation) { box.hidden = true; btn.textContent = '查看翻译'; return; }
+                if (!rec.translation) {
+                    btn.disabled = true;
+                    btn.textContent = '翻译中…';
+                    try {
+                        rec.translation = await this.sv.translateText(rec.text);
+                        await favStore.update(rec.id, { translation: rec.translation });
+                    } catch (err) {
+                        btn.disabled = false;
+                        btn.textContent = '查看翻译';
+                        toast('翻译失败', String(err?.message || err).slice(0, 120), '⚠️');
+                        return;
+                    }
+                    btn.disabled = false;
+                }
+                box.textContent = rec.translation;
+                box.hidden = false;
+                btn.textContent = '隐藏翻译';
+            });
+            card.querySelector('[data-fav-del]')?.addEventListener('click', async () => {
+                if (!window.confirm('删除这条收藏？')) return;
+                await favStore.remove(rec.id);
+                card.remove();
+            });
+        });
+    }
+
     // 选中渠道下面的地址 / Key / 模型
     _channelFields(s) {
         const ch = s.ttsProvider || String(this.sv.storage?.get?.('phone-tts-provider') || 'minimax_cn');
@@ -2236,10 +2412,17 @@ export class StoryVoiceApp {
             <div class="yzsv-chan" data-chan="${esc(ch)}">
                 <div class="yzsv-field"><label>接口地址${ch === 'custom_openai' ? '' : '（和「设置 → 语音」同步）'}</label><input class="yzsv-input" data-ch="url" value="${esc(url)}" placeholder="${ch === 'custom_openai' ? 'https://example.com/v1' : '这个渠道的接口地址'}" spellcheck="false" autocomplete="off"></div>
                 <div class="yzsv-field"><label>API Key${key ? '' : ' <span style="color:#d0605a">（还没填）</span>'}</label><div class="yzsv-key"><input class="yzsv-input" type="password" data-ch="key" value="${esc(key)}" placeholder="sk-..." spellcheck="false" autocomplete="new-password">${eye}</div></div>
-                <div class="yzsv-field"><label>模型</label>
-                    <div class="yzsv-key"><input class="yzsv-input" data-ch="model" list="yzsv-model-list" value="${esc(model)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><button type="button" class="yzsv-mini yzsv-fetch" data-ch-fetch>${this._fetched?.[ch] ? '重新拉取' : '拉取模型'}</button></div>
-                    <datalist id="yzsv-model-list">${list.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
-                    ${list.length ? `<div class="yzsv-chips-mini">${list.slice(0, 24).map(m => `<button type="button" data-ch-pick="${esc(m)}" class="${m === model ? 'is-on' : ''}">${esc(m)}</button>`).join('')}</div>` : ''}
+                <div class="yzsv-field"><label>模型${list.length ? `（${list.length} 个可选）` : ''}</label>
+                    <div class="yzsv-key">
+                        <select class="yzsv-input" data-ch="modelsel">
+                            <option value="" ${!model ? 'selected' : ''}>${ch === 'custom_openai' ? '不指定' : esc(placeholder)}</option>
+                            ${list.map(m => `<option value="${esc(m)}" ${m === model ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+                            ${model && !list.includes(model) ? `<option value="${esc(model)}" selected>${esc(model)}</option>` : ''}
+                            <option value="__manual__">✎ 手动输入…</option>
+                        </select>
+                        <button type="button" class="yzsv-mini yzsv-fetch" data-ch-fetch>${this._fetched?.[ch] ? '重新拉取' : '拉取模型'}</button>
+                    </div>
+                    <input class="yzsv-input" data-ch="model" value="${esc(model)}" placeholder="输入模型名" spellcheck="false" autocomplete="off" hidden style="margin-top:8px;">
                 </div>
                 ${ch === 'custom_openai' ? '<div class="yzsv-note" style="margin-top:-4px">第三方渠道按 OpenAI 的 /v1/audio/speech 格式请求；角色音色填这个服务的音色名（如 alloy、nova，或服务商给的音色 ID）。</div>' : ''}
             </div>`;
@@ -2259,18 +2442,18 @@ export class StoryVoiceApp {
     _collect() {
         const root = this._root();
         const val = k => root.querySelector(`[data-k="${k}"]`);
+        const on = k => { const el = root.querySelector(`.yzsv-switch[data-k="${k}"]`); return el ? el.classList.contains('is-on') : !!this.sv.getSettings()[k]; };
         const speakers = Array.from(root.querySelectorAll('.yzsv-spk')).map(row => ({
             name: String(row.querySelector('[data-spk="name"]')?.value || '').trim(),
             voice: String(row.querySelector('[data-spk="voice"]')?.value || '').trim()
         })).filter(x => x.name || x.voice);
         return {
-            enabled: !!val('enabled')?.checked,
-            readUser: !!val('readUser')?.checked,
-            markSpeaker: !!val('markSpeaker')?.checked,
-            emotionCue: !!val('emotionCue')?.checked,
+            enabled: on('enabled'),
+            readUser: on('readUser'),
+            lineEdit: on('lineEdit'),
             analysisMode: ['simple', 'deep', 'manual'].includes(String(val('analysisMode')?.value)) ? String(val('analysisMode').value) : 'simple',
-            ambienceOn: !!val('ambienceOn')?.checked,
-            autoOno: !!val('autoOno')?.checked,
+            ambienceOn: on('ambienceOn'),
+            autoOno: on('autoOno'),
             ambienceVol: Math.min(80, Math.max(5, Number(val('ambienceVol')?.value) || 30)),
             deepProfile: String(val('deepProfile')?.value || ''),
             deepApiUrl: String(val('deepApiUrl')?.value || '').trim(),
@@ -2345,11 +2528,18 @@ export class StoryVoiceApp {
             toast('已保存', b.dataset.npc === 'npc' ? '没配音色的人用默认 NPC 音色读' : '只读配了音色的人');
         }));
         const toast = (t, m, i = '🔊') => this.phoneShell?.showNotification?.(t, m, i);
+        root.querySelector('#yzsv-open-favs')?.addEventListener('click', () => this.renderFavs());
         root.querySelector('#yzsv-back')?.addEventListener('click', () => {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();
             else window.dispatchEvent(new CustomEvent('phone:goHome'));
         });
-        root.querySelectorAll('input[type=checkbox][data-k]').forEach(cb => cb.addEventListener('change', () => {
+        // 开关：点整行就切换（不用原生勾选框，酒馆的勾选框样式不会混进来）
+        root.querySelectorAll('[data-sw-row]').forEach(row => row.addEventListener('click', () => {
+            const swEl = row.querySelector('.yzsv-switch');
+            if (!swEl) return;
+            const next = !swEl.classList.contains('is-on');
+            swEl.classList.toggle('is-on', next);
+            swEl.setAttribute('aria-checked', next ? 'true' : 'false');
             const s = this.sv.saveSettings(this._collect());
             const hero = root.querySelector('.yzsv-hero b');
             if (hero) hero.textContent = s.enabled ? '朗读已开启' : '朗读已关闭';
@@ -2401,7 +2591,13 @@ export class StoryVoiceApp {
         const saveChan = () => {
             if (!chanBox) return;
             const ch = chanBox.dataset.chan;
-            const get = (k) => String(chanBox.querySelector(`[data-ch="${k}"]`)?.value || '').trim();
+            const getRaw = (k) => String(chanBox.querySelector(`[data-ch="${k}"]`)?.value || '').trim();
+            // 模型：下拉选的，或者选了「手动输入」后输入框里的
+            const get = (k) => {
+                if (k !== 'model') return getRaw(k);
+                const sel = getRaw('modelsel');
+                return sel === '__manual__' ? getRaw('model') : sel;
+            };
             if (ch === 'custom_openai') {
                 this.sv.saveSettings({ customUrl: get('url'), customKey: get('key'), customModel: get('model') });
             } else {
@@ -2419,7 +2615,12 @@ export class StoryVoiceApp {
             const keyLabel = chanBox.querySelector('[data-ch="key"]')?.closest('.yzsv-field')?.querySelector('label');
             if (keyLabel) keyLabel.innerHTML = `API Key${get('key') ? '' : ' <span style="color:#d0605a">（还没填）</span>'}`;
         };
-        chanBox?.querySelectorAll('[data-ch]').forEach(inp => inp.addEventListener('change', (e) => { e.stopPropagation(); saveChan(); }));
+        chanBox?.querySelector('[data-ch="modelsel"]')?.addEventListener('change', (e) => {
+            const manual = chanBox.querySelector('[data-ch="model"]');
+            if (manual) { manual.hidden = e.target.value !== '__manual__'; if (!manual.hidden) manual.focus(); }
+            if (e.target.value !== '__manual__') toast('已保存', e.target.value ? `正文朗读用模型 ${e.target.value}` : '模型跟随默认');
+        });
+        chanBox?.querySelectorAll('[data-ch]').forEach(inp => inp.addEventListener('change', (e) => { e.stopPropagation(); if (inp.dataset.ch === 'modelsel' && inp.value === '__manual__') return; saveChan(); }));
         chanBox?.querySelector('[data-eye]')?.addEventListener('click', (e) => {
             const inp = chanBox.querySelector('[data-ch="key"]');
             const show = inp.type === 'password';
@@ -2469,6 +2670,50 @@ export class StoryVoiceApp {
             const box = root.querySelector('.yzsv-api');
             if (box) box.hidden = e.target.value !== '__custom__';
             this.sv.saveSettings(this._collect());
+        });
+        // 深度分析的接口：保存 / 快速切换 / 删除
+        const presetSel = root.querySelector('[data-deep-preset]');
+        presetSel?.addEventListener('change', () => {
+            const p = this.sv.getSettings().deepPresets.find(x => x.id === presetSel.value);
+            if (!p) return;
+            const st = this.sv.getSettings();
+            const models = [...new Set([p.model, ...(p.models || []), ...st.deepModels].filter(Boolean))];
+            this.sv.saveSettings({ deepApiUrl: p.url, deepApiKey: p.key, deepModel: p.model, deepModels: models });
+            const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
+            this.render();
+            const nb = this._root().querySelector('.yzsv-body');
+            if (nb) nb.scrollTop = top;
+            toast('已切换', `深度分析改用「${p.name}」`, '✅');
+        });
+        root.querySelector('[data-deep-preset-save]')?.addEventListener('click', () => {
+            const cur = this._collect();
+            if (!cur.deepApiUrl) { toast('还没填地址', '先填好 API 地址和密钥再保存', '⚠️'); return; }
+            let host = '';
+            try { host = new URL(cur.deepApiUrl).hostname; } catch (e) { host = cur.deepApiUrl; }
+            const name = String(window.prompt('给这个接口起个名字', `${host}${cur.deepModel ? ' · ' + cur.deepModel : ''}`) || '').trim();
+            if (!name) return;
+            const st = this.sv.getSettings();
+            const list = st.deepPresets.filter(x => x.name !== name);
+            list.push({ id: `dp_${Date.now()}`, name, url: cur.deepApiUrl, key: cur.deepApiKey, model: cur.deepModel, models: st.deepModels.slice(0, 200) });
+            this.sv.saveSettings({ ...cur, deepPresets: list });
+            const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
+            this.render();
+            const nb = this._root().querySelector('.yzsv-body');
+            if (nb) nb.scrollTop = top;
+            toast('已保存', `「${name}」，以后在下拉里一点就能切换`, '✅');
+        });
+        root.querySelector('[data-deep-preset-del]')?.addEventListener('click', () => {
+            const id = presetSel?.value;
+            const st = this.sv.getSettings();
+            const p = st.deepPresets.find(x => x.id === id);
+            if (!p) { toast('先选一个', '在下拉里选中要删除的接口', '⚠️'); return; }
+            if (!window.confirm(`删除保存的接口「${p.name}」？`)) return;
+            this.sv.saveSettings({ deepPresets: st.deepPresets.filter(x => x.id !== id) });
+            const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
+            this.render();
+            const nb = this._root().querySelector('.yzsv-body');
+            if (nb) nb.scrollTop = top;
+            toast('已删除', p.name);
         });
         root.querySelector('select[data-k="deepModel"]')?.addEventListener('change', () => { this.sv.saveSettings(this._collect()); toast('已保存', `深度分析用 ${root.querySelector('select[data-k="deepModel"]').value}`); });
         root.querySelector('.yzsv-eye')?.addEventListener('click', (e) => {

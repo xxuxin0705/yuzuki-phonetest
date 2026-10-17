@@ -10,7 +10,7 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m16';
+import { ChatView } from './chat-view.js?v=20261021-m18';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261021-m17';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
