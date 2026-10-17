@@ -9,6 +9,7 @@ import { gateCue, STORY_TONES } from './deep-analysis.js?v=20261021-dp8';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js?v=20261021-dp8';
 
 const STORE_KEY = 'phone-story-voice';
+const LOCAL_SETTINGS_KEY = 'yzsv-settings-local';     // 设置的本机备份（带时间，取最新的）
 const DEEP_KEY = 'phone-story-voice-deep';          // 旧版本存放位置（会自动搬走）
 const DEEP_LOCAL_KEY = 'yzsv-deep-analysis-cache';    // 现在：只存浏览器本地
 const DEEP_MAX = 100;
@@ -31,6 +32,7 @@ const DEFAULTS = Object.freeze({
     ttsProvider: '',      // 正文朗读用哪个语音渠道：'' = 跟随小手机「设置 → 语音」
     ttsModels: {},        // 每个渠道单独指定的模型：{ fish: 's2.1-pro', minimax_cn: 'speech-2.8-hd' }
     lineEdit: true,       // 每句台词后面显示 🎭（单句调整）
+    channelMode: 'per',   // per = 每个人按自己配的渠道（没单独配的用上面选的渠道）；unified = 统一用上面选的渠道
     deepPresets: [],      // 深度分析保存的接口：[{ id, name, url, key, model }]
     customUrl: '',        // 第三方（OpenAI 兼容）语音接口
     customKey: '',
@@ -265,7 +267,7 @@ export class StoryVoice {
     // 开始分析某一楼（已经分析过就直接用缓存；force = 重新分析）
     _startDeep(id, { force = false } = {}) {
         const s = this.getSettings();
-        if (s.analysisMode !== 'deep' || !s.enabled) return Promise.resolve(null);
+        if (s.analysisMode !== 'deep' || !s.enabled) return Promise.resolve(null); // 简单分析、手动模式绝不调用分析模型
         const ctx = window.SillyTavern?.getContext?.();
         const msg = ctx?.chat?.[id];
         if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return Promise.resolve(null);
@@ -510,6 +512,11 @@ export class StoryVoice {
         try { raw = this.storage?.get?.(STORE_KEY, false); } catch (e) { raw = null; }
         let obj = {};
         try { obj = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
+        // 本机备份：酒馆设置还没存到服务器就刷新、或者被别的页面用旧设置覆盖时，以本机最新改的为准
+        try {
+            const bak = JSON.parse(localStorage.getItem(LOCAL_SETTINGS_KEY) || 'null');
+            if (bak && typeof bak === 'object' && Number(bak._at || 0) > Number(obj?._at || 0)) obj = bak;
+        } catch (e) { /* 忽略 */ }
         const s = { ...DEFAULTS, ...(obj && typeof obj === 'object' ? obj : {}) };
         if (!['simple', 'deep', 'manual'].includes(s.analysisMode)) s.analysisMode = 'simple'; // 旧版的 none = 简单分析
         s.nsfw = !!s.nsfw;
@@ -518,6 +525,7 @@ export class StoryVoice {
         s.markSpeaker = true;                          // 说话人标记一直要（认人靠它）
         s.emotionCue = s.analysisMode === 'simple';    // 语气只有简单分析需要正文模型写
         s.lineEdit = s.lineEdit !== false;
+        s.channelMode = s.channelMode === 'unified' ? 'unified' : 'per';
         s.deepPresets = Array.isArray(s.deepPresets) ? s.deepPresets.filter(x => x && x.id) : [];
         s.customModels = Array.isArray(s.customModels) ? s.customModels.map(String).filter(Boolean).slice(0, 300) : [];
         s.deepModels = Array.isArray(s.deepModels) ? s.deepModels.map(String).filter(Boolean).slice(0, 500) : [];
@@ -526,8 +534,10 @@ export class StoryVoice {
     }
 
     saveSettings(patch = {}) {
-        const next = { ...this.getSettings(), ...patch };
-        try { this.storage?.set?.(STORE_KEY, JSON.stringify(next)); } catch (e) { /* 忽略 */ }
+        const next = { ...this.getSettings(), ...patch, _at: Date.now() };
+        const json = JSON.stringify(next);
+        try { this.storage?.set?.(STORE_KEY, json); } catch (e) { /* 忽略 */ }
+        try { localStorage.setItem(LOCAL_SETTINGS_KEY, json); } catch (e) { /* 忽略 */ }
         this.updatePrompt();
         this.refreshAll();
         return next;
@@ -713,7 +723,7 @@ export class StoryVoice {
             ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
-            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">⭐ 收藏这句语音</button></div>`;
+            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">${this._isFav(bar.dataset.speaker || '', bar.dataset.text || '') ? '☆ 取消收藏' : '⭐ 收藏这句语音'}</button></div>`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
@@ -781,6 +791,7 @@ export class StoryVoice {
         this._injectStyle();
         // 先把微信联系人（音色ID）读进来，再挂按钮：只有对得上音色的台词才显示按钮
         this._getWechatData().catch(() => null).then(() => setTimeout(() => this.refreshAll(), 50));
+        this._loadFavKeys();
         const ctx = window.SillyTavern?.getContext?.();
         const es = ctx?.eventSource;
         const ev = ctx?.event_types || ctx?.eventTypes || {};
@@ -1068,7 +1079,7 @@ export class StoryVoice {
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
             this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
-            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play" title="播放（${esc(bar.dataset.speaker || '默认音色')}）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
+            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play${this._isFav(bar.dataset.speaker || '', r.text) ? ' is-fav' : ''}" title="播放（${esc(bar.dataset.speaker || '默认音色')}）；长按收藏 / 取消收藏">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -1414,6 +1425,13 @@ export class StoryVoice {
         return p || String(this.storage?.get?.('phone-tts-provider') || 'minimax_cn').trim() || 'minimax_cn';
     }
 
+    // 这一句最后走哪个渠道：统一模式一律用选的渠道；按人模式用这个人自己配的渠道
+    _providerFor(vi = {}) {
+        const st = this.getSettings();
+        if (st.ttsProvider && st.channelMode === 'unified') return this._storyProvider();
+        return vi.provider || this._storyProvider();
+    }
+
     // 第三方渠道：完整的 /audio/speech 地址
     _customSpeechUrl() {
         let u = String(this.getSettings().customUrl || '').trim().replace(/\/+$/, '');
@@ -1431,11 +1449,12 @@ export class StoryVoice {
         const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
         const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
         if (String(voices[globalProvider] || '').trim()) return { voice: String(voices[globalProvider]).trim(), provider: globalProvider, languageBoost: lang };
-        // 朗读 App 里明确选了渠道：一律走这个渠道（这个渠道没单独填音色，就借用别处填的音色 ID）
-        if (this.getSettings().ttsProvider) {
-            const any = (has[0] && String(has[0][1]).trim()) || String(obj.ttsVoice || '').trim();
-            return any ? { voice: any, provider: globalProvider, languageBoost: lang } : null;
+        // 统一用一个渠道：这个人没填这个渠道的音色，就用这个渠道的默认音色（别把别家的音色 ID 发过去，会报 voice id not exist）
+        const st = this.getSettings();
+        if (st.ttsProvider && st.channelMode === 'unified') {
+            return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true } : null;
         }
+        // 每个人按自己配的：他填了哪个渠道的音色就走哪个渠道
         const provider = bound || globalProvider;
         if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang };
         if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang };
@@ -1517,7 +1536,7 @@ export class StoryVoice {
     async _synth(text, voiceInfo, { regen = false, signal } = {}) {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
         let vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
-        const provider = this.getSettings().ttsProvider ? this._storyProvider() : (vi.provider || this._storyProvider());
+        const provider = this._providerFor(vi);
         const prov = vi.provider || provider;
         let fish = null;
         let extra = null;
@@ -1569,8 +1588,8 @@ export class StoryVoice {
         const opts = { voice: vi.voice || undefined, signal };
         const st = this.getSettings();
         // 选了渠道：强制走它（别让联系人里绑的旧渠道抢走）
-        opts.provider = st.ttsProvider ? this._storyProvider() : (vi.provider || this._storyProvider());
-        if (st.ttsProvider === 'custom_openai') {
+        opts.provider = this._providerFor(vi);
+        if (st.ttsProvider === 'custom_openai' && opts.provider === 'openai' && (!vi.provider || st.channelMode === 'unified' || vi.provider === 'openai')) {
             opts.apiUrl = this._customSpeechUrl();
             opts.apiKey = st.customKey || '';
             if (st.customModel) opts.model = st.customModel;
@@ -1654,11 +1673,28 @@ export class StoryVoice {
     }
 
     // ---------- 语音收藏 ----------
+    // 收藏过的句子：▶ 上显示一颗星（启动时从本地收藏里读一遍）
+    async _loadFavKeys() {
+        try { this._favKeys = new Set((await favStore.all()).map(x => `${x.speaker}\u0001${x.text}`)); }
+        catch (e) { this._favKeys = new Set(); }
+        this.refreshAll();
+    }
+
+    _isFav(speaker, text) { return !!this._favKeys?.has(`${speaker}\u0001${text}`); }
+
+    // 长按 ▶：没收藏就收藏，已经收藏了就取消
     async favoriteBar(bar) {
         try {
             const text = bar.dataset.text || '';
             const speaker = bar.dataset.speaker || '';
-            if (await favStore.find(text, speaker, 'story')) { this._toast('已经收藏过了', '在「朗读」App 的语音收藏里'); return; }
+            const had = await favStore.find(text, speaker, 'story');
+            if (had) {
+                await favStore.remove(had.id);
+                this._favKeys?.delete(`${speaker}\u0001${text}`);
+                bar.querySelector('.yzsv-play')?.classList.remove('is-fav');
+                this._toast('已取消收藏', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}`);
+                return;
+            }
             this._toast('正在收藏…', '把这句语音存到本地');
             const deep = this._barDeep(bar);
             const { vi, parts } = this._lineJob(await this._voiceFor(speaker), text, bar.dataset.cue || '', deep);
@@ -1667,8 +1703,12 @@ export class StoryVoice {
             const blobs = await Promise.all(joined.map(u => fetch(u).then(r => r.blob())));
             const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
             const chat = String(window.SillyTavern?.getContext?.()?.name2 || '');
-            await favStore.add({ text, speaker, source: 'story', chat, blob, rate: PACE_SPEED[deep?.p] || 1 });
-            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}`, 'success');
+            const rec = await favStore.add({ text, speaker, source: 'story', chat, blob, rate: PACE_SPEED[deep?.p] || 1, tags: [] });
+            this._favKeys = this._favKeys || new Set();
+            this._favKeys.add(`${speaker}\u0001${text}`);
+            bar.querySelector('.yzsv-play')?.classList.add('is-fav');
+            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}（再长按一次取消）`, 'success');
+            this._askTags(rec, bar.querySelector('.yzsv-play'));
         } catch (err) {
             this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
         }
@@ -1679,9 +1719,16 @@ export class StoryVoice {
         try {
             if (!blob && url) blob = await fetch(url).then(r => r.blob());
             if (!blob) throw new Error('没有拿到音频');
-            if (await favStore.find(text, speaker, source)) { this._toast('已经收藏过了', '在「朗读」App 的语音收藏里'); return null; }
-            const rec = await favStore.add({ text, speaker, source, chat, blob, rate: 1 });
-            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${String(text).slice(0, 30)}`, 'success');
+            speaker = this._canonicalName(speaker) || speaker; // 记真实姓名，方便按角色筛选
+            const had = await favStore.find(text, speaker, source);
+            if (had) {
+                await favStore.remove(had.id);
+                this._toast('已取消收藏', `${speaker ? `${speaker}：` : ''}${String(text).slice(0, 30)}`);
+                return null;
+            }
+            const rec = await favStore.add({ text, speaker, source, chat, blob, rate: 1, tags: [] });
+            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${String(text).slice(0, 30)}（再收藏一次就是取消）`, 'success');
+            this._askTags(rec, null);
             return rec;
         } catch (err) {
             this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
@@ -1689,7 +1736,98 @@ export class StoryVoice {
         }
     }
 
+    // 收藏后弹一个小框加标签（可以跳过，6 秒不动自己消失）
+    async _askTags(rec, anchor) {
+        if (!rec) return;
+        document.querySelectorAll('.yzsv-tagpop').forEach(n => n.remove());
+        let known = [];
+        try { known = [...new Set((await favStore.all()).flatMap(x => x.tags || []))].slice(0, 16); } catch (e) { known = []; }
+        const pop = document.createElement('div');
+        pop.className = 'yzsv-pop yzsv-tagpop';
+        pop.innerHTML = `<div class="yzsv-pop-title">⭐ 已收藏，加个标签？<span>可以跳过</span></div>
+            <div class="yzsv-pop-names">${known.map(t => `<button type="button" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+            <div class="yzsv-tagrow"><input type="text" placeholder="新标签，比如：名场面、哭腔、甜" enterkeyhint="done"><button type="button" data-ok>好</button></div>`;
+        document.body.appendChild(pop);
+        const w = Math.min(300, window.innerWidth - 16);
+        pop.style.width = `${w}px`;
+        const r = anchor?.getBoundingClientRect?.() || { left: window.innerWidth / 2, width: 0, bottom: window.innerHeight / 3, top: window.innerHeight / 3 };
+        pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+        const below = r.bottom + 8;
+        pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 8) : below}px`;
+        const chosen = new Set();
+        let timer = setTimeout(() => close(), 6000);
+        const close = async (save = false) => {
+            clearTimeout(timer);
+            document.removeEventListener('pointerdown', outside, true);
+            const typed = String(pop.querySelector('input')?.value || '').split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean);
+            typed.forEach(t => chosen.add(t));
+            pop.remove();
+            if ((save || chosen.size) && chosen.size) {
+                try { await favStore.update(rec.id, { tags: [...chosen].slice(0, 8) }); this._toast('标签已加上', [...chosen].join('、')); } catch (e) { /* 忽略 */ }
+            }
+        };
+        const outside = (e) => { if (!pop.contains(e.target)) close(); };
+        setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+        pop.addEventListener('pointerdown', () => { clearTimeout(timer); timer = setTimeout(() => close(), 15000); });
+        pop.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const t = e.target.closest('[data-tag]');
+            if (t) { t.classList.toggle('is-on'); if (chosen.has(t.dataset.tag)) chosen.delete(t.dataset.tag); else chosen.add(t.dataset.tag); return; }
+            if (e.target.closest('[data-ok]')) close(true);
+        });
+        pop.querySelector('input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); close(true); } });
+    }
+
+    // 翻译：先用免费的网页翻译（不用 Key），都不行再用模型
     async translateText(text = '') {
+        const src = String(text || '').trim();
+        if (!src) return '';
+        const lang = /[\u3040-\u30ff]/.test(src) ? 'ja' : /[\uac00-\ud7af]/.test(src) ? 'ko' : 'auto';
+        // 1) 浏览器自带的离线翻译（新版 Chrome 有）
+        // 只在翻译包已经下载好时用（不触发下载，最多等 4 秒）
+        const within = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+        try {
+            if (window.Translator?.create && lang !== 'auto') {
+                const av = await within(window.Translator.availability?.({ sourceLanguage: lang, targetLanguage: 'zh' }) ?? Promise.resolve('no'), 1500);
+                if (av === 'available' || av === 'readily') {
+                    const tr = await within(window.Translator.create({ sourceLanguage: lang, targetLanguage: 'zh' }), 3000);
+                    const out = await within(tr.translate(src), 4000);
+                    if (out) return String(out).trim();
+                }
+            }
+        } catch (e) { /* 换下一个 */ }
+        // 每个网页翻译最多等 6 秒（国内连不上 Google 时不会卡住）
+        const tryGet = async (url, pick) => {
+            const ctl = new AbortController();
+            const timer = setTimeout(() => ctl.abort(), 6000);
+            try {
+                let res;
+                try { res = await fetch(url, { signal: ctl.signal }); }
+                catch (e) {
+                    if (ctl.signal.aborted) throw e;
+                    res = await fetch(`/proxy/${url}`, { signal: ctl.signal }); // 跨域被挡：走酒馆转发
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const out = pick(await res.json());
+                if (!out) throw new Error('空结果');
+                return String(out).trim();
+            } finally { clearTimeout(timer); }
+        };
+        // 2) Google 网页翻译接口
+        try {
+            return await tryGet(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${lang}&tl=zh-CN&dt=t&q=${encodeURIComponent(src)}`,
+                j => (Array.isArray(j?.[0]) ? j[0].map(x => x?.[0] || '').join('') : ''));
+        } catch (e) { /* 换下一个 */ }
+        // 3) MyMemory 免费翻译
+        try {
+            return await tryGet(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(src)}&langpair=${lang === 'auto' ? 'en' : lang}|zh-CN`,
+                j => j?.responseData?.translatedText);
+        } catch (e) { /* 换下一个 */ }
+        // 4) 最后才用模型
+        return this._translateByModel(src);
+    }
+
+    async _translateByModel(text = '') {
         const out = await this._callModel([
             { role: 'system', content: '你是翻译。把用户给的一句台词翻译成自然、口语化的简体中文，保留语气和情绪，只输出译文，不要解释、不要加引号。' },
             { role: 'user', content: String(text) }
@@ -2107,11 +2245,30 @@ export class StoryVoice {
 select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #999 50%), linear-gradient(135deg, #999 50%, transparent 50%); background-position: calc(100% - 16px) 17px, calc(100% - 11px) 17px; background-size: 5px 5px; background-repeat: no-repeat; text-overflow: ellipsis; }
 .yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden] { display: none !important; }
 .yzsv-cfg { font-size: .7em; }
+.yzsv-play.is-fav { position: relative; border-color: rgba(255,196,60,.8); box-shadow: 0 0 0 1px rgba(255,196,60,.35) inset; }
+.yzsv-play.is-fav::after { content: '★'; position: absolute; top: -7px; right: -5px; font-size: 10px; color: #ffc43c; text-shadow: 0 0 2px rgba(0,0,0,.6); }
+.yzsv-tagrow { display: flex; gap: 6px; margin-top: 8px; }
+.yzsv-tagrow input { flex: 1; min-width: 0; height: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 0 8px; font-size: 12.5px; }
+.yzsv-tagrow button { border: 0; border-radius: 8px; padding: 0 12px; background: #a18cd1; color: #fff; font-size: 12.5px; cursor: pointer; }
 .yzsv-range { width: 100%; accent-color: #a18cd1; }
 .yzsv-favbtn { display: flex; align-items: center; gap: 8px; width: 100%; margin: 12px 0 2px; padding: 12px 14px; border: 0; border-radius: 16px; background: #fff; box-shadow: 0 2px 10px rgba(120,100,180,.08); cursor: pointer; text-align: left; font-family: inherit; color: #333; }
 .yzsv-favbtn span { font-size: 14.5px; font-weight: 600; flex: 0 0 auto; }
 .yzsv-favbtn small { flex: 1; min-width: 0; font-size: 11.5px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yzsv-favbtn i { font-style: normal; color: #bbb; font-size: 18px; }
+.yzsv-ffilter { position: sticky; top: 0; z-index: 2; background: #f6f4fb; padding: 4px 0 8px; margin-bottom: 4px; }
+.yzsv-fsearch { margin-bottom: 8px; }
+.yzsv-frow { display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; padding: 2px 0; }
+.yzsv-frow::-webkit-scrollbar { display: none; }
+.yzsv-frow > span { flex: 0 0 auto; font-size: 11.5px; color: #999; width: 30px; }
+.yzsv-fchip { flex: 0 0 auto; border: 1px solid #e3def2; background: #fff; color: #6b54a8; border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit; white-space: nowrap; }
+.yzsv-fchip em { font-style: normal; margin-left: 4px; font-size: 10.5px; color: #aaa; }
+.yzsv-fchip.is-on { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+.yzsv-fchip.is-on em { color: rgba(255,255,255,.8); }
+.yzsv-fday { font-size: 12px; color: #999; margin: 12px 4px 6px; }
+.yzsv-fav-top b { cursor: pointer; }
+.yzsv-fav-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.yzsv-fav-tags span { font-size: 11.5px; color: #3b82f6; background: #eef4ff; border-radius: 6px; padding: 1px 7px; cursor: pointer; }
+.yzsv-fav-tags button { border: 1px dashed #ccc; background: transparent; color: #999; border-radius: 6px; padding: 0 7px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
 .yzsv-fav { background: #fff; border-radius: 16px; padding: 12px 14px; margin-bottom: 10px; box-shadow: 0 2px 10px rgba(120,100,180,.06); }
 .yzsv-fav-top { display: flex; align-items: baseline; gap: 8px; }
 .yzsv-fav-top b { font-size: 14px; color: #6b54a8; }
@@ -2202,6 +2359,13 @@ export class StoryVoiceApp {
                                 ${[['', '跟随小手机「设置 → 语音」'], ...TTS_CHANNELS.map(c => [c.id, c.label])].map(([v, l]) => `<option value="${v}" ${s.ttsProvider === v ? 'selected' : ''}>${l}${v ? this._channelState(v) : ` （现在是 ${esc((TTS_CHANNELS.find(c => c.id === String(this.sv.storage?.get?.('phone-tts-provider') || ''))?.label) || String(this.sv.storage?.get?.('phone-tts-provider') || '未设置'))}）`}</option>`).join('')}
                             </select>
                         </div>
+                        ${s.ttsProvider ? `<div class="yzsv-field"><label>每个人用哪个渠道</label>
+                            <div class="yzsv-seg">
+                                <button type="button" data-chmode="per" class="${s.channelMode !== 'unified' ? 'is-on' : ''}">按每个人自己配的</button>
+                                <button type="button" data-chmode="unified" class="${s.channelMode === 'unified' ? 'is-on' : ''}">统一用这个渠道</button>
+                            </div>
+                            <div class="yzsv-note" style="margin-top:6px">按每个人自己配的：谁在微信「专属音色 / 我的音色」里填了哪个渠道的音色，就走那个渠道；没单独配的人、朗读 App 里登记的音色和 NPC 才用上面这个渠道。<br>统一用这个渠道：所有人都走它；谁没填这个渠道的音色，就用这个渠道的默认音色（不会再报 voice id not exist）。</div>
+                        </div>` : ''}
                         ${this._channelFields(s)}
                         <div class="yzsv-note">只改正文朗读，不影响微信语音消息、通话。选了渠道后一律走它，角色音色 ID 要填这个渠道的（微信联系人可以给每个渠道各填一个）。<br>想要情绪标签效果最好：Fish 选 s2.1-pro / s2-pro；MiniMax 选 speech-2.8-hd；OpenAI 选 gpt-4o-mini-tts。</div>
                     </div>
@@ -2313,35 +2477,78 @@ export class StoryVoiceApp {
 
     // ---------- 语音收藏页 ----------
     async renderFavs() {
-        let list = [];
-        try { list = await favStore.all(); } catch (e) { list = []; }
-        const fmt = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+        let all = [];
+        try { all = await favStore.all(); } catch (e) { all = []; }
+        const f = this._favFilter = this._favFilter || { speaker: '', tag: '', source: '', q: '' };
+        const speakers = new Map();
+        const tags = new Map();
+        all.forEach(x => {
+            const sp = x.speaker || '未知';
+            speakers.set(sp, (speakers.get(sp) || 0) + 1);
+            (x.tags || []).forEach(t => tags.set(t, (tags.get(t) || 0) + 1));
+        });
+        const list = all.filter(x => (!f.speaker || (x.speaker || '未知') === f.speaker)
+            && (!f.tag || (x.tags || []).includes(f.tag))
+            && (!f.source || x.source === f.source)
+            && (!f.q || `${x.text} ${x.translation || ''} ${x.speaker || ''}`.toLowerCase().includes(f.q.toLowerCase())));
+        const day = (t) => {
+            const d = new Date(t); const now = new Date();
+            const same = (a, b) => a.toDateString() === b.toDateString();
+            if (same(d, now)) return '今天';
+            const y = new Date(now); y.setDate(now.getDate() - 1);
+            if (same(d, y)) return '昨天';
+            return `${d.getFullYear() === now.getFullYear() ? '' : d.getFullYear() + '年'}${d.getMonth() + 1}月${d.getDate()}日`;
+        };
+        const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+        let lastDay = '';
+        const chip = (kind, val, label, n) => `<button type="button" class="yzsv-fchip${f[kind] === val ? ' is-on' : ''}" data-f="${kind}" data-v="${esc(val)}">${esc(label)}${n !== undefined ? `<em>${n}</em>` : ''}</button>`;
         const html = `
             <div class="yzsv-page">
                 <div class="yzsv-head">
                     <button class="yzsv-back" id="yzsv-fav-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
-                    <div class="yzsv-head-title">语音收藏</div>
+                    <div class="yzsv-head-title">语音收藏 <small style="font-weight:400;color:#999;font-size:12px">${all.length}</small></div>
                 </div>
                 <div class="yzsv-body app-body">
-                    ${list.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:40px 10px;">还没有收藏<br>正文里长按某句的 ▶，或者长按 ↻ 选「⭐ 收藏这句语音」；微信里长按语音消息选「收藏」</div>'}
-                    ${list.map(x => `
+                    <div class="yzsv-ffilter">
+                        <input class="yzsv-input yzsv-fsearch" type="search" placeholder="搜台词、翻译、角色" value="${esc(f.q)}">
+                        <div class="yzsv-frow"><span>角色</span>${chip('speaker', '', '全部', all.length)}${[...speakers].sort((a, b) => b[1] - a[1]).map(([k, n]) => chip('speaker', k, k, n)).join('')}</div>
+                        ${tags.size ? `<div class="yzsv-frow"><span>标签</span>${chip('tag', '', '全部')}${[...tags].sort((a, b) => b[1] - a[1]).map(([k, n]) => chip('tag', k, `#${k}`, n)).join('')}</div>` : ''}
+                        <div class="yzsv-frow"><span>来源</span>${chip('source', '', '全部')}${chip('source', 'story', '正文')}${chip('source', 'wechat', '微信语音')}</div>
+                    </div>
+                    ${all.length ? (list.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:30px 10px;">没有符合筛选的收藏</div>') : '<div class="yzsv-note" style="text-align:center;padding:40px 10px;">还没有收藏<br>正文里长按某句的 ▶（再长按一次取消），或长按 ↻ 选「⭐ 收藏这句语音」；微信里长按语音消息选「收藏」</div>'}
+                    ${list.map(x => {
+                        const d = day(x.at);
+                        const head = d !== lastDay ? `<div class="yzsv-fday">${d}</div>` : '';
+                        lastDay = d;
+                        return `${head}
                         <div class="yzsv-fav" data-id="${esc(x.id)}">
-                            <div class="yzsv-fav-top"><b>${esc(x.speaker || '未知')}</b><span>${x.source === 'wechat' ? '微信语音' : '正文'}${x.chat ? ` · ${esc(x.chat)}` : ''} · ${fmt(x.at)}</span></div>
+                            <div class="yzsv-fav-top"><b data-pick-speaker="${esc(x.speaker || '未知')}">${esc(x.speaker || '未知')}</b><span>${x.source === 'wechat' ? '微信语音' : '正文'}${x.chat && x.chat !== x.speaker ? ` · ${esc(x.chat)}` : ''} · ${hm(x.at)}</span></div>
                             <div class="yzsv-fav-text">${esc(x.text)}</div>
                             ${needsTranslation(x.text) ? `<div class="yzsv-fav-trans" ${x.translation ? '' : 'hidden'}>${esc(x.translation || '')}</div>` : ''}
+                            <div class="yzsv-fav-tags">${(x.tags || []).map(t => `<span data-pick-tag="${esc(t)}">#${esc(t)}</span>`).join('')}<button type="button" data-fav-tag>＋标签</button></div>
                             <div class="yzsv-fav-acts">
                                 <button type="button" data-fav-play>▶ 播放</button>
                                 ${needsTranslation(x.text) ? `<button type="button" data-fav-trans>${x.translation ? '隐藏翻译' : '查看翻译'}</button>` : ''}
                                 <button type="button" data-fav-del class="danger">删除</button>
                             </div>
-                        </div>`).join('')}
+                        </div>`;
+                    }).join('')}
                 </div>
             </div>`;
         this.phoneShell.setContent(html, 'story-voice');
         const root = this._root();
         this._fixScroll(root);
         const toast = (t, m, i = '⭐') => this.phoneShell?.showNotification?.(t, m, i);
+        const rerender = () => { const top = root.querySelector('.yzsv-body')?.scrollTop || 0; this.renderFavs().then(() => { const nb = this._root().querySelector('.yzsv-body'); if (nb) nb.scrollTop = top; }); };
         root.querySelector('#yzsv-fav-back')?.addEventListener('click', () => { this._favAudio?.pause(); this.render(); });
+        root.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { f[b.dataset.f] = b.dataset.v; rerender(); }));
+        root.querySelectorAll('[data-pick-speaker]').forEach(b => b.addEventListener('click', () => { f.speaker = b.dataset.pickSpeaker; rerender(); }));
+        root.querySelectorAll('[data-pick-tag]').forEach(b => b.addEventListener('click', () => { f.tag = b.dataset.pickTag; rerender(); }));
+        let qTimer = null;
+        root.querySelector('.yzsv-fsearch')?.addEventListener('input', (e) => {
+            clearTimeout(qTimer);
+            qTimer = setTimeout(() => { f.q = e.target.value.trim(); rerender(); setTimeout(() => { const i = this._root().querySelector('.yzsv-fsearch'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 30); }, 400);
+        });
         const byId = new Map(list.map(x => [x.id, x]));
         root.querySelectorAll('.yzsv-fav').forEach(card => {
             const rec = byId.get(card.dataset.id);
@@ -2359,6 +2566,14 @@ export class StoryVoiceApp {
                 btn.textContent = '■ 停止';
                 a.onended = () => { btn.textContent = '▶ 播放'; };
                 a.play().catch(err => { btn.textContent = '▶ 播放'; toast('播放失败', String(err?.message || err)); });
+            });
+            card.querySelector('[data-fav-tag]')?.addEventListener('click', async () => {
+                const cur = (rec.tags || []).join('，');
+                const v = window.prompt('标签（用逗号隔开，留空就是清空）', cur);
+                if (v === null) return;
+                const next = [...new Set(String(v).split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean))].slice(0, 8);
+                await favStore.update(rec.id, { tags: next });
+                rerender();
             });
             card.querySelector('[data-fav-trans]')?.addEventListener('click', async (e) => {
                 const btn = e.currentTarget;
@@ -2386,7 +2601,9 @@ export class StoryVoiceApp {
             card.querySelector('[data-fav-del]')?.addEventListener('click', async () => {
                 if (!window.confirm('删除这条收藏？')) return;
                 await favStore.remove(rec.id);
-                card.remove();
+                this.sv._favKeys?.delete(`${rec.speaker}\u0001${rec.text}`);
+                this.sv.refreshAll();
+                rerender();
             });
         });
     }
@@ -2579,6 +2796,11 @@ export class StoryVoiceApp {
         const range = root.querySelector('input[data-k="ambienceVol"]');
         range?.addEventListener('input', () => { const v = root.querySelector('.yzsv-ambv'); if (v) v.textContent = range.value; });
         range?.addEventListener('change', () => this.sv.saveSettings(this._collect()));
+        root.querySelectorAll('[data-chmode]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-chmode]').forEach(x => x.classList.toggle('is-on', x === b));
+            this.sv.saveSettings({ channelMode: b.dataset.chmode });
+            toast('已保存', b.dataset.chmode === 'unified' ? '所有人统一用选的渠道' : '每个人按自己配的渠道读');
+        }));
         root.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-auto]').forEach(x => x.classList.toggle('is-on', x === b));
             const h = root.querySelector('[data-k="deepAuto"]');
