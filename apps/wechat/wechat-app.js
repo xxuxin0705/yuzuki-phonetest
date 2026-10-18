@@ -10,14 +10,13 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m18-nj1';
+import { ChatView } from './chat-view.js?v=20261021-m18';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261021-m17';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261018-nj1';
-import { NuojiCompat } from './nuoji-compat.js?v=20261018-nj1';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -85,8 +84,6 @@ export class WechatApp {
         this._applyCustomChatStyle('');
         // 🎨 聊天界面风格（微信 / QQ / LINE · 日间 / 夜间）
         try { applyWechatSkinAttrs(this.getWechatSkin()); } catch (e) { console.warn('⚠️ 界面风格初始化失败:', e); }
-        // 🍡 糯叽机美化兼容（聊天界面 / 聊天列表 CSS 导入、头像框）
-        try { this.nuoji = new NuojiCompat(this); } catch (e) { console.warn('⚠️ 糯叽机美化初始化失败:', e); }
 
         // 🔥 监听滑动返回事件 (防止切换聊天导致重复绑定)
         if (!window._wechatSwipeBackBound) {
@@ -8123,20 +8120,6 @@ export class WechatApp {
                     </div>
                 </div>
 
-                <!-- 🍡 聊天列表美化：导入糯叽机「消息 App」CSS -->
-                <div class="profile-function-item" id="wechat-nuoji-list-btn">
-                    <div class="function-icon-wrapper" style="background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3);">
-                        <i class="fa-solid fa-palette" style="color: #666;"></i>
-                    </div>
-                    <div class="function-content">
-                        <div class="function-title">聊天列表美化</div>
-                        <div class="function-desc">${this.nuoji?.listEntryDesc?.() || '导入糯叽机消息 App 美化 CSS'}</div>
-                    </div>
-                    <div class="function-arrow">
-                        <i class="fa-solid fa-chevron-right"></i>
-                    </div>
-                </div>
-
                 ${this._renderMyVoiceHtml()}
 
                 <div class="profile-function-item" id="wechat-settings-btn">
@@ -8257,7 +8240,6 @@ export class WechatApp {
         addClickListener('#smart-load-contacts', () => this.showLoadContactsConfirm());
         addClickListener('#edit-profile-btn', () => this.showEditProfile());
         addClickListener('#wechat-settings-btn', () => this.showSettings());
-        addClickListener('#wechat-nuoji-list-btn', () => this.nuoji?.openPanel?.(null, { listFirst: true }));
         this._bindMyVoice(wechatRoot);
         wechatRoot?.querySelectorAll?.('[data-moments-style]').forEach(btn => btn.addEventListener('click', (e) => {
             e.stopPropagation();
