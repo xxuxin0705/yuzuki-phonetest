@@ -11,6 +11,16 @@
  * ======================================================== */
 // 主屏幕
 import { APPS, PHONE_CONFIG } from '../config/apps.js'; // 🔥🔥🔥 这一行必须改！
+// 自由桌面模块：每次打开酒馆都带时间戳加载，避免手机浏览器缓存旧版本（更新后不生效）
+const FREE_DESKTOP_FLAG_KEY = 'phone-home-free-desktop';
+let FreeDesktopClass = null;
+const freeDesktopReady = import(`./home-desktop.js?t=${Date.now()}`)
+    .then(m => { FreeDesktopClass = m.FreeDesktop; return FreeDesktopClass; })
+    .catch(e => { console.error('[柚月小手机] 自由桌面加载失败', e); return null; });
+function isFreeDesktopEnabled() {
+    const v = window.VirtualPhone?.storage?.get?.(FREE_DESKTOP_FLAG_KEY);
+    return !(v === false || v === 'false' || v === 0 || v === '0');
+}
 
 const CARD_LAYOUT_CUSTOM_CSS_KEY = 'phone-card-layout-custom-css';
 const CARD_LAYOUT_CUSTOM_STYLE_ID = 'phone-card-layout-custom-css-style';
@@ -21,6 +31,7 @@ export class HomeScreen {
         this.phoneShell = phoneShell;
         this.apps = apps || APPS; // 🔥 修复：确保 apps 有默认值
         this._homeRenderVersion = 0;
+        this.desktop = null; // 自由桌面（长按编辑/组件/主题）
         
         // 🔥 修复：确保 window.VirtualPhone 存在
         const storage = window.VirtualPhone?.storage;
@@ -44,6 +55,14 @@ export class HomeScreen {
         }
         const renderKeyAttr = forceDomRefresh ? ` data-render-key="${this._homeRenderVersion}"` : '';
 
+        if (this.getHomeLayout() === 'free') {
+            this.preloadCardLayoutCustomCss();
+            this.phoneShell.setContent(`<div class="home-screen yzp-home-screen home-layout-free yzp-home-layout-free"${renderKeyAttr} style="overflow:hidden;"></div>`);
+            this._mountFreeDesktop();
+            this.bindEvents();
+            return;
+        }
+
         const wallpaper = this._getWallpaperImage();
 
         const wallpaperStyle = wallpaper
@@ -59,7 +78,7 @@ export class HomeScreen {
             <div class="home-screen yzp-home-screen home-layout-${homeLayout} yzp-home-layout-${homeLayout}${cardCustomClass}"${renderKeyAttr}>
                 <div class="wallpaper" style="${wallpaperStyle}"></div>
 
-                ${homeLayout === 'cards' ? this.renderCardLayout() : homeLayout === 'desktop' ? this.renderDesktopLayout() : this.renderIconLayout()}
+                ${homeLayout === 'cards' ? this.renderCardLayout() : this.renderIconLayout()}
 
                 <div class="dock yzp-home-dock">
                     ${this.renderDock()}
@@ -69,7 +88,6 @@ export class HomeScreen {
 
         this.phoneShell.setContent(html);
         this.bindEvents();
-        if (homeLayout === 'desktop') this.bindDesktopEvents();
     }
 
     restore() {
@@ -78,17 +96,67 @@ export class HomeScreen {
             return false;
         }
 
+        if (this.getHomeLayout() === 'free') {
+            this._mountFreeDesktop();
+            this.bindEvents();
+            return true;
+        }
+
         this.updateWallpaperDisplay();
         this.updateTimeDisplay();
         this.updateAppBadges();
         this.bindEvents();
-        if (this.getHomeLayout() === 'desktop') this.bindDesktopEvents();
         return true;
     }
 
+    // ==================== 自由桌面 ====================
+    _getHomeRootElement() {
+        const screen = this.phoneShell?.screen;
+        if (!screen) return null;
+        return screen.querySelector('[data-view-id="home"] .home-screen') || screen.querySelector('.home-screen');
+    }
+
+    _mountFreeDesktop() {
+        if (!FreeDesktopClass) {
+            freeDesktopReady.then((Cls) => { if (Cls) this._mountFreeDesktop(); });
+            return;
+        }
+        if (!this.desktop) this.desktop = new FreeDesktopClass(this);
+        const homeEl = this._getHomeRootElement();
+        if (homeEl) this.desktop.mount(homeEl);
+    }
+
+    _bindLegacySwitchToFree() {
+        const homeEl = this._getHomeRootElement();
+        if (!homeEl || homeEl._yzdLegacyLongPress) return;
+        homeEl._yzdLegacyLongPress = true;
+        let timer = null;
+        let sx = 0;
+        let sy = 0;
+        const cancel = () => { clearTimeout(timer); timer = null; };
+        homeEl.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app, button, input, textarea')) return;
+            sx = e.clientX;
+            sy = e.clientY;
+            cancel();
+            timer = setTimeout(() => {
+                timer = null;
+                if (window.confirm('切换到可自由编辑的桌面？\n（长按拖动图标和组件、导入组件/美化、保存切换主题）')) {
+                    window.VirtualPhone?.storage?.set?.(FREE_DESKTOP_FLAG_KEY, true);
+                    this.render({ forceDomRefresh: true });
+                }
+            }, 750);
+        });
+        homeEl.addEventListener('pointermove', (e) => {
+            if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel();
+        });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => homeEl.addEventListener(n, cancel));
+    }
+
     getHomeLayout() {
+        if (isFreeDesktopEnabled()) return 'free';
         const layout = String(window.VirtualPhone?.storage?.get('phone-home-layout') || 'icons');
-        return ['cards', 'desktop'].includes(layout) ? layout : 'desktop';
+        return layout === 'cards' ? 'cards' : 'icons';
     }
 
     _getWallpaperImage() {
@@ -166,111 +234,6 @@ export class HomeScreen {
 
         `;
         (host || this.phoneShell?.screen || document.head).appendChild(style);
-    }
-
-
-    // 桌面布局使用单独存储，不覆盖旧卡片桌面配置。
-    desktopKey = 'phone-desktop-widgets-v1';
-    getDesktopItems() {
-        const defaults = [
-            {id:'clock',type:'clock',size:'large',title:'今天'},
-            {id:'apps',type:'apps',size:'large',title:'我的应用'},
-            {id:'calendar',type:'calendar',size:'medium',title:'日历'},
-            {id:'note',type:'note',size:'medium',title:'随手记',text:'把喜欢的事情慢慢记下来。'}
-        ];
-        try {
-            const value = window.VirtualPhone?.storage?.get?.(this.desktopKey);
-            const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-            return Array.isArray(parsed) ? parsed.filter(x => x && typeof x.id === 'string').slice(0,60) : defaults;
-        } catch { return defaults; }
-    }
-    saveDesktopItems(items) {
-        window.VirtualPhone?.storage?.set?.(this.desktopKey, items);
-        this.render({forceDomRefresh:true});
-    }
-    desktopEscape(v) { return this._escapeHtml(String(v ?? '')); }
-    desktopWidgetContent(item) {
-        const safe = v => this.desktopEscape(v);
-        const date = new Date();
-        const title = safe(item.title || '小组件');
-        switch(item.type) {
-            case 'clock': return `<div class="pd-clock">${safe(this.getCurrentTime())}</div><div class="pd-sub">${safe(this.getCurrentDateParts().date)} · ${safe(this.getCurrentDateParts().weekday)}</div>`;
-            case 'calendar': return `<div class="pd-day">${date.getDate()}</div><div class="pd-sub">${date.toLocaleDateString('zh-CN',{month:'long',weekday:'long'})}</div>`;
-            case 'photo': return item.image ? `<img class="pd-photo" src="${safe(item.image)}" alt="${title}">` : '<div class="pd-placeholder">📷<span>编辑组件上传照片</span></div>';
-            case 'music': return `<div class="pd-emoji">🎧</div><div class="pd-sub">点按打开音乐</div>`;
-            case 'anniversary': {
-                const ms = item.date ? new Date(item.date+'T00:00:00').getTime() : NaN;
-                const days = Number.isFinite(ms) ? Math.floor((Date.now()-ms)/86400000) : null;
-                return `<div class="pd-count">${days === null ? '♡' : Math.abs(days)}</div><div class="pd-sub">${days === null ? '设置纪念日' : days >= 0 ? '已经过了 '+days+' 天' : '还有 '+(-days)+' 天'}</div>`;
-            }
-            case 'quote': return `<div class="pd-quote">“${safe(item.text || '把今天过成喜欢的样子。')}”</div>`;
-            case 'weather': return `<div class="pd-emoji">☁️</div><div class="pd-sub">天气展示位 · 可编辑城市名称</div>`;
-            case 'battery': return `<div class="pd-emoji">🔋</div><div class="pd-sub">${Number(this.phoneShell?.batteryLevel ?? 78)}% 电量</div>`;
-            case 'apps': return `<div class="pd-widget-apps">${this.apps.map(app => this.renderAppIcon(app)).join('')}</div>`;
-            case 'spacer': return `<div class="pd-sub">${safe(item.text || '')}</div>`;
-            default: return `<div class="pd-note">${safe(item.text || '点击编辑内容')}</div>`;
-        }
-    }
-    renderDesktopLayout() {
-        const items = this.getDesktopItems();
-        return `<div class="pd-toolbar"><span class="pd-heading">我的桌面</span><div><button type="button" class="pd-edit-toggle">编辑桌面</button><button type="button" class="pd-close-phone" title="关闭手机，返回酒馆正文">✕</button></div></div>
-        <div class="pd-scroll"><div class="pd-grid">${items.map((item,index)=>`<section class="pd-widget pd-size-${['small','medium','large'].includes(item.size)?item.size:'medium'} pd-type-${this.desktopEscape(item.type)}" data-widget="${this.desktopEscape(item.id)}" data-index="${index}" style="--pd-bg:${/^#[0-9a-fA-F]{3,8}$/.test(item.color||'')?item.color:'#ffffffdb'}">
-            <div class="pd-widget-top"><span>${this.desktopEscape(item.title || '小组件')}</span><button type="button" class="pd-widget-menu" aria-label="编辑小组件">•••</button></div>${this.desktopWidgetContent(item)}</section>`).join('')}</div></div>
-        <div class="pd-editor" hidden><div class="pd-editor-head"><strong>编辑主屏幕</strong><button type="button" class="pd-editor-done">完成</button></div><div class="pd-editor-controls"><button type="button" class="pd-add-widget">＋ 添加组件</button><button type="button" class="pd-reset-widgets">恢复默认</button></div><p class="pd-tip">点击组件上的 ••• 编辑内容、换样式、移动或删除；支持拖动排序。</p></div>
-        <div class="pd-modal" hidden><div class="pd-modal-sheet"><header><strong>小组件设置</strong><button type="button" class="pd-modal-close">✕</button></header><div class="pd-form"></div></div></div>`;
-    }
-    bindDesktopEvents() {
-        const root = this.phoneShell.screen.querySelector('.home-layout-desktop');
-        if (!root) return;
-        let edit = false, selected = null;
-        const items = () => this.getDesktopItems();
-        const refresh = () => { this.saveDesktopItems(items()); };
-        const showEditor = on => {
-            edit=on;root.classList.toggle('pd-editing',on);
-            root.querySelector('.pd-editor').hidden=!on;
-            root.querySelector('.pd-edit-toggle').textContent=on?'完成':'编辑桌面';
-        };
-        const modal=root.querySelector('.pd-modal'),form=root.querySelector('.pd-form');
-        const showModal = item => {
-            selected=item;
-            const types=['clock','calendar','photo','note','quote','anniversary','music','weather','battery','apps','spacer'];
-            const names=['时钟','日历','照片','便签','语录','纪念日','音乐','天气','电量','应用合集','空白装饰'];
-            form.innerHTML=`<label>组件类型<select name="type">${types.map((t,i)=>`<option value="${t}" ${item.type===t?'selected':''}>${names[i]}</option>`).join('')}</select></label><label>组件大小<select name="size">${['small','medium','large'].map((v,i)=>`<option value="${v}" ${item.size===v?'selected':''}>${['小型 1×1','中型 2×1','大型 2×2'][i]}</option>`).join('')}</select></label><label>标题<input name="title" maxlength="36" value="${this.desktopEscape(item.title||'')}"></label><label>文字内容<textarea name="text" rows="3">${this.desktopEscape(item.text||'')}</textarea></label><label>纪念日期<input name="date" type="date" value="${this.desktopEscape(item.date||'')}"></label><label>卡片背景颜色<input name="color" type="color" value="${/^#[0-9a-fA-F]{6}$/.test(item.color||'')?item.color:'#ffffff'}"></label><label>照片地址（或使用下方本地上传）<input name="image" value="${this.desktopEscape(item.image?.startsWith('data:')?'':item.image||'')}"></label><label>上传照片<input name="imageFile" type="file" accept="image/*"></label><div class="pd-form-actions"><button type="button" data-action="back">取消</button><button type="button" data-action="remove">删除</button><button type="button" data-action="up">↑ 上移</button><button type="button" data-action="down">↓ 下移</button><button type="button" data-action="save">保存</button></div>`;
-            modal.hidden=false;
-        };
-        root.querySelector('.pd-edit-toggle').onclick=()=>showEditor(!edit);
-        root.querySelector('.pd-editor-done').onclick=()=>showEditor(false);
-        root.querySelector('.pd-close-phone').onclick=()=>window.dispatchEvent(new CustomEvent('phone:requestClose'));
-        root.querySelector('.pd-modal-close').onclick=()=>{modal.hidden=true};
-        root.querySelector('.pd-add-widget').onclick=()=>showModal({id:'w'+Date.now(),type:'note',size:'medium',title:'新组件',text:''});
-        root.querySelector('.pd-reset-widgets').onclick=()=>{if(confirm('恢复默认桌面布局？')) {window.VirtualPhone?.storage?.set?.(this.desktopKey,null);this.render({forceDomRefresh:true});}};
-        root.querySelectorAll('.pd-widget').forEach(el=>{
-            const index=Number(el.dataset.index);
-            el.querySelector('.pd-widget-menu').onclick=e=>{e.stopPropagation();showModal(items()[index]);};
-            el.draggable=true;
-            el.ondragstart=e=>{e.dataTransfer.setData('text/plain',String(index));};
-            el.ondragover=e=>{e.preventDefault();};
-            el.ondrop=e=>{e.preventDefault();const from=Number(e.dataTransfer.getData('text/plain'));const to=Number(el.dataset.index);const list=items();if(from>=0&&from<list.length&&to>=0&&to<list.length){list.splice(to,0,list.splice(from,1)[0]);this.saveDesktopItems(list);}};
-            if(el.classList.contains('pd-type-music'))el.onclick=e=>{if(!e.target.closest('button')&&!edit)this.openApp('music');};
-        });
-        form.onclick=e=>{
-            const action=e.target.closest('button[data-action]')?.dataset.action;
-            if(!action)return;
-            if(action==='back'){modal.hidden=true;return;}
-            const list=items(),position=list.findIndex(x=>x.id===selected.id);
-            if(action==='remove'){if(position>=0)list.splice(position,1);this.saveDesktopItems(list);return;}
-            if(action==='up'||action==='down'){
-                const other=position+(action==='up'?-1:1);
-                if(position>=0&&other>=0&&other<list.length){[list[position],list[other]]=[list[other],list[position]];this.saveDesktopItems(list);}return;
-            }
-            if(action==='save'){
-                const data=new FormData();for(const input of form.querySelectorAll('[name]')){if(input.name!=='imageFile')data.set(input.name,input.value);}
-                const next={...selected,...Object.fromEntries(data.entries())};
-                const file=form.querySelector('[name=imageFile]').files[0];
-                const finish=()=>{if(position>=0)list[position]=next;else list.push(next);this.saveDesktopItems(list);};
-                if(file){if(file.size>3*1024*1024){alert('请上传小于 3MB 的图片');return;}const reader=new FileReader();reader.onload=()=>{next.image=reader.result;finish();};reader.readAsDataURL(file);}else{if(!next.image&&selected.image)next.image=selected.image;finish();}
-            }
-        };
     }
 
     renderIconLayout() {
@@ -651,7 +614,9 @@ export class HomeScreen {
     }
     
     bindEvents() {
-        const icons = this.phoneShell.screen.querySelectorAll('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app');
+        const isFree = this.getHomeLayout() === 'free';
+        const icons = isFree ? [] : this.phoneShell.screen.querySelectorAll('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app');
+        if (!isFree) this._bindLegacySwitchToFree();
         icons.forEach(icon => {
             const releaseGuardForNewPress = () => {
                 this.phoneShell?.releaseHomeTapGuard?.();
@@ -811,6 +776,10 @@ export class HomeScreen {
     }
 
     updateTimeDisplay() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateTime?.();
+            return !!this.desktop;
+        }
         const root = this.phoneShell?.screen?.querySelector('.home-screen');
         if (!root) return false;
 
@@ -840,6 +809,10 @@ export class HomeScreen {
     }
 
     updateWallpaperDisplay() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateWallpaper?.();
+            return !!this.desktop;
+        }
         const wallpaperElement = this.phoneShell?.screen?.querySelector('.home-screen .wallpaper');
         if (!wallpaperElement) return false;
 
@@ -853,6 +826,10 @@ export class HomeScreen {
     }
 
     updateAppBadges() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateBadges?.();
+            return !!this.desktop;
+        }
         const root = this.phoneShell?.screen?.querySelector('.home-screen');
         if (!root) return false;
 
