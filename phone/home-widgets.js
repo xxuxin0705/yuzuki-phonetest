@@ -1,7 +1,7 @@
 /* ========================================================
  *  柚月小手机 - 自由桌面 内置组件库
  *  phone/home-widgets.js
- *  按糯叽机的内置组件重做：小组件 17 个 / 中组件 11 个 / 大组件 9 个
+ *  内置组件库：旧组件保留兼容，画廊以用户上传 JSON 中出现的尺寸/类型为准
  *  每个组件：name / sizes / defaults / fields / render(item, d, ctx) / onTap(item, act, ctx)
  * ======================================================== */
 
@@ -832,4 +832,84 @@ export const WIDGETS_CSS = `
 /* 点一下的小浮字 */
 .yzd-root .yzw-float{position:absolute;left:50%;top:40%;transform:translate(-50%,0);font-size:13px;font-weight:700;color:#ff8a00;pointer-events:none;animation:yzw-float .8s ease-out forwards;z-index:5;white-space:nowrap;text-shadow:0 1px 2px #fff}
 @keyframes yzw-float{from{opacity:1;transform:translate(-50%,0)}to{opacity:0;transform:translate(-50%,-36px)}}
+`;
+
+/* JSON 组件清单中原项目未实现的内置类型；其他旧类型保留供既有桌面兼容，但不再出现在新画廊。 */
+const TEXT_FIELD = (key, label) => ({key, label, type:'text'});
+const IMAGE_FIELD = (key, label) => ({key,label,type:'image',maxDim:1200});
+const DEFAULT_REF = {bg:'clear', bgColor:'#ffffff',textColor:'#282832',radius:20};
+const REF_EXTRA_DEFS = {
+ dice: {
+  name:'骰子',sizes:['size_1x1'],defaults:{...DEFAULT_REF,face:4},fields:[{key:'face',label:'点数',type:'range',min:1,max:6,step:1}],
+  render:(it,d)=>`<div class="yzw ref-dice" data-wact="roll"><div class="ref-die">${[1,2,3,4,5,6].includes(+d.face)?'⚀⚁⚂⚃⚄⚅'[+d.face-1]:'⚄'}</div></div>`,
+  onTap:(it)=>{it.data.face=1+Math.floor(Math.random()*6);return true;}
+ },
+ alipay:{name:'支付宝',sizes:['size_1x2'],defaults:{...DEFAULT_REF,caption:'扫一扫',sub:'我的付款码'},fields:[TEXT_FIELD('caption','主要文字'),TEXT_FIELD('sub','说明')],render:(it,d)=>`<div class="yzw ref-alipay"><div class="ref-alipay-icon">支</div><strong>${esc(d.caption)}</strong><small>${esc(d.sub)}</small></div>`},
+ vertical_text:{name:'竖式文字',sizes:['size_1x2','size_2x4'],defaults:{...DEFAULT_REF,text:'写下喜欢的话',fontSize:20},fields:[{key:'text',label:'文字',type:'textarea'},{key:'fontSize',label:'字号',type:'range',min:10,max:48,step:1}],render:(it,d)=>`<div class="yzw ref-vertical-text" style="font-size:${Number(d.fontSize)||20}px">${esc(d.text)}</div>`},
+ horizontal_text:{name:'横向文字',sizes:['size_2x1'],defaults:{...DEFAULT_REF,text:'JUST FOR YOU',fontSize:18},fields:[TEXT_FIELD('text','文字'),{key:'fontSize',label:'字号',type:'range',min:10,max:40,step:1}],render:(it,d)=>`<div class="yzw ref-horizontal-text" style="font-size:${Number(d.fontSize)||18}px">${esc(d.text)}</div>`},
+ vertical_goal:{name:'竖式目标',sizes:['size_1x2','size_2x4'],defaults:{...DEFAULT_REF,title:'我的目标',count:3,goal:8,accent:'#82a9cf'},fields:[TEXT_FIELD('title','标题'),{key:'count',label:'已完成',type:'number'},{key:'goal',label:'总目标',type:'number'},{key:'accent',label:'进度颜色',type:'color'}],render:(it,d)=>{const p=Math.min(100,Math.max(0,(+d.count||0)/Math.max(1,+d.goal||1)*100));return `<div class="yzw ref-vgoal"><small>${esc(d.title)}</small><div class="ref-vgoal-track"><i style="height:${p}%;background:${esc(d.accent)}"></i></div><b>${+d.count||0}<span> / ${+d.goal||1}</span></b></div>`;}},
+ horizontal_goal:{name:'横向目标',sizes:['size_2x1'],defaults:{...DEFAULT_REF,title:'今日进度',count:4,goal:10,accent:'#9ac1b9'},fields:[TEXT_FIELD('title','标题'),{key:'count',label:'已完成',type:'number'},{key:'goal',label:'总目标',type:'number'},{key:'accent',label:'进度颜色',type:'color'}],render:(it,d)=>`<div class="yzw ref-hgoal"><div><b>${esc(d.title)}</b><small>${+d.count||0} / ${+d.goal||1}</small></div><div class="ref-hgoal-track"><i style="width:${Math.min(100,Math.max(0,(+d.count||0)/Math.max(1,+d.goal||1)*100))}%;background:${esc(d.accent)}"></i></div></div>`},
+ wide_banner:{name:'横幅',sizes:['size_4x1'],defaults:{...DEFAULT_REF,text:'Life is beautiful',sub:'TODAY',image:''},fields:[TEXT_FIELD('text','主文字'),TEXT_FIELD('sub','副文字'),IMAGE_FIELD('image','横幅图片')],render:(it,d)=>`<div class="yzw ref-wide" style="${bg(d.image)}"><b>${esc(d.text)}</b><small>${esc(d.sub)}</small></div>`},
+ week_strip:{name:'一周日历',sizes:['size_4x1'],timeBased:true,defaults:{...DEFAULT_REF,accent:'#e3bba8'},fields:[{key:'accent',label:'今天颜色',type:'color'}],render:(it,d,ctx)=>{const t=ctx.t;const base=new Date(t.y,t.m-1,t.d);const offs=base.getDay();let cells='';for(let i=0;i<7;i++){let day=new Date(t.y,t.m-1,t.d-offs+i);cells+=`<div class="${i===offs?'on':''}" style="${i===offs?'--ref-accent:'+esc(d.accent):''}"><small>${'日一二三四五六'[i]}</small><b>${day.getDate()}</b></div>`;}return `<div class="yzw ref-week">${cells}</div>`;}},
+ todo_list:{name:'待办事项',sizes:['size_3x3'],timeBased:true,defaults:{...DEFAULT_REF,title:'TO DO',items:'整理书桌\n看一本书\n写下今天的心情',checked:''},fields:[TEXT_FIELD('title','标题'),{key:'items',label:'事项（换行分隔）',type:'textarea'}],render:(it,d)=>{const checked=new Set(String(d.checked||'').split(','));return `<div class="yzw ref-todo"><h3>${esc(d.title)}</h3>${String(d.items||'').split('\n').slice(0,6).map((x,i)=>`<div class="${checked.has(String(i))?'done':''}" data-wact="check:${i}"><i>${checked.has(String(i))?'✓':''}</i>${esc(x)}</div>`).join('')}</div>`},onTap:(it,act)=>{if(!act?.startsWith('check:'))return false;const ix=act.slice(6),c=new Set(String(it.data.checked||'').split(',').filter(Boolean));if(c.has(ix))c.delete(ix);else c.add(ix);it.data.checked=[...c].join(',');return true;}},
+ quote_card:{name:'语录卡片',sizes:['size_3x3'],defaults:{...DEFAULT_REF,title:'一日一言',quote:'愿你在平凡的日子里，遇见温柔的光。',author:'— NOTE',image:''},fields:[TEXT_FIELD('title','标题'),{key:'quote',label:'语录',type:'textarea'},TEXT_FIELD('author','署名'),IMAGE_FIELD('image','背景图片')],render:(it,d)=>`<div class="yzw ref-quote" style="${bg(d.image)}"><small>${esc(d.title)}</small><span>“</span><p>${esc(d.quote)}</p><em>${esc(d.author)}</em></div>`},
+ photo_caption:{name:'照片文字',sizes:['size_4x3'],defaults:{...DEFAULT_REF,image:'',title:'Our little moments',caption:'2026 / MEMORY'},fields:[IMAGE_FIELD('image','照片'),TEXT_FIELD('title','标题'),TEXT_FIELD('caption','副标题')],render:(it,d)=>`<div class="yzw ref-photo-caption" style="${bg(d.image)}"><div><b>${esc(d.title)}</b><small>${esc(d.caption)}</small></div></div>`},
+ month_grid:{name:'月历',sizes:['size_4x3'],timeBased:true,defaults:{...DEFAULT_REF,title:'MONTHLY',accent:'#b8a1da'},fields:[TEXT_FIELD('title','标题'),{key:'accent',label:'高亮颜色',type:'color'}],render:(it,d,ctx)=>{const t=ctx.t;const start=new Date(t.y,t.m-1,1).getDay(),n=new Date(t.y,t.m,0).getDate();let cells=['日','一','二','三','四','五','六'].map(s=>`<b>${s}</b>`).join('');for(let i=0;i<start;i++)cells+='<i></i>';for(let i=1;i<=n;i++)cells+=`<i ${i===t.d?'class="today" style="--ref-accent:'+esc(d.accent)+'"':''}>${i}</i>`;return `<div class="yzw ref-month"><header><strong>${t.y} / ${pad(t.m)}</strong><small>${esc(d.title)}</small></header><div>${cells}</div></div>`;}},
+ year_progress:{name:'年度进度',sizes:['size_4x3'],timeBased:true,defaults:{...DEFAULT_REF,title:'Year in pixels',accent:'#b8c7db'},fields:[TEXT_FIELD('title','标题'),{key:'accent',label:'进度颜色',type:'color'}],render:(it,d,ctx)=>{const t=ctx.t,day=Math.max(1,Math.round((new Date(t.y,t.m-1,t.d)-new Date(t.y,0,1))/86400000)+1),days=(new Date(t.y,11,31)-new Date(t.y,0,1))/86400000+1;const pct=Math.round(day/days*100);return `<div class="yzw ref-year"><small>${esc(d.title)}</small><b>${pct}<em>%</em></b><p>${t.y} · DAY ${day} / ${days}</p><div><i style="width:${pct}%;background:${esc(d.accent)}"></i></div></div>`;}},
+ big_calendar:{name:'超大日程',sizes:['size_4x6'],timeBased:true,defaults:{...DEFAULT_REF,title:'今天没有安排',today:'',tomorrow:''},fields:[TEXT_FIELD('title','顶部提示'),{key:'today',label:'今天安排（换行分隔）',type:'textarea'},{key:'tomorrow',label:'明天安排（换行分隔）',type:'textarea'}],render:(it,d,ctx)=>{const t=ctx.t,next=new Date(t.y,t.m-1,t.d+1);return `<div class="yzw ref-bigcal"><header><b>${t.d}</b><div><strong>${'周日周一周二周三周四周五周六'.slice(t.wd*2,t.wd*2+2)}</strong><small>${t.y}年${t.m}月</small></div><span>${esc(d.title)}</span></header><section>${[['今天',t.m+'/'+t.d,d.today],['明天',(next.getMonth()+1)+'/'+next.getDate(),d.tomorrow]].map(([label,date,txt])=>`<div><h4>${label} <small>${date}</small></h4>${txt?String(txt).split('\n').slice(0,14).map(s=>`<p>• ${esc(s)}</p>`).join(''):'<p class="muted">空着</p>'}</div>`).join('')}</section></div>`;}},
+ big_weather:{name:'天气',sizes:['size_4x6'],defaults:{...DEFAULT_REF,city:'我的城市',weather:'晴',degree:'23',low:'18',high:'27',note:'天气信息可在组件编辑中填写'},fields:[TEXT_FIELD('city','城市'),TEXT_FIELD('weather','天气'),TEXT_FIELD('degree','温度（℃）'),TEXT_FIELD('low','最低温度'),TEXT_FIELD('high','最高温度'),TEXT_FIELD('note','底部提示')],render:(it,d)=>`<div class="yzw ref-weather"><header>☁ ${esc(d.city)}</header><b>${esc(d.degree)}°</b><strong>☀ ${esc(d.weather)}</strong><span>最高 ${esc(d.high)}° · 最低 ${esc(d.low)}°</span><div class="ref-weather-horizon"></div><small>${esc(d.note)}</small></div>`}
+};
+Object.assign(BUILTINS, REF_EXTRA_DEFS);
+// 为 JSON 中出现的尺寸扩充既有组件，旧尺寸仅用于已放置组件的兼容。
+const REF_ALLOWED_SIZES = {"photo":["size_1x1","size_1x2","size_2x1","size_2x2","size_4x1","size_4x2","size_2x4","size_3x3","size_4x3","size_4x4"],"badge":["size_1x1","size_2x2"],"dice":["size_1x1"],"alipay":["size_1x2"],"vertical_text":["size_1x2","size_2x4"],"vertical_goal":["size_1x2","size_2x4"],"horizontal_text":["size_2x1"],"horizontal_goal":["size_2x1"],"companion":["size_2x1"],"vinyl":["size_2x2"],"heart_badge":["size_2x2"],"newmsg":["size_2x2"],"videocall":["size_2x2"],"analog":["size_2x2"],"muyu":["size_2x2"],"capsule":["size_2x2"],"couple":["size_2x2"],"simple_cal":["size_2x2"],"zodiac":["size_2x2","size_4x2"],"countdown":["size_2x2"],"water":["size_2x2"],"moon":["size_2x2"],"wide_banner":["size_4x1"],"week_strip":["size_4x1"],"clock":["size_4x2"],"memo":["size_4x2"],"daily_info":["size_4x2"],"player":["size_4x2"],"gameboy":["size_4x2"],"three_photos":["size_4x2"],"love_frame":["size_4x2"],"todo_list":["size_3x3"],"quote_card":["size_3x3"],"photo_caption":["size_4x3"],"month_grid":["size_4x3"],"year_progress":["size_4x3"],"profile":["size_4x4"],"month_cal":["size_4x4"],"polaroid_stack":["size_4x4"],"scrapbook":["size_4x4"],"big_player":["size_4x4"],"moments":["size_4x4"],"big_calendar":["size_4x6"],"big_weather":["size_4x6"]};
+Object.entries(REF_ALLOWED_SIZES).forEach(([key,sizes])=>{
+ const def=BUILTINS[key];
+ if(def) def.sizes=Array.from(new Set([...(def.sizes||[]),...sizes]));
+});
+export const REFERENCE_EXTRA_CSS = `
+.yzd-root .ref-dice,.yzd-root .ref-alipay,.yzd-root .ref-horizontal-text,.yzd-root .ref-wide,.yzd-root .ref-quote,.yzd-root .ref-weather,.yzd-root .ref-year{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5%;}
+.yzd-root .ref-die{font-size:min(75cqw,75cqh);line-height:1;color:var(--yzd-wtext)}
+.yzd-root .ref-alipay{background:linear-gradient(160deg,#e4f2ff,#c0dafa);color:#176dd4;gap:12%}
+.yzd-root .ref-alipay-icon{font-size:27cqw;background:#2089ed;color:white;border-radius:20%;padding:12%}
+.yzd-root .ref-alipay strong{font-size:10cqw}.yzd-root .ref-alipay small{font-size:7cqw}
+.yzd-root .ref-vertical-text{writing-mode:vertical-rl;display:flex;align-items:center;justify-content:center;white-space:pre-wrap;padding:12%;line-height:1.8}
+.yzd-root .ref-horizontal-text{font-weight:600;padding:8%;text-align:center}
+.yzd-root .ref-vgoal{display:flex;flex-direction:column;gap:4%;align-items:center;justify-content:space-around;padding:10%}
+.yzd-root .ref-vgoal small{font-size:9cqw}.yzd-root .ref-vgoal b{font-size:13cqw}.yzd-root .ref-vgoal b span{font-size:.6em;opacity:.65}
+.yzd-root .ref-vgoal-track{height:54%;width:25%;border-radius:100px;background:#e4e5e8;position:relative;overflow:hidden}
+.yzd-root .ref-vgoal-track i{position:absolute;bottom:0;left:0;right:0;border-radius:100px}
+.yzd-root .ref-hgoal{display:flex;flex-direction:column;justify-content:center;padding:7%;gap:14%}
+.yzd-root .ref-hgoal>div:first-child{display:flex;justify-content:space-between;align-items:center;gap:6%}
+.yzd-root .ref-hgoal b{font-size:10cqh}.yzd-root .ref-hgoal small{font-size:9cqh;opacity:.6}
+.yzd-root .ref-hgoal-track,.yzd-root .ref-year>div{height:12%;border-radius:99px;background:rgba(130,130,150,.15);overflow:hidden}
+.yzd-root .ref-hgoal-track i,.yzd-root .ref-year>div i{display:block;height:100%;border-radius:99px}
+.yzd-root .ref-wide{background-position:center;background-size:cover;font-weight:600;gap:0;text-shadow:0 1px 2px rgba(0,0,0,.12)}
+.yzd-root .ref-wide b{font-size:13cqh}.yzd-root .ref-wide small{font-size:9cqh;letter-spacing:.15em}
+.yzd-root .ref-week{display:grid;grid-template-columns:repeat(7,1fr);align-items:center;justify-items:stretch;padding:3%}
+.yzd-root .ref-week>div{display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:22%;height:86%;gap:8%;font-size:18cqh}
+.yzd-root .ref-week small{font-size:.65em;opacity:.7}.yzd-root .ref-week b{font-weight:600}
+.yzd-root .ref-week>div.on{background:var(--ref-accent,#f6d8ca);color:#222}
+.yzd-root .ref-todo{padding:9%;display:flex;flex-direction:column;gap:4%;overflow:hidden;align-items:stretch}
+.yzd-root .ref-todo h3{font-size:12cqmin;margin:0 0 4%;text-align:left;letter-spacing:.05em}
+.yzd-root .ref-todo>div{display:flex;align-items:center;gap:6%;font-size:7cqmin;min-height:11%;}
+.yzd-root .ref-todo>div i{display:flex;align-items:center;justify-content:center;border:1px solid currentColor;border-radius:5px;width:10%;aspect-ratio:1;flex:0 0 auto}
+.yzd-root .ref-todo>div.done{text-decoration:line-through;opacity:.5}
+.yzd-root .ref-quote{padding:12%;background-size:cover;background-position:center;text-align:center}
+.yzd-root .ref-quote small{font-size:6cqmin;letter-spacing:.2em}.yzd-root .ref-quote span{font-size:25cqmin;height:17%;opacity:.3}
+.yzd-root .ref-quote p{font-size:9cqmin;line-height:1.55;margin:0}.yzd-root .ref-quote em{font-size:5cqmin;font-style:normal;opacity:.65}
+.yzd-root .ref-photo-caption{background-size:cover;background-position:center;display:flex;justify-content:flex-end;padding:5%;}
+.yzd-root .ref-photo-caption>div{display:flex;flex-direction:column;gap:6%;background:rgba(255,255,255,.5);backdrop-filter:blur(8px);padding:4%;border-radius:12px}
+.yzd-root .ref-photo-caption b{font-size:8cqmin}.yzd-root .ref-photo-caption small{font-size:5cqmin}
+.yzd-root .ref-month{display:flex;flex-direction:column;padding:7%;gap:3%;}
+.yzd-root .ref-month header{display:flex;align-items:end;justify-content:space-between;font-size:10cqmin}
+.yzd-root .ref-month header small{font-size:.65em;opacity:.55}
+.yzd-root .ref-month>div{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-template-rows:repeat(7,1fr);flex:1;text-align:center;gap:1%;font-size:5cqmin}
+.yzd-root .ref-month i{font-style:normal;display:flex;align-items:center;justify-content:center}
+.yzd-root .ref-month i.today{border-radius:50%;background:var(--ref-accent,#ddd)}
+.yzd-root .ref-year{padding:8%;gap:7%;}.yzd-root .ref-year small{font-size:6cqmin}.yzd-root .ref-year b{font-size:25cqmin;line-height:1}.yzd-root .ref-year em{font-size:.35em;font-style:normal}.yzd-root .ref-year p{font-size:6cqmin;opacity:.6;margin:0}.yzd-root .ref-year>div{height:7%;width:90%}
+.yzd-root .ref-bigcal{padding:7%;display:flex;flex-direction:column;gap:7%;background:rgba(255,255,255,.65);color:#232323}
+.yzd-root .ref-bigcal header{display:flex;align-items:center;gap:4%;}.yzd-root .ref-bigcal header>b{font-size:18cqmin;line-height:1}.yzd-root .ref-bigcal header div{display:flex;flex-direction:column;gap:1%;font-size:5cqmin}.yzd-root .ref-bigcal header small{opacity:.55}.yzd-root .ref-bigcal header>span{margin-left:auto;max-width:28%;font-size:4cqmin;opacity:.55}
+.yzd-root .ref-bigcal section{display:grid;grid-template-columns:repeat(2,1fr);gap:9%;flex:1;overflow:hidden}.yzd-root .ref-bigcal section h4{font-size:5cqmin;margin:0 0 14%;}.yzd-root .ref-bigcal section h4 small{color:#888;font-weight:400}.yzd-root .ref-bigcal section p{font-size:4.3cqmin;margin:0 0 5%;line-height:1.5}.yzd-root .ref-bigcal .muted{opacity:.4}
+.yzd-root .ref-weather{background:linear-gradient(#91bbdc,#cce5f1);color:white;justify-content:start;padding:9%;gap:5%;text-shadow:0 1px 4px rgba(0,0,0,.1)}
+.yzd-root .ref-weather header{font-size:8cqmin}.yzd-root .ref-weather b{font-size:30cqmin;line-height:1}.yzd-root .ref-weather strong{font-size:9cqmin}.yzd-root .ref-weather span{font-size:5cqmin}.yzd-root .ref-weather-horizon{height:30%;width:100%;margin:auto 0;background:radial-gradient(ellipse at 50% 100%,rgba(255,255,255,.6),transparent 65%);border-bottom:1px solid rgba(255,255,255,.3)}.yzd-root .ref-weather small{font-size:5cqmin;text-align:center}
 `;
