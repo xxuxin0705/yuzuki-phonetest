@@ -9605,3 +9605,70 @@ input:checked + .toggle-slider:before {
         max-height: 46px !important;
     }
 }
+
+/* 2026-10-18 可编辑全屏桌面；仅在手机面板打开时生效 */
+#phone-panel.phone-panel-open.drawer-content {
+    inset: 0 !important; top:0!important;left:0!important;right:0!important;bottom:0!important;
+    width:100vw!important;height:100dvh!important;max-width:100vw!important;max-height:100dvh!important;
+    min-height:100dvh!important;padding:0!important;background:#101015!important;pointer-events:auto!important;
+}
+#phone-panel.phone-panel-open #phone-panel-content {width:100%!important;height:100%!important;min-height:0!important;pointer-events:auto!important;}
+#phone-panel.phone-panel-open #phone-panel-content .phone-in-panel {width:100%!important;height:100%!important;margin:0!important;pointer-events:auto!important;}
+#phone-panel.phone-panel-open #phone-panel-content .phone-body-panel {
+    position:relative!important;inset:auto!important;transform:none!important;margin:0!important;
+    width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;
+    border-radius:0!important;border:0!important;padding:0!important;box-shadow:none!important;animation:none!important;
+}
+#phone-panel.phone-panel-open #phone-panel-content .phone-screen {flex:1!important;min-height:0!important;border-radius:0!important;}
+#phone-panel.phone-panel-open #phone-panel-content .phone-punch-hole {display:none!important;}
+#phone-panel.phone-panel-open #phone-panel-content .phone-statusbar {padding-top:max(6px,env(safe-area-inset-top))!important;}
+#phone-panel.phone-panel-open #phone-panel-content .home-layout-desktop {overflow:hidden!important;display:flex!important;flex-direction:column!important;box-sizing:border-box!important;}
+#phone-panel-content .home-layout-desktop .pd-toolbar {position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;padding:12px 18px 6px;gap:12px;color:#fff;}
+#phone-panel-content .home-layout-desktop .pd-heading {font-size:19px;font-weight:700;text-shadow:0 2px 8px #0007;}
+#phone-panel-content .home-layout-desktop button {cursor:pointer;border:0;font:inherit;}
+#phone-panel-content .home-layout-desktop .pd-toolbar button {border-radius:20px;background:#ffffffd9;color:#222;padding:9px 12px;margin-left:8px;font-size:13px;}
+#phone-panel-content .home-layout-desktop .pd-close-phone {font-size:18px!important;width:36px;height:36px;padding:0!important;}
+#phone-panel-content .home-layout-desktop .pd-scroll {position:relative;flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:15px 15px 110px;z-index:1;overscroll-behavior:contain;}
+#phone-panel-content .home-layout-desktop .pd-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-flow:row dense;gap:12px;max-width:800px;margin:0 auto;align-items:stretch;}
+#phone-panel-content .home-layout-desktop .pd-widget {position:relative;min-width:0;min-height:94px;box-sizing:border-box;padding:13px;border-radius:22px;background:var(--pd-bg);color:#24232a;overflow:hidden;box-shadow:0 5px 18px #0002;display:flex;flex-direction:column;gap:6px;touch-action:pan-y;}
+#phone-panel-content .home-layout-desktop .pd-size-small {grid-column:span 1;aspect-ratio:1/1;}
+#phone-panel-content .home-layout-desktop .pd-size-medium {grid-column:span 2;min-height:118px;}
+#phone-panel-content .home-layout-desktop .pd-size-large {grid-column:span 4;min-height:180px;}
+#phone-panel-content .home-layout-desktop .pd-widget-top {display:flex;justify-content:space-between;align-items:center;gap:5px;font-size:12px;font-weight:700;opacity:.85;min-height:20px;}
+#phone-panel-content .home-layout-desktop .pd-widget-menu {background:#ffffffaa;color:#333;border-radius:50%;min-width:28px;min-height:28px;font-size:12px;}
+#phone-panel-content .home-layout-desktop .pd-clock {font-size:clamp(34px,9vw,75px);font-weight:280;letter-spacing:-2px;line-height:1.1;}
+#phone-panel-content .home-layout-desktop .pd-day {font-size:48px;font-weight:750;line-height:1;}
+#phone-panel-content .home-layout-desktop .pd-sub {font-size:12px;opacity:.75;}
+#phone-panel-content .home-layout-desktop .pd-emoji {font-size:40px;line-height:1.2;}
+#phone-panel-content .home-layout-desktop .pd-count {font-size:46px;font-weight:650;}
+#phone-panel-content .home-layout-desktop .pd-note,#phone-panel-content .home-layout-desktop .pd-quote {white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.5;}
+#phone-panel-content .home-layout-desktop .pd-photo {width:100%;height:100%;min-height:72px;object-fit:cover;border-radius:12px;}
+#phone-panel-content .home-layout-desktop .pd-placeholder {display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:9px;font-size:27px;opacity:.65;}
+#phone-panel-content .home-layout-desktop .pd-placeholder span {font-size:11px;}
+#phone-panel-content .home-layout-desktop .pd-widget-apps {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;overflow:auto;max-height:300px;}
+#phone-panel-content .home-layout-desktop .pd-widget-apps .app-icon {width:auto!important;min-width:0!important;position:relative!important;transform:none!important;}
+#phone-panel-content .home-layout-desktop .pd-editor {position:absolute;z-index:5;bottom:calc(80px + env(safe-area-inset-bottom));left:12px;right:12px;border-radius:20px;background:#f5f5f7;color:#262626;padding:12px;box-shadow:0 8px 40px #0004;}
+#phone-panel-content .home-layout-desktop .pd-editor[hidden],#phone-panel-content .home-layout-desktop .pd-modal[hidden] {display:none!important;}
+#phone-panel-content .home-layout-desktop .pd-editor-head {display:flex;align-items:center;justify-content:space-between;}
+#phone-panel-content .home-layout-desktop .pd-editor button {background:#e5e5ec;border-radius:14px;padding:8px 12px;margin:5px;}
+#phone-panel-content .home-layout-desktop .pd-editor-controls {display:flex;gap:4px;flex-wrap:wrap;}
+#phone-panel-content .home-layout-desktop .pd-tip {font-size:11px;opacity:.65;margin:4px;}
+#phone-panel-content .home-layout-desktop .pd-editing .pd-widget {outline:2px dashed #91b6ff;}
+#phone-panel-content .home-layout-desktop .pd-modal {position:absolute;inset:0;z-index:40;background:#0009;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;}
+#phone-panel-content .home-layout-desktop .pd-modal-sheet {background:#f8f8fb;color:#222;border-radius:22px;padding:16px;width:min(100%,440px);max-height:85%;overflow-y:auto;box-sizing:border-box;box-shadow:0 10px 40px #0004;}
+#phone-panel-content .home-layout-desktop .pd-modal-sheet header {display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+#phone-panel-content .home-layout-desktop .pd-modal-sheet header button {background:#e4e4e8;border-radius:50%;width:32px;height:32px;}
+#phone-panel-content .home-layout-desktop .pd-form {display:grid;gap:10px;}
+#phone-panel-content .home-layout-desktop .pd-form label {display:grid;gap:5px;font-size:13px;}
+#phone-panel-content .home-layout-desktop .pd-form :is(input,textarea,select) {display:block;width:100%;max-width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:9px;background:white;color:#222;padding:9px;font-size:14px;}
+#phone-panel-content .home-layout-desktop .pd-form-actions {display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;}
+#phone-panel-content .home-layout-desktop .pd-form-actions button {padding:9px 11px;background:#e5e5eb;border-radius:9px;}
+#phone-panel-content .home-layout-desktop .pd-form-actions button[data-action="save"] {background:#1677ff;color:white;}
+@media(min-width:800px){#phone-panel-content .home-layout-desktop .pd-grid {gap:18px;}#phone-panel-content .home-layout-desktop .pd-widget {padding:19px;}.home-layout-desktop .pd-scroll {padding-top:30px!important;}}
+
+#phone-panel-content .phone-global-close {position:absolute!important;top:max(6px,env(safe-area-inset-top))!important;right:12px!important;z-index:2147483000!important;width:32px!important;height:32px!important;border-radius:50%!important;border:0!important;background:#ffffffea!important;color:#222!important;box-shadow:0 2px 7px #0003!important;cursor:pointer!important;font-size:18px!important;display:flex!important;align-items:center!important;justify-content:center!important;}
+#phone-panel-content .home-layout-desktop .pd-toolbar {padding-right:57px!important;}
+#phone-panel-content .home-layout-desktop .pd-close-phone {display:none!important;}
+#phone-panel-content .home-layout-desktop .pd-widget-apps .app-icon-bg {max-width:68px!important;max-height:68px!important;}
+#phone-panel-content .home-layout-desktop .pd-widget-apps .app-name {font-size:11px!important;max-width:100%!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#phone-panel-content .home-layout-desktop .dock {z-index:4!important;}

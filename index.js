@@ -39,7 +39,7 @@ import {
 
 const ST_PHONE_BASE_URL = new URL('./', import.meta.url).href;
 const ST_PHONE_VERSION = '1.6.2';
-const ST_PHONE_CSS_REVISION = '20261009-payment-store-right-shift';
+const ST_PHONE_CSS_REVISION = '20261018-fullscreen-desktop-widgets';
 const ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
 const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m18';
@@ -6114,6 +6114,11 @@ if (window.GGP_Loaded) {
             }
         }
     }
+
+    window.addEventListener('phone:requestClose', () => {
+        const panel = document.getElementById('phone-panel');
+        if (panel?.classList.contains('phone-panel-open')) toggleDrawer(null, panel);
+    });
 
     function openPhonePanelWithOutsideClose(panel, icon) {
         if (!panel || !icon) return;
