@@ -11,6 +11,7 @@
  * ======================================================== */
 // 主屏幕
 import { APPS, PHONE_CONFIG } from '../config/apps.js'; // 🔥🔥🔥 这一行必须改！
+import { FreeDesktop } from './home-desktop.js?v=1.6.2-free-desktop-1';
 
 const CARD_LAYOUT_CUSTOM_CSS_KEY = 'phone-card-layout-custom-css';
 const CARD_LAYOUT_CUSTOM_STYLE_ID = 'phone-card-layout-custom-css-style';
@@ -21,6 +22,7 @@ export class HomeScreen {
         this.phoneShell = phoneShell;
         this.apps = apps || APPS; // 🔥 修复：确保 apps 有默认值
         this._homeRenderVersion = 0;
+        this.desktop = null; // 自由桌面（长按编辑/组件/主题）
         
         // 🔥 修复：确保 window.VirtualPhone 存在
         const storage = window.VirtualPhone?.storage;
@@ -43,6 +45,14 @@ export class HomeScreen {
             this._homeRenderVersion += 1;
         }
         const renderKeyAttr = forceDomRefresh ? ` data-render-key="${this._homeRenderVersion}"` : '';
+
+        if (this.getHomeLayout() === 'free') {
+            this.preloadCardLayoutCustomCss();
+            this.phoneShell.setContent(`<div class="home-screen yzp-home-screen home-layout-free yzp-home-layout-free"${renderKeyAttr} style="overflow:hidden;"></div>`);
+            this._mountFreeDesktop();
+            this.bindEvents();
+            return;
+        }
 
         const wallpaper = this._getWallpaperImage();
 
@@ -77,6 +87,12 @@ export class HomeScreen {
             return false;
         }
 
+        if (this.getHomeLayout() === 'free') {
+            this._mountFreeDesktop();
+            this.bindEvents();
+            return true;
+        }
+
         this.updateWallpaperDisplay();
         this.updateTimeDisplay();
         this.updateAppBadges();
@@ -84,7 +100,48 @@ export class HomeScreen {
         return true;
     }
 
+    // ==================== 自由桌面 ====================
+    _getHomeRootElement() {
+        const screen = this.phoneShell?.screen;
+        if (!screen) return null;
+        return screen.querySelector('[data-view-id="home"] .home-screen') || screen.querySelector('.home-screen');
+    }
+
+    _mountFreeDesktop() {
+        if (!this.desktop) this.desktop = new FreeDesktop(this);
+        const homeEl = this._getHomeRootElement();
+        if (homeEl) this.desktop.mount(homeEl);
+    }
+
+    _bindLegacySwitchToFree() {
+        const homeEl = this._getHomeRootElement();
+        if (!homeEl || homeEl._yzdLegacyLongPress) return;
+        homeEl._yzdLegacyLongPress = true;
+        let timer = null;
+        let sx = 0;
+        let sy = 0;
+        const cancel = () => { clearTimeout(timer); timer = null; };
+        homeEl.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app, button, input, textarea')) return;
+            sx = e.clientX;
+            sy = e.clientY;
+            cancel();
+            timer = setTimeout(() => {
+                timer = null;
+                if (window.confirm('切换到可自由编辑的桌面？\n（长按拖动图标和组件、导入组件/美化、保存切换主题）')) {
+                    FreeDesktop.setEnabled(true);
+                    this.render({ forceDomRefresh: true });
+                }
+            }, 750);
+        });
+        homeEl.addEventListener('pointermove', (e) => {
+            if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel();
+        });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => homeEl.addEventListener(n, cancel));
+    }
+
     getHomeLayout() {
+        if (FreeDesktop.isEnabled()) return 'free';
         const layout = String(window.VirtualPhone?.storage?.get('phone-home-layout') || 'icons');
         return layout === 'cards' ? 'cards' : 'icons';
     }
@@ -544,7 +601,9 @@ export class HomeScreen {
     }
     
     bindEvents() {
-        const icons = this.phoneShell.screen.querySelectorAll('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app');
+        const isFree = this.getHomeLayout() === 'free';
+        const icons = isFree ? [] : this.phoneShell.screen.querySelectorAll('.yzp-home-app-action, .yzp-home-dock-app, .app-icon, .dock-app');
+        if (!isFree) this._bindLegacySwitchToFree();
         icons.forEach(icon => {
             const releaseGuardForNewPress = () => {
                 this.phoneShell?.releaseHomeTapGuard?.();
@@ -704,6 +763,10 @@ export class HomeScreen {
     }
 
     updateTimeDisplay() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateTime?.();
+            return !!this.desktop;
+        }
         const root = this.phoneShell?.screen?.querySelector('.home-screen');
         if (!root) return false;
 
@@ -733,6 +796,10 @@ export class HomeScreen {
     }
 
     updateWallpaperDisplay() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateWallpaper?.();
+            return !!this.desktop;
+        }
         const wallpaperElement = this.phoneShell?.screen?.querySelector('.home-screen .wallpaper');
         if (!wallpaperElement) return false;
 
@@ -746,6 +813,10 @@ export class HomeScreen {
     }
 
     updateAppBadges() {
+        if (this.getHomeLayout() === 'free') {
+            this.desktop?.updateBadges?.();
+            return !!this.desktop;
+        }
         const root = this.phoneShell?.screen?.querySelector('.home-screen');
         if (!root) return false;
 

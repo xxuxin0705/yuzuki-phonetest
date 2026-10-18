@@ -68,6 +68,10 @@ export class PhoneShell {
                     </div>
                     <div class="battery-head"></div>
                 </div>
+                <!-- ⏻ 关机：收起手机，回到酒馆正文 -->
+                <button type="button" class="phone-power-btn" data-no-swipe-back aria-label="关闭手机，返回酒馆" title="关闭手机（回到酒馆）">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8.5" /><path d="M6.6 6.4a7.6 7.6 0 1 0 10.8 0" /></svg>
+                </button>
             </div>
         </div>
 
@@ -80,12 +84,62 @@ export class PhoneShell {
         this.syncHomeLayoutChromeClass();
 
         this.bindPanelEvents();
+        this.bindPowerButton();
         this.bindSwipeGesture();
         this.bindTimeUpdateEvent();
         this.startClock();
         this.initBattery();  // 🔋 初始化电池
 
         return this.container;
+    }
+
+    // ⏻ 状态栏关机按钮：随时退出手机回到酒馆正文
+    bindPowerButton() {
+        if (!document.getElementById('phone-power-btn-style')) {
+            const style = document.createElement('style');
+            style.id = 'phone-power-btn-style';
+            style.textContent = `
+                .phone-statusbar .phone-power-btn {
+                    pointer-events: auto !important;
+                    display: inline-flex !important; align-items: center; justify-content: center;
+                    width: 24px !important; height: 24px !important; min-width: 24px !important;
+                    margin: 0 0 0 6px !important; padding: 0 !important;
+                    border: 0 !important; border-radius: 50% !important;
+                    background: rgba(255, 255, 255, 0.72) !important;
+                    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.18) !important;
+                    color: #ff3b30 !important; cursor: pointer; flex: 0 0 auto;
+                    -webkit-tap-highlight-color: transparent;
+                    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                }
+                .phone-statusbar .phone-power-btn svg {
+                    width: 14px; height: 14px; fill: none; stroke: currentColor;
+                    stroke-width: 2.6; stroke-linecap: round;
+                }
+                .phone-statusbar .phone-power-btn:active { transform: scale(0.88); background: rgba(255, 220, 220, 0.9) !important; }
+            `;
+            document.head.appendChild(style);
+        }
+        const btn = this.container?.querySelector('.phone-power-btn');
+        if (!btn || btn._bound) return;
+        btn._bound = true;
+        const stop = (e) => { e.stopPropagation(); };
+        btn.addEventListener('pointerdown', stop);
+        btn.addEventListener('touchstart', stop, { passive: true });
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            window.dispatchEvent(new CustomEvent('phone:requestClose'));
+            // 兜底：如果没有被正常关闭，直接隐藏面板
+            setTimeout(() => {
+                const panel = document.getElementById('phone-panel');
+                if (panel && panel.classList.contains('phone-panel-open')) {
+                    panel.classList.remove('openDrawer', 'phone-panel-open', 'drawer-content', 'fillRight');
+                    panel.classList.add('phone-panel-hidden');
+                    panel.style.cssText = 'display:none !important; visibility:hidden !important; opacity:0 !important; pointer-events:none !important; position:absolute !important; width:0 !important; height:0 !important; overflow:hidden !important;';
+                    window.dispatchEvent(new CustomEvent('phone:panelVisibility', { detail: { open: false } }));
+                }
+            }, 120);
+        });
     }
 
     bindTimeUpdateEvent() {
