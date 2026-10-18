@@ -11,7 +11,16 @@
  * ======================================================== */
 // 主屏幕
 import { APPS, PHONE_CONFIG } from '../config/apps.js'; // 🔥🔥🔥 这一行必须改！
-import { FreeDesktop } from './home-desktop.js?v=1.6.2-free-desktop-1';
+// 自由桌面模块：每次打开酒馆都带时间戳加载，避免手机浏览器缓存旧版本（更新后不生效）
+const FREE_DESKTOP_FLAG_KEY = 'phone-home-free-desktop';
+let FreeDesktopClass = null;
+const freeDesktopReady = import(`./home-desktop.js?t=${Date.now()}`)
+    .then(m => { FreeDesktopClass = m.FreeDesktop; return FreeDesktopClass; })
+    .catch(e => { console.error('[柚月小手机] 自由桌面加载失败', e); return null; });
+function isFreeDesktopEnabled() {
+    const v = window.VirtualPhone?.storage?.get?.(FREE_DESKTOP_FLAG_KEY);
+    return !(v === false || v === 'false' || v === 0 || v === '0');
+}
 
 const CARD_LAYOUT_CUSTOM_CSS_KEY = 'phone-card-layout-custom-css';
 const CARD_LAYOUT_CUSTOM_STYLE_ID = 'phone-card-layout-custom-css-style';
@@ -108,7 +117,11 @@ export class HomeScreen {
     }
 
     _mountFreeDesktop() {
-        if (!this.desktop) this.desktop = new FreeDesktop(this);
+        if (!FreeDesktopClass) {
+            freeDesktopReady.then((Cls) => { if (Cls) this._mountFreeDesktop(); });
+            return;
+        }
+        if (!this.desktop) this.desktop = new FreeDesktopClass(this);
         const homeEl = this._getHomeRootElement();
         if (homeEl) this.desktop.mount(homeEl);
     }
@@ -129,7 +142,7 @@ export class HomeScreen {
             timer = setTimeout(() => {
                 timer = null;
                 if (window.confirm('切换到可自由编辑的桌面？\n（长按拖动图标和组件、导入组件/美化、保存切换主题）')) {
-                    FreeDesktop.setEnabled(true);
+                    window.VirtualPhone?.storage?.set?.(FREE_DESKTOP_FLAG_KEY, true);
                     this.render({ forceDomRefresh: true });
                 }
             }, 750);
@@ -141,7 +154,7 @@ export class HomeScreen {
     }
 
     getHomeLayout() {
-        if (FreeDesktop.isEnabled()) return 'free';
+        if (isFreeDesktopEnabled()) return 'free';
         const layout = String(window.VirtualPhone?.storage?.get('phone-home-layout') || 'icons');
         return layout === 'cards' ? 'cards' : 'icons';
     }

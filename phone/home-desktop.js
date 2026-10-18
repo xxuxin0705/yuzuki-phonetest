@@ -28,6 +28,14 @@ export const SIZE_DEFS = {
     size_1x1: { w: 1, h: 1, label: '迷你 1×1' }
 };
 
+const GAL_CATS = [['all', '全部'], ['small', '小组件'], ['medium', '中组件'], ['large', '大组件']];
+/** 尺寸 → 分类：小 = 2×2 及更小（1×1 / 2×1 / 1×2），中 = 4×2 / 4×1，大 = 4×4 */
+function sizeCat(size) {
+    if (size === 'large') return 'large';
+    if (size === 'medium' || size === 'size_4x1') return 'medium';
+    return 'small';
+}
+
 const BG_OPTIONS = [['glass', '毛玻璃'], ['clear', '透明'], ['solid', '纯色'], ['image', '图片']];
 const COMMON_FIELDS = [
     { key: 'bg', label: '背景样式', type: 'select', options: BG_OPTIONS },
@@ -1580,7 +1588,7 @@ Object.assign(FreeDesktop.prototype, {
     },
 
     confirm(text, okText = '确定') {
-        return this._dialog(`<div class="yzd-dlg-title">${esc(text)}</div>
+        return this._dialog(`<div class="yzd-dlg-title" style="white-space:pre-line">${esc(text)}</div>
             <div class="yzd-dlg-btns"><span class="yzd-btn" data-v="0">取消</span><span class="yzd-btn primary" data-v="1">${esc(okText)}</span></div>`, (dlg, close) => {
             dlg.addEventListener('click', (e) => {
                 const b = e.target.closest('[data-v]');
@@ -1807,7 +1815,7 @@ Object.assign(FreeDesktop.prototype, {
                 } else if (act === 'export') {
                     downloadText(`${(data.name || 'widget').replace(/[\\/:*?"<>|]/g, '_')}.widget.json`, JSON.stringify(this._toTemplateJson(data, size), null, 2));
                 } else if (act === 'lib') {
-                    this.addToLibrary({ ...this._toTemplateJson(data, size), templateId: data.templateId || uid('t') });
+                    this.addToLibrary({ ...this._toTemplateJson(data, size), templateId: data.templateId || uid('t') }, { src: data.templateId ? undefined : '自建' });
                     this.toast('已存入组件库');
                 } else if (act === 'cancel') {
                     sheet.close();
@@ -1835,7 +1843,7 @@ Object.assign(FreeDesktop.prototype, {
         };
     },
 
-    addToLibrary(tpl) {
+    addToLibrary(tpl, { cat, src } = {}) {
         const t = {
             tid: tpl.templateId || tpl.tid || uid('t'),
             name: String(tpl.name || '自定义组件'),
@@ -1846,6 +1854,9 @@ Object.assign(FreeDesktop.prototype, {
             images: Object.fromEntries(Object.entries(tpl.images || {}).filter(([, v]) => /^https?:/i.test(String(v || ''))))
         };
         const idx = Store.library.findIndex(x => x.tid === t.tid || (x.name === t.name && x.html.length === t.html.length && x.css.length === t.css.length));
+        const old = idx >= 0 ? Store.library[idx] : null;
+        t.cat = cat || old?.cat || tpl.cat || '';
+        t.src = src || old?.src || tpl.src || '导入';
         if (idx >= 0) Store.library[idx] = t; else Store.library.unshift(t);
         Store.save('library');
         return t;
@@ -1913,97 +1924,198 @@ Object.assign(FreeDesktop.prototype, {
  *  组件画廊（添加 / 更换样式）
  * ==================================================================== */
 Object.assign(FreeDesktop.prototype, {
+    /* 组件按「小 / 中 / 大 / 未分类」分组，再按来源（内置 / 自建 / 导入 / 某个主题）筛选 */
     openGallery({ mode = 'add', target = null } = {}) {
         const replacing = mode === 'replace' && target;
-        const sheet = this.openSheet(replacing ? '更换样式' : '添加组件', (body) => {
-            const s = this.S;
-            const hiddenApps = s.hidden.map(id => this.getApp(id)).filter(Boolean);
-            body.innerHTML = `
-                ${!replacing && hiddenApps.length ? `<div class="yzd-sec">已移除的应用（点一下放回桌面）</div>
-                    <div class="yzd-hidden-apps">${hiddenApps.map(a => `<div class="yzd-happ" data-happ="${esc(a.id)}">${this._appIconHtml(a)}<small>${esc(this._appName(a))}</small></div>`).join('')}</div>` : ''}
-                <div class="yzd-sec">内置组件</div>
-                <div class="yzd-gal yzd-gal-builtin"></div>
-                <div class="yzd-sec">我的组件库 <small>导入的 .widget.json / 美化里的组件</small></div>
-                <div class="yzd-gal yzd-gal-lib"></div>`;
-            const gb = body.querySelector('.yzd-gal-builtin');
-            Object.entries(BUILTINS).forEach(([type, def]) => {
-                const size = replacing && def.sizes.includes(target.size) ? target.size : def.defaultSize;
-                const card = document.createElement('div');
-                card.className = `yzd-gcard span-${SIZE_DEFS[size].w >= 4 ? 2 : 1}`;
-                card.dataset.type = type;
-                card.dataset.size = size;
-                card.appendChild(this._previewBuiltin(type, size, {}));
-                card.insertAdjacentHTML('beforeend', `<div class="yzd-gname">${esc(def.name)}</div>
-                    <div class="yzd-chips sm">${def.sizes.map(sz => `<span class="yzd-chip ${sz === size ? 'on' : ''}" data-sz="${sz}">${SIZE_DEFS[sz].label.split(' ')[0]}</span>`).join('')}</div>`);
-                gb.appendChild(card);
-            });
-            const gl = body.querySelector('.yzd-gal-lib');
-            if (!Store.library.length) gl.innerHTML = '<div class="yzd-tip">还没有导入的组件，点右上角 ↑ 导入 .widget.json，或 ⊕ 自己写一个。</div>';
-            Store.library.forEach((tpl, i) => {
-                const card = document.createElement('div');
-                card.className = `yzd-gcard span-${SIZE_DEFS[tpl.size].w >= 4 ? 2 : 1}`;
-                card.dataset.lib = String(i);
-                card.appendChild(this._previewCustom(tpl, tpl.size));
-                card.insertAdjacentHTML('beforeend', `<div class="yzd-gname">${esc(tpl.name)} <small>${SIZE_DEFS[tpl.size].label}</small></div><span class="yzd-x sm yzd-gdel" data-libdel="${i}">✕</span>`);
-                gl.appendChild(card);
-            });
-            this._scalePreviews(body);
+        const s = this.S;
+        if (replacing) this._galCat = sizeCat(target.size);
+        if (!GAL_CATS.some(([k]) => k === this._galCat)) this._galCat = 'all';
+        if (!this._galSrc) this._galSrc = 'all';
 
-            body.addEventListener('click', async (e) => {
-                const del = e.target.closest('[data-libdel]');
-                if (del) {
-                    e.stopPropagation();
-                    const tpl = Store.library[Number(del.dataset.libdel)];
-                    if (tpl && await this.confirm(`从组件库删除「${tpl.name}」？（桌面上已放的不受影响）`, '删除')) {
-                        Store.library.splice(Number(del.dataset.libdel), 1);
-                        Store.save('library');
-                        sheet.close();
-                        this.openGallery({ mode, target });
-                    }
-                    return;
-                }
-                const happ = e.target.closest('[data-happ]');
-                if (happ) {
-                    const id = happ.dataset.happ;
-                    s.hidden = s.hidden.filter(x => x !== id);
-                    const it = { id: uid('a'), kind: 'app', appId: id, page: this.page, x: 0, y: 0 };
-                    this._autoPlace(it, this.page);
-                    s.items.push(it);
-                    this.syncLayout();
-                    this.goPage(it.page);
-                    this.save();
-                    happ.remove();
-                    return;
-                }
-                const card = e.target.closest('.yzd-gcard');
-                if (!card) return;
-                const chip = e.target.closest('[data-sz]');
-                let newItem;
-                if (card.dataset.type) {
-                    const sz = chip ? chip.dataset.sz : card.dataset.size;
-                    newItem = makeWidget(card.dataset.type, sz);
-                    if (replacing && target.wtype !== 'custom') {
-                        const keep = {};
-                        ['bg', 'bgColor', 'bgAlpha', 'bgImage', 'textColor', 'radius'].forEach(k => { if (target.data?.[k] !== undefined) keep[k] = target.data[k]; });
-                        Object.assign(newItem.data, keep);
-                    }
-                } else if (card.dataset.lib !== undefined) {
-                    const tpl = Store.library[Number(card.dataset.lib)];
-                    if (!tpl) return;
-                    newItem = makeCustomWidget(tpl, tpl.size);
-                }
-                if (!newItem) return;
-                sheet.close();
-                if (replacing) this.replaceWidget(target, newItem);
-                else this.placeNewWidget(newItem);
-                if (newItem.wtype === 'custom' && ((newItem.data.userFields || []).length || Object.keys(newItem.data.images || {}).length)) {
-                    setTimeout(() => this.openCustomEditor(newItem), 260);
-                }
-            });
+        const sheet = this.openSheet(replacing ? '更换样式' : '添加组件', (body) => {
+            body.innerHTML = `
+                <div class="yzd-gal-filters">
+                    <div class="yzd-tabs">${GAL_CATS.map(([k, l]) => `<span class="yzd-tab" data-cat="${k}">${l}</span>`).join('')}</div>
+                    <div class="yzd-srcs-row"><span class="yzd-srcs-label">按主题</span><div class="yzd-srcs"></div></div>
+                </div>
+                <div class="yzd-gal-content"></div>`;
         }, {
             tall: true,
             headExtra: `<span class="yzd-hbtn" data-g="new" title="新建自定义组件">⊕</span><span class="yzd-hbtn" data-g="import" title="导入组件">↑</span>`
         });
+        const body = sheet.body;
+        const content = body.querySelector('.yzd-gal-content');
+        let observer = null;
+        let queue = [];
+        let pumping = false;
+        const pump = () => {
+            if (pumping) return;
+            pumping = true;
+            const step = () => {
+                const job = queue.shift();
+                if (!job || !body.isConnected) { pumping = false; return; }
+                job();
+                setTimeout(step, 40);
+            };
+            step();
+        };
+        sheet.onClose = () => { observer?.disconnect(); queue = []; };
+
+        const entries = () => {
+            const list = [];
+            Object.entries(BUILTINS).forEach(([type, def]) => {
+                def.sizes.forEach(size => list.push({ kind: 'builtin', type, size, name: def.name, cat: sizeCat(size), src: '内置' }));
+            });
+            Store.library.forEach((tpl, i) => list.push({ kind: 'lib', idx: i, tpl, size: tpl.size, name: tpl.name, cat: sizeCat(tpl.size), src: tpl.src || '导入' }));
+            return list;
+        };
+
+        const renderSrcs = () => {
+            const srcs = ['all', '内置', ...new Set(Store.library.map(t => t.src || '导入'))];
+            if (!srcs.includes(this._galSrc)) this._galSrc = 'all';
+            body.querySelector('.yzd-srcs').innerHTML = srcs.map(x => `<span class="yzd-chip sm ${x === this._galSrc ? 'on' : ''}" data-src="${esc(x)}">${x === 'all' ? '全部主题' : esc(x)}</span>`).join('')
+                + (this._galSrc !== 'all' && this._galSrc !== '内置' ? `<span class="yzd-chip sm danger" data-srcdel="1">删除这个来源的组件</span>` : '');
+            body.querySelectorAll('.yzd-tab').forEach(t => t.classList.toggle('on', t.dataset.cat === this._galCat));
+        };
+
+        const render = () => {
+            observer?.disconnect();
+            queue = [];
+            renderSrcs();
+            const list = entries().filter(e => (this._galCat === 'all' || e.cat === this._galCat) && (this._galSrc === 'all' || e.src === this._galSrc));
+            const hiddenApps = s.hidden.map(id => this.getApp(id)).filter(Boolean);
+            content.innerHTML = `
+                ${!replacing && hiddenApps.length && this._galCat === 'all' ? `<div class="yzd-sec">已移除的应用（点一下放回桌面）</div>
+                    <div class="yzd-hidden-apps">${hiddenApps.map(a => `<div class="yzd-happ" data-happ="${esc(a.id)}">${this._appIconHtml(a)}<small>${esc(this._appName(a))}</small></div>`).join('')}</div>` : ''}
+                ${list.length ? '' : '<div class="yzd-tip yzd-empty-tip">这个尺寸下还没有组件</div>'}
+                <div class="yzd-gal"></div>`;
+            const grid = content.querySelector('.yzd-gal');
+            const frag = document.createDocumentFragment();
+            list.forEach(e => {
+                const sd = SIZE_DEFS[e.size] || SIZE_DEFS.small;
+                const card = document.createElement('div');
+                card.className = `yzd-gcard span-${sd.w >= 4 ? 2 : 1}`;
+                if (e.kind === 'builtin') { card.dataset.type = e.type; card.dataset.size = e.size; }
+                else card.dataset.lib = String(e.idx);
+                const { wrap } = this._previewShell(e.size);
+                wrap.classList.add('lazy');
+                card.appendChild(wrap);
+                card.insertAdjacentHTML('beforeend', `<div class="yzd-gname">${esc(e.name)} <small>${sd.label}</small></div>
+                    <div class="yzd-gsrc">${esc(e.src)}</div>
+                    ${e.kind === 'lib' ? `<span class="yzd-x sm yzd-gdel" data-libmore="${e.idx}">✕</span>` : ''}`);
+                card._entry = e;
+                frag.appendChild(card);
+            });
+            grid.appendChild(frag);
+            this._scalePreviews(grid);
+            // 只有滚动到可见区域才真正生成预览，iframe 一个一个排队加载
+            const fill = (card) => {
+                const e = card._entry;
+                const wrap = card.querySelector('.yzd-prev');
+                if (!wrap || !wrap.classList.contains('lazy')) return;
+                wrap.classList.remove('lazy');
+                const inner = wrap.firstElementChild;
+                if (e.kind === 'builtin') {
+                    inner.classList.add(`yzd-w-${e.type}`);
+                    const box = document.createElement('div');
+                    inner.appendChild(box);
+                    const d = { ...COMMON_DEFAULTS, ...(BUILTINS[e.type]?.defaults || {}), ...(e.type === 'photo' ? { bg: 'clear' } : {}) };
+                    this._fillWidget({ id: 'preview', kind: 'widget', wtype: e.type, size: e.size, data: d }, box);
+                } else {
+                    const box = document.createElement('div');
+                    box.className = 'yzd-wbox yzd-wbox-custom';
+                    const iframe = document.createElement('iframe');
+                    iframe.className = 'yzd-frame';
+                    iframe.setAttribute('sandbox', 'allow-scripts');
+                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: e.tpl.images || {} }, {});
+                    box.appendChild(iframe);
+                    inner.appendChild(box);
+                }
+            };
+            if (typeof IntersectionObserver !== 'undefined') {
+                observer = new IntersectionObserver((ents) => {
+                    ents.forEach(en => {
+                        if (!en.isIntersecting) return;
+                        observer.unobserve(en.target);
+                        const card = en.target;
+                        if (card._entry.kind === 'builtin') fill(card);
+                        else { queue.push(() => fill(card)); pump(); }
+                    });
+                }, { root: body, rootMargin: '150px 0px' });
+                grid.querySelectorAll('.yzd-gcard').forEach(c => observer.observe(c));
+            } else {
+                grid.querySelectorAll('.yzd-gcard').forEach(c => queue.push(() => fill(c)));
+                pump();
+            }
+            body.scrollTop = 0;
+        };
+        requestAnimationFrame(render);
+
+        body.addEventListener('click', async (e) => {
+            const tab = e.target.closest('[data-cat]');
+            if (tab) { this._galCat = tab.dataset.cat; render(); return; }
+            if (e.target.closest('[data-srcdel]')) {
+                const src = this._galSrc;
+                const n = Store.library.filter(t => (t.src || '导入') === src).length;
+                if (await this.confirm(`从组件库删除来源「${src}」的 ${n} 个组件？（桌面上已放的不受影响）`, '删除')) {
+                    Store.library = Store.library.filter(t => (t.src || '导入') !== src);
+                    Store.save('library');
+                    this._galSrc = 'all';
+                    render();
+                }
+                return;
+            }
+            const src = e.target.closest('[data-src]');
+            if (src) { this._galSrc = src.dataset.src; render(); return; }
+            const more = e.target.closest('[data-libmore]');
+            if (more) {
+                e.stopPropagation();
+                const idx = Number(more.dataset.libmore);
+                const tpl = Store.library[idx];
+                if (tpl && await this.confirm(`从组件库删除「${tpl.name}」？（桌面上已放的不受影响）`, '删除')) {
+                    Store.library.splice(idx, 1);
+                    Store.save('library');
+                    render();
+                }
+                return;
+            }
+            const happ = e.target.closest('[data-happ]');
+            if (happ) {
+                const id = happ.dataset.happ;
+                s.hidden = s.hidden.filter(x => x !== id);
+                const it = { id: uid('a'), kind: 'app', appId: id, page: this.page, x: 0, y: 0 };
+                this._autoPlace(it, this.page);
+                s.items.push(it);
+                this.syncLayout();
+                this.goPage(it.page);
+                this.save();
+                happ.remove();
+                return;
+            }
+            const card = e.target.closest('.yzd-gcard');
+            if (!card) return;
+            let newItem;
+            if (card.dataset.type) {
+                newItem = makeWidget(card.dataset.type, card.dataset.size);
+                if (replacing && target.wtype !== 'custom') {
+                    const keep = {};
+                    ['bg', 'bgColor', 'bgAlpha', 'bgImage', 'textColor', 'radius'].forEach(k => { if (target.data?.[k] !== undefined) keep[k] = target.data[k]; });
+                    Object.assign(newItem.data, keep);
+                }
+            } else if (card.dataset.lib !== undefined) {
+                const tpl = Store.library[Number(card.dataset.lib)];
+                if (!tpl) return;
+                newItem = makeCustomWidget(tpl, tpl.size);
+            }
+            if (!newItem) return;
+            sheet.close();
+            if (replacing) this.replaceWidget(target, newItem);
+            else this.placeNewWidget(newItem);
+            if (newItem.wtype === 'custom' && ((newItem.data.userFields || []).length || Object.keys(newItem.data.images || {}).some(k => !newItem.data.images[k]))) {
+                setTimeout(() => this.openCustomEditor(newItem), 260);
+            }
+        });
+
         sheet.head.addEventListener('click', async (e) => {
             const b = e.target.closest('[data-g]');
             if (!b) return;
@@ -2087,6 +2199,7 @@ Object.assign(FreeDesktop.prototype, {
                 ${curName && Store.themes.some(t => t.name === curName) ? `<span class="yzd-btn" data-t="overwrite">覆盖「${esc(curName)}」</span>` : ''}
                 <span class="yzd-btn primary" data-t="import">导入美化 JSON</span>
                 <span class="yzd-btn" data-t="importw">导入组件 JSON</span>
+                <span class="yzd-btn" data-t="savewidgets">把桌面组件存入组件库</span>
             </div>
             <div class="yzd-themes">${Store.themes.length ? Store.themes.map((t, i) => `
                 <div class="yzd-theme ${t.name === curName ? 'on' : ''}">
@@ -2111,8 +2224,8 @@ Object.assign(FreeDesktop.prototype, {
             <div class="yzd-field yzd-glyph-color"><label class="yzd-flabel">主题线条图标颜色</label>
                 <div class="yzd-color"><input type="color" value="${normHex(s.themeIcons?.color, '#7fa6b6')}"><input class="yzd-input" type="text" value="${esc(s.themeIcons?.color || '#7fa6b6')}"></div></div>
 
-            <div class="yzd-sec">主题图片池 <small>${(s.iconPool || []).length ? '点图片：分配给应用 / 下载' : '导入美化或「提取图标」后这里会列出主题里的所有图片'}</small></div>
-            <div class="yzd-pool">${(s.iconPool || []).map((p, i) => `<div class="yzd-pool-item" data-pool="${i}"><i class="yzd-pool-ic" style="background-image:${esc(cssUrl(this._resolvePoolUrl(p.url)))}"></i><small>${esc(p.label)}</small><span class="yzd-pool-dl" data-pooldl="${i}">⤓</span></div>`).join('')}</div>
+            <div class="yzd-sec">主题图片池 <small>${(s.iconPool || []).length ? '点图片：分配给应用 · ⤓ 下载 · ✕ 删掉不喜欢的（随机就不会抽到）' : '导入美化或「提取图标」后这里会列出主题里的所有图片'}</small></div>
+            <div class="yzd-pool">${(s.iconPool || []).map((p, i) => `<div class="yzd-pool-item" data-pool="${i}"><i class="yzd-pool-ic" style="background-image:${esc(cssUrl(this._resolvePoolUrl(p.url)))}"></i><small>${esc(p.label)}</small><span class="yzd-pool-dl" data-pooldl="${i}">⤓</span><span class="yzd-pool-del" data-pooldel="${i}">✕</span></div>`).join('')}</div>
 
             <div class="yzd-sec">外观</div>
             <div class="yzd-look"></div>
@@ -2161,7 +2274,7 @@ Object.assign(FreeDesktop.prototype, {
         }
 
         body.onclick = async (e) => {
-            const el = e.target.closest('[data-t],[data-apply],[data-exp],[data-del],[data-icon],[data-pooldl],[data-pool]');
+            const el = e.target.closest('[data-t],[data-apply],[data-exp],[data-del],[data-icon],[data-pooldl],[data-pooldel],[data-pool]');
             if (!el) return;
             if (el.dataset.apply !== undefined) { sheet.close(); await this.applyTheme(Store.themes[Number(el.dataset.apply)]); return; }
             if (el.dataset.exp !== undefined) { this.exportTheme(Store.themes[Number(el.dataset.exp)]); return; }
@@ -2181,6 +2294,19 @@ Object.assign(FreeDesktop.prototype, {
                 if (p) this.downloadImage(this._resolvePoolUrl(p.url), p.label);
                 return;
             }
+            if (el.dataset.pooldel !== undefined) {
+                e.stopPropagation();
+                this.removePoolImage(Number(el.dataset.pooldel));
+                const item = el.closest('.yzd-pool-item');
+                item?.remove();
+                // 重新编号，避免后面的按钮指错图
+                body.querySelectorAll('.yzd-pool .yzd-pool-item').forEach((it, i) => {
+                    it.dataset.pool = String(i);
+                    it.querySelector('[data-pooldl]')?.setAttribute('data-pooldl', String(i));
+                    it.querySelector('[data-pooldel]')?.setAttribute('data-pooldel', String(i));
+                });
+                return;
+            }
             if (el.dataset.pool !== undefined) { await this.assignPoolImage(Number(el.dataset.pool), () => this._renderThemeBody(body, sheet)); return; }
             const t = el.dataset.t;
             if (t === 'savenew') {
@@ -2194,6 +2320,11 @@ Object.assign(FreeDesktop.prototype, {
                 this._renderThemeBody(body, sheet);
             } else if (t === 'import') { sheet.close(); await this.importJsonFlow('theme'); }
             else if (t === 'importw') { sheet.close(); await this.importJsonFlow('widget'); }
+            else if (t === 'savewidgets') {
+                const tpls = s.items.filter(i => i.kind === 'widget' && i.wtype === 'custom').map(i => ({ ...i.data, size: i.size }));
+                if (!tpls.length) { this.toast('当前桌面没有自定义组件'); return; }
+                await this._askSaveThemeWidgets(tpls, s.themeName || '当前桌面');
+            }
             else if (t === 'wallup') {
                 const [file] = await pickFiles({ accept: 'image/*' });
                 if (!file) return;
@@ -2324,8 +2455,11 @@ Object.assign(FreeDesktop.prototype, {
                 await this._importThemeState(json.state, json.name || baseName);
             } else if (json?.homeScreenLayout) {
                 const state = this.convertNuoTheme(json, baseName);
+                const tpls = state._widgetTpls || [];
+                delete state._widgetTpls;
                 await this._askUnmatchedIcons(state);
-                await this._importThemeState(state, baseName);
+                const finalName = await this._importThemeState(state, baseName);
+                await this._askSaveThemeWidgets(tpls, finalName);
             } else {
                 const tpls = this.parseWidgetTemplates(json);
                 if (!tpls.length) { this.toast(`「${file.name}」识别不出是美化还是组件`); continue; }
@@ -2349,6 +2483,18 @@ Object.assign(FreeDesktop.prototype, {
         if (idx >= 0) Store.themes[idx] = theme; else Store.themes.unshift(theme);
         Store.save('themes', 50);
         await this.applyTheme(theme);
+        return finalName;
+    },
+
+    /** 主题里的组件要不要存进组件库？存到「按大小分到小/中/大」还是「未分类」；来源记为主题名 */
+    async _askSaveThemeWidgets(tpls, themeName) {
+        if (!tpls?.length) return;
+        const cnt = { small: 0, medium: 0, large: 0 };
+        tpls.forEach(t => { cnt[sizeCat(t.size)]++; });
+        const ok = await this.confirm(`把这个主题的 ${tpls.length} 个组件存进组件库？\n（小组件 ${cnt.small} 个 · 中组件 ${cnt.medium} 个 · 大组件 ${cnt.large} 个，会按它们本身的尺寸出现在「＋ 组件」的小/中/大里，来源标为「${themeName}」）`, '保存');
+        if (!ok) return;
+        tpls.forEach(t => this.addToLibrary(t, { src: themeName }));
+        this.toast(`已存入组件库（来源：${themeName}）`);
     },
 
     parseWidgetTemplates(json) {
@@ -2400,7 +2546,7 @@ Object.assign(FreeDesktop.prototype, {
                 if (w.data && (w.data.html !== undefined || w.data.css !== undefined)) {
                     item = makeCustomWidget({ ...w.data, images: w.data.images || {} }, size);
                     item.data.images = { ...(w.data.images || {}) };
-                    this.addToLibrary({ ...w.data, size });
+                    (s._widgetTpls = s._widgetTpls || []).push({ ...w.data, size });
                     s.widgetState[item.id] = clone(json.customWidgetState?.[w.id] || {});
                 } else if (NUO_BUILTIN_TYPE_MAP[w.type]) {
                     const t = NUO_BUILTIN_TYPE_MAP[w.type];
@@ -2500,6 +2646,19 @@ Object.assign(FreeDesktop.prototype, {
         s._namedCount = named.length;
         s._unmatched = this.apps.map(a => a.id).filter(id => !s.icons[id]);
         return s;
+    },
+
+    /** 从主题图片池删除一张（随机分配时就不会再抽到它）；正在用它当图标的应用换回主题线条图标 */
+    removePoolImage(idx) {
+        const s = this.S;
+        const p = (s.iconPool || [])[idx];
+        if (!p) return;
+        s.iconPool.splice(idx, 1);
+        let changed = 0;
+        Object.keys(s.icons || {}).forEach(k => { if (s.icons[k] === p.url) { delete s.icons[k]; changed++; } });
+        this.save();
+        if (changed) this.refreshAppVisuals();
+        this.toast(changed ? `已删除，${changed} 个用它的图标换回了主题图标` : '已从图片池删除');
     },
 
     _resolvePoolUrl(u, state = this.S) {
@@ -2700,6 +2859,7 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-pool-ic.plate{background-color:rgba(255,255,255,.9)}
 .yzd-root .yzd-pool-ic.up{background:#fff;border:1.5px dashed #c5c5cc;box-shadow:none}
 .yzd-root .yzd-pool-dl{position:absolute;top:-4px;right:4px;width:22px;height:22px;border-radius:50%;background:#fff;color:#1677ff;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.yzd-root .yzd-pool-del{position:absolute;top:-4px;left:4px;width:22px;height:22px;border-radius:50%;background:rgba(90,90,98,.88);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.2)}
 .yzd-root .yzd-pool-big{width:120px;height:120px;margin:0 auto 12px;border-radius:22px;background:#eee center/cover no-repeat}
 .yzd-root .yzd-icon-cur{display:flex;flex-direction:column;align-items:center;gap:4px;--yzd-icon:68px;padding:6px 0;--yzd-plate:rgba(255,255,255,.85)}
 .yzd-root .yzd-icon-cur small{font-size:11px;color:#888}
@@ -2771,9 +2931,9 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-menu-item.danger{color:#ff3b30}
 .yzd-root .yzd-toast{position:absolute;left:50%;top:calc(var(--yzd-top) + 6px);transform:translateX(-50%);background:rgba(30,30,34,.88);color:#fff;padding:8px 14px;border-radius:18px;font-size:13px;max-width:82%;text-align:center;pointer-events:none!important;transition:opacity .3s;z-index:9}
 .yzd-root .yzd-toast.out{opacity:0}
-.yzd-root .yzd-mask{position:absolute;inset:0;background:rgba(0,0,0,.32);display:flex;align-items:flex-end;justify-content:center;animation:yzd-fade .2s;touch-action:auto;user-select:text;-webkit-user-select:text;transition:opacity .2s}
+.yzd-root .yzd-mask{position:absolute;inset:0;background:rgba(0,0,0,.32);display:flex;align-items:flex-end;justify-content:center;animation:yzd-fade .2s;touch-action:auto;z-index:10;user-select:text;-webkit-user-select:text;transition:opacity .2s}
 .yzd-root .yzd-mask.out{opacity:0}
-.yzd-root .yzd-mask-center{align-items:center;padding:20px;z-index:5}
+.yzd-root .yzd-mask-center{align-items:center;padding:20px;z-index:50}
 .yzd-root .yzd-sheet{width:100%;max-width:560px;max-height:74%;background:#f4f4f7;color:#1c1c1e;border-radius:22px 22px 0 0;display:flex;flex-direction:column;animation:yzd-up .25s cubic-bezier(.2,.85,.25,1);padding-bottom:env(safe-area-inset-bottom,0px)}
 .yzd-root .yzd-sheet.tall{max-height:90%}
 .yzd-root .yzd-sheet-grab{width:38px;height:5px;border-radius:3px;background:#c7c7cc;margin:8px auto 2px;flex:0 0 auto}
@@ -2830,7 +2990,21 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-gcard.span-2{grid-column:span 2}
 .yzd-root .yzd-gname{font-size:12.5px;font-weight:600;margin:8px 2px 6px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .yzd-root .yzd-gname small{color:#999;font-weight:400}
-.yzd-root .yzd-gdel{position:absolute;top:6px;right:6px;z-index:5}
+.yzd-root .yzd-gdel{position:absolute;top:6px;right:6px;z-index:5;font-size:14px!important;font-weight:700}
+.yzd-root .yzd-gsrc{font-size:10.5px;color:#9a9aa0;margin:-3px 2px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.yzd-root .yzd-gal-filters{position:sticky;top:0;z-index:6;background:#f4f4f7;padding:2px 0 8px;margin:0 -2px}
+.yzd-root .yzd-tabs{display:flex;background:#e5e5ea;border-radius:11px;padding:3px;gap:2px}
+.yzd-root .yzd-tab{flex:1;text-align:center;padding:7px 0;font-size:13px;border-radius:9px;color:#444;cursor:pointer;white-space:nowrap}
+.yzd-root .yzd-tab.on{background:#fff;color:#111;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.yzd-root .yzd-srcs-row{display:flex;align-items:center;gap:6px;padding-top:8px}
+.yzd-root .yzd-srcs-label{flex:0 0 auto;font-size:12px;color:#8e8e93}
+.yzd-root .yzd-srcs{display:flex;gap:6px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none;touch-action:pan-x}
+.yzd-root .yzd-srcs::-webkit-scrollbar{display:none}
+.yzd-root .yzd-srcs .yzd-chip{flex:0 0 auto;white-space:nowrap}
+.yzd-root .yzd-chip.danger{background:#ffe9e8;color:#ff3b30}
+.yzd-root .yzd-empty-tip{text-align:center;padding:24px 10px}
+.yzd-root .yzd-prev.lazy::after{content:'';position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.45) 50%,transparent 70%);background-size:200% 100%;animation:yzd-shimmer 1.2s linear infinite}
+@keyframes yzd-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .yzd-root .yzd-prev{position:relative;width:100%;overflow:hidden;pointer-events:none;border-radius:12px;background:linear-gradient(135deg,#c9d6ff 0%,#f3d9e8 55%,#e6e9f0 100%);min-height:40px}
 .yzd-root .yzd-prev-inner{position:absolute!important;left:0;top:0;transform-origin:0 0;animation:none!important}
 .yzd-root .yzd-edit-prev{max-width:340px;margin:4px auto 6px}
