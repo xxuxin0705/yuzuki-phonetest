@@ -969,15 +969,25 @@ export class NuojiCompat {
         tab.addEventListener('click', e => { if (fired) { e.stopImmediatePropagation(); e.preventDefault(); fired = false; } }, true);
     }
 
-    openPanel(appEl = null) {
+    // 「我」页面入口下面那行小字
+    listEntryDesc() {
+        const p = this.isActive('list') ? this.getActiveProfile('list') : null;
+        return p ? `正在使用「${esc(p.name)}」· 点这里导入或更换` : '导入糯叽机「消息 App」美化 CSS（NACRE、仿 Telegram 等）';
+    }
+
+    openPanel(appEl = null, { listFirst = false } = {}) {
         const host = appEl || document.querySelector('.phone-view-current .wechat-app') || document.querySelector('.wechat-app');
         if (!host) return;
         host.querySelector(':scope > .njc-modal')?.remove();
         const modal = document.createElement('div');
         modal.className = 'njc-modal';
-        modal.innerHTML = `<div class="njc-modal-sheet"><div class="njc-modal-head"><span>糯叽机美化</span><button type="button" class="njc-modal-close" aria-label="关闭">✕</button></div><div class="njc-modal-body">${this.renderCardHtml({ inModal: true })}</div></div>`;
+        modal.innerHTML = `<div class="njc-modal-sheet"><div class="njc-modal-head"><span>糯叽机美化</span><button type="button" class="njc-modal-close" aria-label="关闭">✕</button></div><div class="njc-modal-body">${this.renderCardHtml({ inModal: true, listFirst })}</div></div>`;
         ['click', 'mousedown', 'touchstart', 'touchend', 'pointerdown'].forEach(ev => modal.addEventListener(ev, e => e.stopPropagation()));
         modal.addEventListener('click', e => { if (e.target === modal || e.target.closest('.njc-modal-close')) modal.remove(); });
+        // 换了美化后，「我」页面入口的小字跟着更新
+        modal.addEventListener('njc:changed', () => {
+            document.querySelectorAll('#wechat-nuoji-list-btn .function-desc').forEach(d => { d.innerHTML = this.listEntryDesc(); });
+        });
         host.appendChild(modal);
         this.bindCard(modal);
     }
@@ -1092,12 +1102,13 @@ export class NuojiCompat {
     }
 
     // 长按底栏打开的面板用：完整一份
-    renderCardHtml({ chatId = '', inModal = false } = {}) {
+    renderCardHtml({ chatId = '', inModal = false, listFirst = false } = {}) {
+        const chat = this.renderChatPartHtml({ chatId });
+        const extras = this.renderExtrasPartHtml({ chatId });
         return `
             <section class="wechat-detail-card njc-card${inModal ? ' is-modal' : ''}">
-                <div class="njc-note">关掉美化即回到柚月原样，功能不受影响。聊天设置的「界面风格」里也有同样的选项。</div>
-                ${this.renderChatPartHtml({ chatId })}
-                ${this.renderExtrasPartHtml({ chatId })}
+                <div class="njc-note">关掉美化即回到柚月原样，功能不受影响。也可以在每个聊天的「聊天设置 → 界面风格」里换。</div>
+                ${listFirst ? extras + chat : chat + extras}
             </section>`;
     }
 

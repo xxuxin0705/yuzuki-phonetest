@@ -8123,6 +8123,20 @@ export class WechatApp {
                     </div>
                 </div>
 
+                <!-- 🍡 聊天列表美化：导入糯叽机「消息 App」CSS -->
+                <div class="profile-function-item" id="wechat-nuoji-list-btn">
+                    <div class="function-icon-wrapper" style="background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3);">
+                        <i class="fa-solid fa-palette" style="color: #666;"></i>
+                    </div>
+                    <div class="function-content">
+                        <div class="function-title">聊天列表美化</div>
+                        <div class="function-desc">${this.nuoji?.listEntryDesc?.() || '导入糯叽机消息 App 美化 CSS'}</div>
+                    </div>
+                    <div class="function-arrow">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </div>
+                </div>
+
                 ${this._renderMyVoiceHtml()}
 
                 <div class="profile-function-item" id="wechat-settings-btn">
@@ -8243,6 +8257,7 @@ export class WechatApp {
         addClickListener('#smart-load-contacts', () => this.showLoadContactsConfirm());
         addClickListener('#edit-profile-btn', () => this.showEditProfile());
         addClickListener('#wechat-settings-btn', () => this.showSettings());
+        addClickListener('#wechat-nuoji-list-btn', () => this.nuoji?.openPanel?.(null, { listFirst: true }));
         this._bindMyVoice(wechatRoot);
         wechatRoot?.querySelectorAll?.('[data-moments-style]').forEach(btn => btn.addEventListener('click', (e) => {
             e.stopPropagation();
