@@ -250,6 +250,90 @@ async function idbSet(key, value) {
     }
 }
 
+/* ------------------------------ 主题风格图标（线条图标，按主题颜色上色） ------------------------------ */
+// 自绘 24×24 线条图标，风格对齐糯叽机的 component:IconXxx（它的图标本身也是矢量线条 + 主题色）
+const GLYPHS = {
+    wechat: '<path d="M4 11.5c0-4 3.6-7 8-7s8 3 8 7-3.6 7-8 7c-1 0-2-.15-2.9-.45L5 19.5l1-3.4C4.75 14.9 4 13.3 4 11.5z"/><circle cx="9" cy="11.5" r=".9" class="f"/><circle cx="12" cy="11.5" r=".9" class="f"/><circle cx="15" cy="11.5" r=".9" class="f"/>',
+    weibo: '<circle cx="12" cy="12" r="8"/><path d="M8 12.5c1.2 1.8 2.5 2.5 4 2.5s2.8-.7 4-2.5"/><circle cx="9.3" cy="9.8" r=".9" class="f"/><circle cx="14.7" cy="9.8" r=".9" class="f"/><path d="M17.5 3.8c1.6.4 2.6 1.4 3 3"/>',
+    x: '<path d="M5 4.5l14 15M19 4.5l-14 15"/>',
+    honey: '<path d="M12 19.5s-7-4.3-7-9.4C5 7.3 7 5.5 9.2 5.5c1.3 0 2.2.6 2.8 1.6.6-1 1.5-1.6 2.8-1.6 2.2 0 4.2 1.8 4.2 4.6 0 5.1-7 9.4-7 9.4z"/>',
+    mofo: '<path d="M5 19L15 9"/><path d="M13.5 7.5l3 3"/><path d="M17 3.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" class="f"/><path d="M8 4l.4 1 1 .4-1 .4L8 6.8l-.4-1-1-.4 1-.4z" class="f"/>',
+    wangxiang: '<circle cx="12" cy="12" r="7.5"/><ellipse cx="12" cy="12" rx="3.2" ry="7.5"/><path d="M4.5 12h15"/>',
+    phone: '<path d="M7.2 4.5l2.3 2.6c.4.5.4 1.2-.1 1.7l-1.2 1.2c.9 2 2.4 3.6 4.4 4.6l1.3-1.2c.5-.4 1.2-.5 1.7-.1l2.6 2.2c.6.5.6 1.3.1 1.9l-1.3 1.4c-.7.7-1.8 1-2.8.6C9 17.7 6.3 15 4.6 10.2c-.4-1 0-2.1.7-2.8l1.3-1.1c.2-.2.4-.2.6.2z"/>',
+    diary: '<path d="M6 4.5h10.5a1.5 1.5 0 011.5 1.5v13.5H7.5A1.5 1.5 0 016 18V4.5z"/><path d="M6 18a1.5 1.5 0 011.5-1.5H18"/><path d="M9.5 8.5h5M9.5 11.5h3.5"/>',
+    music: '<path d="M9.5 17V6.5l9-2V15"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="15" r="2"/>',
+    album: '<rect x="4" y="5" width="16" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17l4.5-4 3.5 3 3-2.5 4 3.5"/>',
+    calendar: '<rect x="4" y="5.5" width="16" height="14" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/><circle cx="12" cy="14.5" r="1" class="f"/>',
+    games: '<path d="M7.5 8h9a4 4 0 013.9 4.9l-.8 3.4a2 2 0 01-3.5.8L14.5 15h-5l-1.6 2.1a2 2 0 01-3.5-.8l-.8-3.4A4 4 0 017.5 8z"/><path d="M8.5 10.5v3M7 12h3"/><circle cx="15.5" cy="11" r=".9" class="f"/><circle cx="17" cy="13" r=".9" class="f"/>',
+    storyvoice: '<path d="M5 9.5h3l4-3.5v12l-4-3.5H5z"/><path d="M15 9.5c1 1.4 1 3.6 0 5M17.5 7.5c2 2.6 2 6.4 0 9"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6L18 18M6 18l1.4-1.4M16.6 7.4L18 6"/><circle cx="12" cy="12" r="6.2"/>'
+};
+const _glyphCache = new Map();
+function mixHex(hex, factor) {
+    const h = normHex(hex, '#8fb8c8').slice(1);
+    const n = parseInt(h, 16);
+    const f = (c) => Math.round(clamp(c * factor, 0, 255)).toString(16).padStart(2, '0');
+    return `#${f((n >> 16) & 255)}${f((n >> 8) & 255)}${f(n & 255)}`;
+}
+/** 主题色 → 图标线条色：主题的 iconColor 往往很浅，按「强度」压暗一点保证看得清 */
+function themeGlyphColor(iconColor, intensity = 60) {
+    return mixHex(iconColor, 1 - 0.45 * clamp(Number(intensity) || 60, 0, 100) / 100);
+}
+function glyphDataUrl(appId, color, fallbackText = '') {
+    const key = `${appId}|${color}|${fallbackText}`;
+    if (_glyphCache.has(key)) return _glyphCache.get(key);
+    const c = normHex(color, '#7fa6b6');
+    const body = GLYPHS[appId]
+        || `<text x="12" y="16.2" text-anchor="middle" font-size="11" font-family="-apple-system,sans-serif" font-weight="600" fill="${c}" stroke="none">${esc(String(fallbackText || appId || '?').slice(0, 1))}</text>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><style>.f{fill:${c};stroke:none}</style><g transform="translate(9 9) scale(1.25)" fill="none" stroke="${c}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${body}</g></svg>`;
+    const url = 'data:image/svg+xml,' + encodeURIComponent(svg);
+    _glyphCache.set(key, url);
+    return url;
+}
+
+/* ------------------------------ 应用名匹配（主题里的应用 ↔ 柚月小手机的应用） ------------------------------ */
+const APP_SYNONYMS = {
+    wechat: ['wechat', '微信', '微訊', '消息', '訊息', '信息', '聊天', 'chat', 'chatlist', 'msg', 'msgs', 'message', 'messages', 'ig', 'instagram', 'line', 'qq', 'im', 'imessage', 'iconmsgs'],
+    weibo: ['weibo', '微博', 'community', '社区', '社區', 'forum', '论坛', '論壇', '广场', '廣場', 'sns', 'moments', '朋友圈', '动态', '動態', 'thismoment', '此时此刻', '此時此刻'],
+    x: ['x', 'twitter', '推特', 'tweet', 'threads'],
+    honey: ['honey', '蜜语', '蜜語', 'couples', 'couple', '情侣', '情侶', '情侣空间', '恋爱', '戀愛', 'love', 'heart', 'dating', '约会', '約會'],
+    mofo: ['mofo', '魔坊', 'plugins', 'plugin', '插件', 'magic', '魔法', 'magicwand', 'iconmagicwandsparkle', '工坊', 'studio', 'promptpreset', '预设', '預設', 'textalchemist', '文字炼金'],
+    wangxiang: ['wangxiang', '万象', '萬象', 'shop', '商店', '购物', '購物', 'delivery', '外卖', '外賣', 'goingout', '出门', '出門', 'wallet', '钱包', '錢包', 'task', '任务', '任務', 'liferpg'],
+    phone: ['phone', '通话', '通話', '电话', '電話', 'call', 'calls', 'contacts', '联系人', '聯絡人', 'characterroster', '通讯录', '通訊錄', '角色'],
+    diary: ['diary', '日记', '日記', 'memorypalace', '记忆', '記憶', '记忆宫殿', 'journal', 'note', 'notes', '笔记', '筆記', '备忘录', '備忘錄', 'booknook', 'book', '书', '書', 'worldbook', '世界书', '世界書'],
+    music: ['music', '音乐', '音樂', 'radio', '电台', '電台', 'player', '播放器', 'song', '歌', 'spotify'],
+    album: ['album', '相册', '相簿', '相冊', 'photo', 'photos', 'gallery', '图片', '圖片', 'assetlibrary', '素材', '素材库', '照片', 'camera', '相机', '相機'],
+    calendar: ['calendar', '日历', '日曆', 'schedule', '日程', 'pomodoro', '番茄钟', '番茄鐘', 'clock', '时钟', '時鐘'],
+    games: ['games', 'game', '游戏', '遊戲', 'gamelobby', '游戏大厅', '遊戲大廳', 'play', 'isekai', '异世界', '異世界', 'desktoppet', '桌宠', '桌寵'],
+    storyvoice: ['storyvoice', '朗读', '朗讀', 'tts', 'voice', '语音', '語音', 'read', 'reader', 'speaker'],
+    settings: ['settings', 'setting', '设置', '設置', '设定', '設定', 'apisettings', 'api', 'wallpaper', '外观', '外觀', 'appearance', 'config', '偏好', 'icongearkeyhole', 'gear']
+};
+function normName(x) {
+    return String(x || '').toLowerCase().replace(/^component:/, '').replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[\s_\-()（）.·・]/g, '');
+}
+/** 给一个名字（文件名/主题应用 id/名称），返回最像的柚月应用 id */
+function matchAppId(names, apps, displayName) {
+    const cands = (Array.isArray(names) ? names : [names]).map(normName).filter(Boolean);
+    if (!cands.length) return '';
+    // 1. 完全等于 id / 名称 / 自定义名称
+    for (const a of apps) {
+        const own = [a.id, a.name, displayName?.(a)].map(normName).filter(Boolean);
+        if (cands.some(c => own.includes(c))) return a.id;
+    }
+    // 2. 近义词完全匹配
+    for (const a of apps) {
+        const syn = (APP_SYNONYMS[a.id] || []).map(normName);
+        if (cands.some(c => syn.includes(c))) return a.id;
+    }
+    // 3. 包含关系（长度≥2，避免 x/ig 误伤）
+    for (const a of apps) {
+        const words = [a.id, a.name, displayName?.(a), ...(APP_SYNONYMS[a.id] || [])].map(normName).filter(w => w.length >= 2);
+        if (cands.some(c => words.some(w => c.includes(w) || (c.length >= 2 && w.includes(c))))) return a.id;
+    }
+    return '';
+}
+const isImageUrl = (u) => typeof u === 'string' && /^(data:image\/|https?:\/\/|blob:)/i.test(u.trim());
+
 /* ------------------------------ 全局数据仓库（所有实例共享） ------------------------------ */
 const Store = {
     loaded: false,
@@ -636,6 +720,7 @@ export class FreeDesktop {
         r.style.setProperty('--yzd-radius', `${clamp(Number(st.iconRadius) || 0, 0, 50)}%`);
         r.style.setProperty('--yzd-label', st.labelColor || '#2b2b33');
         r.style.setProperty('--yzd-plate', hexToRgba(normHex(st.plateColor), clamp(Number(st.plateAlpha) || 0, 0, 1)));
+        r.style.setProperty('--yzd-plate-blur', Number(st.plateAlpha) > 0 ? '10px' : '0px');
         r.style.setProperty('--yzd-dock-bg', hexToRgba(normHex(st.dockColor), clamp(Number(st.dockAlpha ?? 0.32), 0, 1)));
         r.style.setProperty('--yzd-dock-blur', `${clamp(Number(st.dockBlur ?? 18), 0, 40)}px`);
         r.classList.toggle('yzd-no-labels', st.showLabels === false);
@@ -696,8 +781,23 @@ export class FreeDesktop {
         this.syncLayout();
     }
 
+    /**
+     * 图标优先级：
+     *  1. 本主题里给这个应用单独指定的图标（上传 / 主题图片 / 图标池）
+     *  2. 主题风格图标（导入了美化的主题：按主题颜色画的线条图标，不再用 phone 文件夹里的原版图标）
+     *  3. 原版图标（没导入美化的桌面）
+     *  特殊值：'@original' 强制原版，'@glyph' 强制主题线条图标，'@wallpaper' 用当前壁纸
+     */
     _iconUrl(app) {
-        return String(this.S.icons?.[app.id] || '').trim() || this.home?._getAppIconImage?.(app) || '';
+        const own = String(this.S.icons?.[app.id] || '').trim();
+        const original = () => this.home?._getAppIconImage?.(app) || '';
+        const ti = this.S.themeIcons;
+        if (own === '@original') return original();
+        if (own === '@glyph') return glyphDataUrl(app.id, ti?.color || '#7fa6b6', app.name);
+        if (own === '@wallpaper') return String(this.S.wallpaper || '') || original();
+        if (own) return own;
+        if (ti?.enabled) return glyphDataUrl(app.id, ti.color, app.name);
+        return original();
     }
     _appName(app) {
         return this.home?._getAppDisplayName?.(app) || app.name || app.id;
@@ -1373,7 +1473,7 @@ Object.assign(FreeDesktop.prototype, {
         if (k === 'edit') { this.editContent(item); return; }
         if (k === 'style') { this.openGallery({ mode: 'replace', target: item }); return; }
         if (k === 'resize') { this.openResize(item); return; }
-        if (k === 'icon') { await this.pickIconFor(item.appId); return; }
+        if (k === 'icon') { this.openIconChooser(item.appId); return; }
         if (k === 'reseticon') { delete this.S.icons[item.appId]; this.save(); this.refreshAppVisuals(); return; }
         if (k === 'rename') {
             const app = this.getApp(item.appId);
@@ -1999,9 +2099,20 @@ Object.assign(FreeDesktop.prototype, {
             <div class="yzd-imgrow"><div class="yzd-thumb tall" style="background-image:${esc(cssUrl(wall))}"></div>
                 <span class="yzd-btn sm" data-t="wallup">上传</span><span class="yzd-btn sm" data-t="wallurl">链接</span><span class="yzd-btn sm" data-t="wallreset">用手机设置的壁纸</span></div>
 
-            <div class="yzd-sec">应用图标 <small>点图标单独换 · 主题内生效</small></div>
-            <div class="yzd-iconlist">${this.apps.map(a => `<div class="yzd-happ" data-icon="${esc(a.id)}">${this._appIconHtml(a)}<small>${esc(this._appName(a))}</small>${s.icons[a.id] ? '<i class="yzd-dot-mark"></i>' : ''}</div>`).join('')}</div>
-            <div class="yzd-btnrow"><span class="yzd-btn" data-t="iconbulk">批量导入图标</span><span class="yzd-btn" data-t="iconreset">全部恢复默认图标</span></div>
+            <div class="yzd-sec">应用图标 <small>${s.themeIcons?.enabled ? '跟随主题' : '原版图标'} · 点图标单独换</small></div>
+            <div class="yzd-iconlist">${this.apps.map(a => `<div class="yzd-happ" data-icon="${esc(a.id)}">${this._appIconHtml(a)}<small>${esc(this._appName(a))}</small>${s.icons[a.id] && s.icons[a.id] !== '@glyph' ? '<i class="yzd-dot-mark"></i>' : ''}</div>`).join('')}</div>
+            <div class="yzd-btnrow">
+                <span class="yzd-btn primary" data-t="iconextract">从美化 JSON 提取图标</span>
+                <span class="yzd-btn" data-t="iconglyph">全部用主题线条图标</span>
+                ${(s.iconPool || []).length ? '<span class="yzd-btn" data-t="iconrandom">随机用主题图片</span>' : ''}
+                <span class="yzd-btn" data-t="iconbulk">批量导入图标</span>
+                <span class="yzd-btn" data-t="iconreset">全部用原版图标</span>
+            </div>
+            <div class="yzd-field yzd-glyph-color"><label class="yzd-flabel">主题线条图标颜色</label>
+                <div class="yzd-color"><input type="color" value="${normHex(s.themeIcons?.color, '#7fa6b6')}"><input class="yzd-input" type="text" value="${esc(s.themeIcons?.color || '#7fa6b6')}"></div></div>
+
+            <div class="yzd-sec">主题图片池 <small>${(s.iconPool || []).length ? '点图片：分配给应用 / 下载' : '导入美化或「提取图标」后这里会列出主题里的所有图片'}</small></div>
+            <div class="yzd-pool">${(s.iconPool || []).map((p, i) => `<div class="yzd-pool-item" data-pool="${i}"><i class="yzd-pool-ic" style="background-image:${esc(cssUrl(this._resolvePoolUrl(p.url)))}"></i><small>${esc(p.label)}</small><span class="yzd-pool-dl" data-pooldl="${i}">⤓</span></div>`).join('')}</div>
 
             <div class="yzd-sec">外观</div>
             <div class="yzd-look"></div>
@@ -2031,8 +2142,26 @@ Object.assign(FreeDesktop.prototype, {
             this.save();
         });
 
+        const gc = body.querySelector('.yzd-glyph-color');
+        if (gc) {
+            const [pick, txt] = gc.querySelectorAll('input');
+            const applyGlyph = (v) => {
+                if (!/^#[0-9a-f]{3,6}$/i.test(v)) return;
+                s.themeIcons = { ...(s.themeIcons || { enabled: false }), color: normHex(v) };
+                this.save();
+                this.refreshAppVisuals();
+                body.querySelectorAll('.yzd-iconlist .yzd-happ').forEach(h => {
+                    const a = this.getApp(h.dataset.icon);
+                    const ic = h.querySelector('.yzd-icon');
+                    if (a && ic) ic.outerHTML = this._appIconHtml(a);
+                });
+            };
+            pick.addEventListener('change', () => { txt.value = pick.value; applyGlyph(pick.value); });
+            txt.addEventListener('change', () => { pick.value = normHex(txt.value); applyGlyph(txt.value.trim()); });
+        }
+
         body.onclick = async (e) => {
-            const el = e.target.closest('[data-t],[data-apply],[data-exp],[data-del],[data-icon]');
+            const el = e.target.closest('[data-t],[data-apply],[data-exp],[data-del],[data-icon],[data-pooldl],[data-pool]');
             if (!el) return;
             if (el.dataset.apply !== undefined) { sheet.close(); await this.applyTheme(Store.themes[Number(el.dataset.apply)]); return; }
             if (el.dataset.exp !== undefined) { this.exportTheme(Store.themes[Number(el.dataset.exp)]); return; }
@@ -2045,7 +2174,14 @@ Object.assign(FreeDesktop.prototype, {
                 }
                 return;
             }
-            if (el.dataset.icon) { await this.pickIconFor(el.dataset.icon); this._renderThemeBody(body, sheet); return; }
+            if (el.dataset.icon) { this.openIconChooser(el.dataset.icon, () => this._renderThemeBody(body, sheet)); return; }
+            if (el.dataset.pooldl !== undefined) {
+                e.stopPropagation();
+                const p = (s.iconPool || [])[Number(el.dataset.pooldl)];
+                if (p) this.downloadImage(this._resolvePoolUrl(p.url), p.label);
+                return;
+            }
+            if (el.dataset.pool !== undefined) { await this.assignPoolImage(Number(el.dataset.pool), () => this._renderThemeBody(body, sheet)); return; }
             const t = el.dataset.t;
             if (t === 'savenew') {
                 const name = await this.prompt('主题名称', curName && !Store.themes.some(x => x.name === curName) ? curName : `我的主题 ${Store.themes.length + 1}`);
@@ -2070,8 +2206,22 @@ Object.assign(FreeDesktop.prototype, {
             } else if (t === 'wallreset') {
                 s.wallpaper = ''; this.updateWallpaper(); this.save(); this._renderThemeBody(body, sheet);
             } else if (t === 'iconbulk') { await this.bulkImportIcons(); this._renderThemeBody(body, sheet); }
-            else if (t === 'iconreset') {
-                if (await this.confirm('当前主题的应用图标全部恢复默认？')) { s.icons = {}; this.save(); this.refreshAppVisuals(); this._renderThemeBody(body, sheet); }
+            else if (t === 'iconextract') { await this.extractIconsFromFile(); this._renderThemeBody(body, sheet); }
+            else if (t === 'iconglyph') {
+                s.themeIcons = { ...(s.themeIcons || { color: '#7fa6b6' }), enabled: true };
+                s.icons = {};
+                if (!(Number(s.style.plateAlpha) > 0)) { s.style.plateAlpha = 0.45; this.applyStyleVars(); }
+                this.save(); this.refreshAppVisuals(); this._renderThemeBody(body, sheet);
+            } else if (t === 'iconrandom') {
+                s.icons = {};
+                this._randomAssign(s, this.apps.map(a => a.id));
+                this.save(); this.refreshAppVisuals(); this._renderThemeBody(body, sheet);
+            } else if (t === 'iconreset') {
+                if (await this.confirm('当前主题的应用图标全部换回 phone 文件夹里的原版图标？')) {
+                    s.icons = {};
+                    if (s.themeIcons) s.themeIcons.enabled = false;
+                    this.save(); this.refreshAppVisuals(); this._renderThemeBody(body, sheet);
+                }
             } else if (t === 'resetlayout') {
                 if (await this.confirm('恢复默认布局？当前桌面的组件和摆放会被清空（已保存的主题不受影响）。', '恢复')) {
                     const keep = { icons: s.icons, wallpaper: s.wallpaper, style: s.style };
@@ -2135,12 +2285,7 @@ Object.assign(FreeDesktop.prototype, {
     async bulkImportIcons() {
         const files = await pickFiles({ accept: 'image/*', multiple: true });
         if (!files.length) return;
-        const norm = (x) => String(x || '').toLowerCase().replace(/\.[a-z0-9]+$/, '').replace(/[\s_\-()（）]/g, '');
-        const guess = (file) => {
-            const n = norm(file.name);
-            const hit = this.apps.find(a => [a.id, a.name, this._appName(a)].some(v => norm(v) && (n === norm(v) || n.includes(norm(v)))));
-            return hit?.id || '';
-        };
+        const guess = (file) => matchAppId([file.name], this.apps, a => this._appName(a));
         const list = await Promise.all(files.map(async f => ({ url: await readImageFile(f, 256), app: guess(f), name: f.name })));
         await new Promise((resolve) => {
             const sheet = this.openSheet('分配图标', (body) => {
@@ -2179,6 +2324,7 @@ Object.assign(FreeDesktop.prototype, {
                 await this._importThemeState(json.state, json.name || baseName);
             } else if (json?.homeScreenLayout) {
                 const state = this.convertNuoTheme(json, baseName);
+                await this._askUnmatchedIcons(state);
                 await this._importThemeState(state, baseName);
             } else {
                 const tpls = this.parseWidgetTemplates(json);
@@ -2283,15 +2429,250 @@ Object.assign(FreeDesktop.prototype, {
                 if (!placed) this._autoPlace(it, 0);
                 s.items.push(it);
             });
-            Object.entries(json.appCustomizations || {}).forEach(([k, v]) => {
-                if (!this.getApp(k)) return;
-                const url = typeof v === 'string' ? v : (v?.icon || v?.customIcon || v?.iconUrl || v?.image || '');
-                if (typeof url === 'string' && /^(data:image|https?:)/i.test(url)) s.icons[k] = url;
-            });
+            this._collectThemeIcons(json, s);
         } finally {
             Store.state = prev;
         }
         return s;
+    },
+});
+
+/* ======================================================================
+ *  主题图标：提取 / 匹配 / 随机 / 图片池 / 逐个分配
+ * ==================================================================== */
+Object.assign(FreeDesktop.prototype, {
+    /** 从美化 json 里收集：图标颜色、带名字的图标图片（按名字/近义词匹配）、所有图片做成「主题图片池」 */
+    _collectThemeIcons(json, s, { inlineWallpaper = false } = {}) {
+        const L = json.homeScreenLayout || {};
+        s.icons = s.icons || {};
+        s.themeIcons = {
+            enabled: true,
+            color: themeGlyphColor(json.iconColor || '#9cc9d9', json.iconColorIntensity ?? 60),
+            base: json.iconColor || '',
+            intensity: json.iconColorIntensity ?? 60
+        };
+        const pool = [];
+        const seen = new Set();
+        const add = (url, label, kind) => {
+            if (!isImageUrl(url)) return;
+            const u = url.trim();
+            if (seen.has(u)) return;
+            seen.add(u);
+            pool.push({ url: u, label: String(label || '图片'), kind });
+        };
+        const named = [];
+        const pushNamed = (names, url) => {
+            if (!isImageUrl(url)) return;
+            named.push({ names: names.filter(Boolean), url: url.trim() });
+            add(url, names.find(Boolean) || '图标', 'icon');
+        };
+        Object.entries(json.appCustomizations || {}).forEach(([k, v]) => {
+            const url = typeof v === 'string' ? v : (v?.icon || v?.customIcon || v?.iconUrl || v?.iconImage || v?.image || '');
+            pushNamed([k, v?.name, v?.label, v?.langKey], url);
+        });
+        ['appIcons', 'icons', 'customIcons', 'iconPack'].forEach(key => {
+            const obj = json[key];
+            if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+                Object.entries(obj).forEach(([k, v]) => pushNamed([k, v?.name], typeof v === 'string' ? v : (v?.icon || v?.url || '')));
+            }
+        });
+        const walkApps = (list) => (list || []).forEach(a => {
+            if (!a || typeof a !== 'object') return;
+            pushNamed([a.id, a.name, a.langKey, a.screenId], a.iconImage || a.iconUrl || a.customIcon || a.icon);
+            if (Array.isArray(a.apps)) walkApps(a.apps);
+        });
+        walkApps(L.desktopApps);
+        walkApps(L.dockApps);
+        (L.desktopWidgets || []).forEach(w => {
+            Object.entries(w.data?.images || {}).forEach(([k, v]) => add(v, `${w.data?.name || '组件'} · ${k}`, 'widget'));
+        });
+        if (isImageUrl(json.homeWallpaper)) {
+            if (inlineWallpaper) add(json.homeWallpaper, '主屏壁纸', 'wallpaper');
+            else { pool.push({ url: '@wallpaper', label: '主屏壁纸', kind: 'wallpaper' }); }
+        }
+        if (isImageUrl(json.lockScreenWallpaper) && String(json.lockScreenWallpaper).length < 600000) add(json.lockScreenWallpaper, '锁屏壁纸', 'wallpaper');
+        s.iconPool = pool;
+
+        named.forEach(n => {
+            const id = matchAppId(n.names, this.apps, a => this._appName(a));
+            if (id && !s.icons[id]) s.icons[id] = n.url;
+        });
+        s._namedCount = named.length;
+        s._unmatched = this.apps.map(a => a.id).filter(id => !s.icons[id]);
+        return s;
+    },
+
+    _resolvePoolUrl(u, state = this.S) {
+        return u === '@wallpaper' ? String(state?.wallpaper || '') : String(u || '');
+    },
+
+    async _askUnmatchedIcons(s) {
+        const unmatched = s._unmatched || [];
+        const namedCount = s._namedCount || 0;
+        delete s._unmatched;
+        delete s._namedCount;
+        if (!unmatched.length) return;
+        const photos = (s.iconPool || []).filter(p => p.kind !== 'icon');
+        const color = s.themeIcons?.color || '#7fa6b6';
+        const glyphRow = unmatched.slice(0, 5).map(id => `<i style="background-image:${esc(cssUrl(glyphDataUrl(id, color, this.getApp(id)?.name)))}"></i>`).join('');
+        const matched = this.apps.length - unmatched.length;
+        const why = namedCount === 0
+            ? '这个美化文件本身<b>不带应用图标图片</b>（糯叽机的图标是内置矢量图形 + 主题色）。'
+            : `主题里的 ${namedCount} 个图标已按名字/近义词匹配上 ${matched} 个应用。`;
+        const choice = await this._dialog(`<div class="yzd-dlg-title">应用图标跟随主题</div>
+            <div class="yzd-tip">${why}还有 ${unmatched.length} 个应用没有对应图标，它们用：</div>
+            <div class="yzd-choice" data-v="glyph" style="--yzd-plate:${esc(hexToRgba(normHex(s.style?.plateColor), Math.max(0.35, Number(s.style?.plateAlpha) || 0)))}">
+                <div class="yzd-choice-prev">${glyphRow}</div><b>主题风格线条图标（推荐）</b><small>按主题颜色绘制，和原主题同一个风格</small></div>
+            <div class="yzd-choice ${photos.length ? '' : 'disabled'}" data-v="random">
+                <div class="yzd-choice-prev">${photos.slice(0, 5).map(p => `<i style="background-image:${esc(cssUrl(this._resolvePoolUrl(p.url, s)))}"></i>`).join('')}</div>
+                <b>随机用主题里的图片</b><small>${photos.length ? `从组件图片/壁纸里随机挑（共 ${photos.length} 张）` : '这个主题里没有可用的图片'}</small></div>
+            <div class="yzd-choice" data-v="original"><b>保留原版图标</b><small>phone 文件夹里的图标</small></div>
+            <div class="yzd-tip">之后随时可以在「美化/主题 → 应用图标」里逐个换，主题图片也能在「主题图片池」里下载。</div>`, (dlg, close) => {
+            dlg.addEventListener('click', (e) => {
+                const c = e.target.closest('.yzd-choice');
+                if (c && !c.classList.contains('disabled')) close(c.dataset.v);
+            });
+        });
+        if (choice === 'random') this._randomAssign(s, unmatched);
+        else if (choice === 'original') unmatched.forEach(id => { s.icons[id] = '@original'; });
+    },
+
+    _randomAssign(s, appIds) {
+        const used = new Set(Object.values(s.icons || {}));
+        let photos = (s.iconPool || []).map(p => p.url).filter(u => !used.has(u));
+        if (!photos.length) photos = (s.iconPool || []).map(p => p.url);
+        if (!photos.length) return 0;
+        const bag = [];
+        appIds.forEach(id => {
+            if (!bag.length) bag.push(...photos.slice().sort(() => Math.random() - 0.5));
+            s.icons[id] = bag.pop();
+        });
+        return appIds.length;
+    },
+
+    /** 单独给某个应用选图标：上传 / 链接 / 主题线条图标 / 原版 / 主题图片池 */
+    openIconChooser(appId, after) {
+        const app = this.getApp(appId);
+        if (!app) return;
+        const s = this.S;
+        const color = s.themeIcons?.color || '#7fa6b6';
+        const pool = s.iconPool || [];
+        const sheet = this.openSheet(`「${this._appName(app)}」的图标`, (body) => {
+            body.innerHTML = `
+                <div class="yzd-icon-cur">${this._appIconHtml(app)}<small>当前</small></div>
+                <div class="yzd-sec">选一个</div>
+                <div class="yzd-pool">
+                    <div class="yzd-pool-item" data-pick="@upload"><i class="yzd-pool-ic up">＋</i><small>上传图片</small></div>
+                    <div class="yzd-pool-item" data-pick="@url"><i class="yzd-pool-ic up">🔗</i><small>图片链接</small></div>
+                    <div class="yzd-pool-item" data-pick="@glyph"><i class="yzd-pool-ic plate" style="background-image:${esc(cssUrl(glyphDataUrl(appId, color, app.name)))}"></i><small>主题线条图标</small></div>
+                    <div class="yzd-pool-item" data-pick="@original"><i class="yzd-pool-ic" style="background-image:${esc(cssUrl(this.home?._getAppIconImage?.(app) || ''))}"></i><small>原版图标</small></div>
+                </div>
+                <div class="yzd-sec">主题图片池 <small>${pool.length ? '点图片直接用作图标' : '这个主题没有图片'}</small></div>
+                <div class="yzd-pool">${pool.map((p, i) => `<div class="yzd-pool-item" data-pick-pool="${i}"><i class="yzd-pool-ic" style="background-image:${esc(cssUrl(this._resolvePoolUrl(p.url)))}"></i><small>${esc(p.label)}</small></div>`).join('')}</div>`;
+            body.addEventListener('click', async (e) => {
+                const t = e.target.closest('[data-pick],[data-pick-pool]');
+                if (!t) return;
+                let val = null;
+                if (t.dataset.pickPool !== undefined) val = pool[Number(t.dataset.pickPool)]?.url || null;
+                else if (t.dataset.pick === '@upload') {
+                    const [file] = await pickFiles({ accept: 'image/*' });
+                    if (file) val = await readImageFile(file, 256);
+                } else if (t.dataset.pick === '@url') {
+                    const u = await this.prompt('图标图片链接', '');
+                    if (u && u.trim()) val = u.trim();
+                } else val = t.dataset.pick;
+                if (!val) return;
+                s.icons[appId] = val;
+                this.save();
+                this.refreshAppVisuals();
+                sheet.close();
+                after?.();
+            });
+        }, { tall: true });
+    },
+
+    /** 主题图片池里的某张图 → 分配给哪个应用 */
+    async assignPoolImage(idx, after) {
+        const p = (this.S.iconPool || [])[idx];
+        if (!p) return;
+        const url = this._resolvePoolUrl(p.url);
+        const appId = await this._dialog(`<div class="yzd-dlg-title">这张图要做哪个应用的图标？</div>
+            <div class="yzd-pool-big" style="background-image:${esc(cssUrl(url))}"></div>
+            <div class="yzd-pool">${this.apps.map(a => `<div class="yzd-pool-item" data-app-pick="${esc(a.id)}">${this._appIconHtml(a)}<small>${esc(this._appName(a))}</small></div>`).join('')}</div>
+            <div class="yzd-dlg-btns"><span class="yzd-btn" data-dl="1">⤓ 下载这张图</span><span class="yzd-btn" data-v="0">取消</span></div>`, (dlg, close) => {
+            dlg.addEventListener('click', (e) => {
+                if (e.target.closest('[data-dl]')) { this.downloadImage(url, p.label); return; }
+                const a = e.target.closest('[data-app-pick]');
+                if (a) close(a.dataset.appPick);
+                else if (e.target.closest('[data-v]')) close(null);
+            });
+        });
+        if (!appId) return;
+        this.S.icons[appId] = p.url;
+        this.save();
+        this.refreshAppVisuals();
+        after?.();
+    },
+
+    async downloadImage(url, label = 'image') {
+        const name = String(label || 'image').replace(/[\\/:*?"<>|·\s]+/g, '_').slice(0, 40) || 'image';
+        try {
+            let href = url;
+            let revoke = false;
+            let ext = 'png';
+            const m = String(url).match(/^data:image\/([a-z0-9.+-]+)/i);
+            if (m) ext = m[1].replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+            else {
+                const res = await fetch(url, { mode: 'cors' });
+                if (!res.ok) throw new Error(String(res.status));
+                const blob = await res.blob();
+                ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+                href = URL.createObjectURL(blob);
+                revoke = true;
+            }
+            const a = document.createElement('a');
+            a.href = href;
+            a.download = `${name}.${ext}`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { a.remove(); if (revoke) URL.revokeObjectURL(href); }, 1500);
+            this.toast('已下载（看浏览器下载）');
+        } catch (e) {
+            // 图床不允许跨域下载时，新窗口打开让用户长按保存
+            window.open(url, '_blank');
+            this.toast('已在新窗口打开图片，长按/右键保存');
+        }
+    },
+
+    /** 不改布局，只从美化文件里拿图标（给之前已经导入过、图标没跟上的主题用） */
+    async extractIconsFromFile() {
+        const [file] = await pickFiles({ accept: '.json,application/json,text/plain' });
+        if (!file) return;
+        let json;
+        try { json = JSON.parse(await readFileText(file)); } catch (e) { this.toast('不是有效的 JSON'); return; }
+        const s = this.S;
+        if (json?.type === 'yuzuki_phone_desktop_theme' && json.state) {
+            const st = json.state;
+            s.themeIcons = st.themeIcons || s.themeIcons;
+            s.iconPool = (st.iconPool || []).map(p => p.url === '@wallpaper' ? { ...p, url: st.wallpaper } : p).filter(p => isImageUrl(p.url));
+            s.icons = { ...(st.icons || {}) };
+        } else if (json?.homeScreenLayout) {
+            const tmp = { icons: {}, style: s.style, wallpaper: s.wallpaper };
+            this._collectThemeIcons(json, tmp, { inlineWallpaper: true });
+            await this._askUnmatchedIcons(tmp);
+            s.themeIcons = tmp.themeIcons;
+            s.iconPool = tmp.iconPool;
+            s.icons = tmp.icons;
+            if (!(Number(s.style.plateAlpha) > 0)) {
+                const hs = json.homeIconStyle || {};
+                s.style.plateAlpha = hs.surfaceAlpha !== undefined ? clamp(Number(hs.surfaceAlpha), 0, 1) : 0.45;
+                s.style.plateColor = hs.surfaceColor || s.style.plateColor;
+                this.applyStyleVars();
+            }
+        } else { this.toast('这个文件里没有主题信息'); return; }
+        this.save();
+        this.refreshAppVisuals();
+        this.toast('图标已更新');
     },
 });
 
@@ -2311,6 +2692,26 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-item{position:relative;min-width:0;min-height:0}
 .yzd-root .yzd-app-body{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
 .yzd-root .yzd-icon{width:var(--yzd-icon);height:var(--yzd-icon);border-radius:var(--yzd-radius,24%);background-color:var(--yzd-plate,transparent);background-size:cover;background-position:center;background-repeat:no-repeat;flex:0 0 auto;box-shadow:0 2px 8px rgba(0,0,0,.08);transition:transform .15s}
+.yzd-root .yzd-item .yzd-icon,.yzd-root .yzd-dock-app .yzd-icon{backdrop-filter:blur(var(--yzd-plate-blur,0px));-webkit-backdrop-filter:blur(var(--yzd-plate-blur,0px))}
+.yzd-root .yzd-pool{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.yzd-root .yzd-pool-item{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;min-width:0;--yzd-icon:54px}
+.yzd-root .yzd-pool-item small{font-size:10.5px;color:#555;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.yzd-root .yzd-pool-ic{display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:14px;background:#e3e3ea center/cover no-repeat;font-style:normal;font-size:20px;color:#666;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.yzd-root .yzd-pool-ic.plate{background-color:rgba(255,255,255,.9)}
+.yzd-root .yzd-pool-ic.up{background:#fff;border:1.5px dashed #c5c5cc;box-shadow:none}
+.yzd-root .yzd-pool-dl{position:absolute;top:-4px;right:4px;width:22px;height:22px;border-radius:50%;background:#fff;color:#1677ff;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.yzd-root .yzd-pool-big{width:120px;height:120px;margin:0 auto 12px;border-radius:22px;background:#eee center/cover no-repeat}
+.yzd-root .yzd-icon-cur{display:flex;flex-direction:column;align-items:center;gap:4px;--yzd-icon:68px;padding:6px 0;--yzd-plate:rgba(255,255,255,.85)}
+.yzd-root .yzd-icon-cur small{font-size:11px;color:#888}
+.yzd-root .yzd-happ .yzd-icon,.yzd-root .yzd-pool-item .yzd-icon{--yzd-plate:rgba(255,255,255,.85);background-color:var(--yzd-plate)}
+.yzd-root .yzd-choice{display:block;background:#fff;border-radius:14px;padding:10px 12px;margin:8px 0;cursor:pointer;border:1.5px solid transparent}
+.yzd-root .yzd-choice:active{border-color:#1677ff}
+.yzd-root .yzd-choice.disabled{opacity:.45;pointer-events:none}
+.yzd-root .yzd-choice b{display:block;font-size:14px}
+.yzd-root .yzd-choice small{display:block;font-size:11.5px;color:#888;margin-top:2px}
+.yzd-root .yzd-choice-prev{display:flex;gap:6px;margin-bottom:6px}
+.yzd-root .yzd-choice-prev:empty{display:none}
+.yzd-root .yzd-choice-prev i{width:34px;height:34px;border-radius:9px;background:var(--yzd-plate,#f0f0f5) center/cover no-repeat;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .yzd-root .yzd-icon-emoji{display:flex;align-items:center;justify-content:center;font-size:calc(var(--yzd-icon)*.46);color:#fff}
 .yzd-root .yzd-label{max-width:100%;font-size:11.5px;line-height:14px;height:14px;color:var(--yzd-label,#2b2b33)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;padding:0 2px;text-shadow:0 1px 3px rgba(0,0,0,.16)}
 .yzd-root.yzd-no-labels{--yzd-ioff:calc(var(--yzd-icon)/2)}
