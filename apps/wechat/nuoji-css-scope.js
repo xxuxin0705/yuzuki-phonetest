@@ -32,6 +32,13 @@ export function stripCssComments(css) {
         if (c === '"' || c === "'") { q = c; out += c; continue; }
         if (c === '/' && s[i + 1] === '*') {
             const end = s.indexOf('*/', i + 2);
+            // 常见笔误修复：行尾写成「/* 注释 /」少了星号，浏览器会把后面整段吃掉。
+            // 糯叽机能正常显示这类美化，这里也按「这一行就是注释结尾」处理
+            const nl = s.indexOf('\n', i + 2);
+            if (nl > 0 && (end < 0 || end > nl)) {
+                const firstLine = s.slice(i + 2, nl).replace(/\s+$/, '');
+                if (firstLine.endsWith('/') && !firstLine.endsWith('*/')) { out += '\n'; i = nl; continue; }
+            }
             i = end < 0 ? s.length : end + 1;
             continue;
         }

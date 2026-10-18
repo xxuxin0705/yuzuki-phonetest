@@ -35,6 +35,8 @@ const VAR_FLAGS = {
 
 const PHONE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
 const BACK_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+const SEARCH_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+const EDIT_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 const MORE_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>';
 const VIDEO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>';
 
@@ -265,8 +267,9 @@ export class NuojiCompat {
                 if (!(chatOn && room)) togCls(appEl, 'chat-detail-screen', false);
                 if (!(listOn && isMain)) LIST_TAB_CLASSES.forEach(c => togCls(appEl, c, false));
                 if ((chatOn && room) || (listOn && isMain)) this._tagGlobalAttrs(appEl);
-                if (chatOn && room) this._tagChat(appEl, room);
-                if (listOn && isMain) this._tagList(appEl);
+                if (chatOn && room) { appEl.dataset.njDirty = '1'; this._tagChat(appEl, room); }
+                if (listOn && isMain) { appEl.dataset.njDirty = '1'; this._tagList(appEl); }
+                if (appEl.dataset.njDirty === '1' && !(chatOn && room) && !(listOn && isMain)) this._cleanup(appEl);
                 if (room) this._tagFrames(appEl, room, frames);
                 if (isMain) this._bindTabLongPress(appEl);
             });
@@ -276,6 +279,17 @@ export class NuojiCompat {
                 this._observer?.observe(this._observeRoot, { childList: true, subtree: true });
             }
         }
+    }
+
+    // 关掉美化后把补进去的东西撤掉，回到柚月原样
+    _cleanup(appEl) {
+        delete appEl.dataset.njDirty;
+        appEl.querySelectorAll('.nj-svg-icon, .nj-decor, .nj-item-deco-1, .nj-item-deco-2, .nuo-chat-header-deco, .nuo-chat-header-unread-dot, .nuo-chat-header-unread-num, .header-btn-phone, .header-btn-video').forEach(el => el.remove());
+        appEl.querySelectorAll('.nj-hidden-icon').forEach(el => el.classList.remove('nj-hidden-icon'));
+        appEl.querySelectorAll('.nj-list-hidden').forEach(el => el.classList.remove('nj-list-hidden'));
+        appEl.querySelectorAll('.nj-label-fallback').forEach(el => el.classList.remove('nj-label-fallback'));
+        appEl.querySelectorAll('.nj-chat-tab-search-wrap').forEach(w => { while (w.firstChild) w.parentElement.insertBefore(w.firstChild, w); w.remove(); });
+        ['data-time-of-day', 'data-time-slot', 'data-hour', 'data-color-scheme', 'data-active-tab', 'data-prev-tab', 'data-tab-anim', 'data-view-mode', 'data-scrolled', 'data-unread-total', 'data-searching', 'data-post-count', 'data-empty', 'data-chat-kind'].forEach(a => appEl.removeAttribute(a));
     }
 
     _tagGlobalAttrs(appEl) {
@@ -692,6 +706,10 @@ export class NuojiCompat {
             const tt = header.querySelector('.wechat-header-title-text');
             addCls(tt, 'nj-chat-tab-header-title', 'nj-chat-tab-header-title-btn');
             addCls(header.querySelector('#wechat-add'), 'nj-chat-tab-header-edit');
+            // 糯叽机顶栏只有「左 · 标题 · 编辑」三块；搜索交给下面的搜索框
+            togCls(header.querySelector('#wechat-search'), 'nj-list-hidden', view === 'chat');
+            this._svgIcon(header.querySelector('.wechat-back-btn'), BACK_SVG);
+            this._svgIcon(header.querySelector('#wechat-add'), EDIT_SVG);
             addCls(header.querySelector('#moments-generate-btn'), 'nj-moments-header-btn-gen');
             addCls(header.querySelector('#moments-post-btn'), 'nj-moments-header-btn-post');
         }
@@ -735,14 +753,32 @@ export class NuojiCompat {
         const list = appEl.querySelector('.wcl-v2');
         if (!list) return;
         addCls(list, 'nj-chat-tab-root');
-        const search = list.querySelector(':scope > .wcl-search');
-        addCls(search, 'nj-chat-tab-search', 'nj-chat-tab-search-wrap');
+        let search = list.querySelector(':scope > .wcl-search') || list.querySelector(':scope > .nj-chat-tab-search-wrap > .wcl-search');
+        if (search) {
+            // 糯叽机结构：.nj-chat-tab-search-wrap > .nj-chat-tab-search.glass-search（svg 图标 + 输入框）
+            let wrap = search.parentElement;
+            if (!wrap.classList.contains('nj-chat-tab-search-wrap')) {
+                wrap = document.createElement('div');
+                wrap.className = 'nj-chat-tab-search-wrap';
+                search.parentElement.insertBefore(wrap, search);
+                wrap.appendChild(search);
+            }
+            addCls(search, 'nj-chat-tab-search', 'glass-search');
+            this._svgIcon(search, SEARCH_SVG);
+        }
         const notes = list.querySelector(':scope > .mind-row');
         if (notes) {
             addCls(notes, 'nj-chat-tab-notes');
             notes.querySelectorAll('.mind-cell').forEach(c => addCls(c, 'nj-chat-tab-note-item'));
             notes.querySelectorAll('.mind-bubble').forEach(c => addCls(c, 'nj-chat-tab-note-bubble'));
             notes.querySelectorAll('.mind-av').forEach(c => addCls(c, 'nj-chat-tab-note-avatar'));
+            notes.querySelectorAll('.mind-name').forEach(c => addCls(c, 'nj-chat-tab-note-name'));
+            notes.querySelectorAll('.mind-plus').forEach(c => addCls(c, 'nj-chat-tab-note-plus'));
+            // 美化自己在头像上画了「+」时，柚月自带的「+」就不重复显示
+            const av = notes.querySelector('.nj-chat-tab-note-avatar');
+            let drawn = '';
+            try { drawn = av ? String(getComputedStyle(av, '::after').content || '') : ''; } catch (e) { drawn = ''; }
+            notes.querySelectorAll('.mind-plus').forEach(c => togCls(c, 'nj-list-hidden', !!drawn && !['none', 'normal'].includes(drawn)));
         }
         const section = list.querySelector(':scope > .wcl-section');
         addCls(section, 'nj-chat-tab-section-title');
@@ -898,6 +934,16 @@ export class NuojiCompat {
             addCls(tab.querySelector(':scope > i, :scope > svg'), 'nj-tab-bottom-icon');
             addCls(tab.querySelector('.tab-badge'), 'nj-tab-bottom-total-unread');
             addCls(tab.querySelector('.wechat-moments-unread-dot'), 'nj-tab-bottom-moments-dot');
+            const label = tab.querySelector(':scope > span:not(.tab-badge):not(.wechat-moments-unread-dot)');
+            addCls(label, 'nj-tab-bottom-item-label');
+            // 美化隐藏了文字、又没给这个按钮写 ::after 文字时（例如「通讯录」糯叽机里没有），补回柚月原来的文字
+            setAttr(tab, 'data-nj-label', label?.textContent?.trim() || '');
+            let hidden = false;
+            let after = '';
+            try { hidden = !!label && getComputedStyle(label).display === 'none'; after = String(getComputedStyle(tab, '::after').content || ''); } catch (e) { /* 忽略 */ }
+            const hasOwn = after && !['none', 'normal'].includes(after) && !after.startsWith('attr(');
+            if (tab.classList.contains('nj-label-fallback')) togCls(tab, 'nj-label-fallback', hidden && (!hasOwn || after === `"${label?.textContent?.trim()}"`));
+            else togCls(tab, 'nj-label-fallback', hidden && !hasOwn);
         });
     }
 

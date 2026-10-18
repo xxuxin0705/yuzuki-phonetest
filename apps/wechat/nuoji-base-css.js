@@ -81,7 +81,7 @@ export function buildChatBaseCss(R) {
 
     return `
 /* ===== 根 / 背景 ===== */
-${R} { --nuo-safe-top: 32px; --nuo-safe-bottom: 0px;
+${R} { --nuo-safe-top: 32px; --nuo-safe-bottom: 0px; --nuo-statusbar-h: 32px; transform: translateZ(0);
   background: linear-gradient(var(--chat-bg-overlay, transparent), var(--chat-bg-overlay, transparent)), var(--chat-bg-image, none) center / cover no-repeat, var(--chat-bg-color, #f2f2f7); }
 ${R}::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: var(--nuo-safe-top); background: var(--chat-header-bg, rgba(255,255,255,.9)); z-index: 9; pointer-events: none; }
 ${R} > .wechat-content { position: relative; }
@@ -289,7 +289,9 @@ export function buildListBaseCss(L) {
     const tabBg = (cls, key) => `${L}.${cls} { background: linear-gradient(var(--nj-msg-${key}-bg-overlay, var(--nj-msg-bg-overlay, transparent)), var(--nj-msg-${key}-bg-overlay, var(--nj-msg-bg-overlay, transparent))),
   var(--nj-msg-${key}-bg-image, var(--nj-msg-bg-image, none)) var(--nj-msg-bg-image-position, center) / var(--nj-msg-bg-image-size, cover) no-repeat, var(--nj-msg-${key}-bg, var(--nj-msg-bg, #fff)); }`;
     return `
-${L} { font-family: var(--nj-msg-font-family, inherit);
+${L} { --nuo-safe-top: 32px; --nuo-safe-bottom: 0px; --nuo-statusbar-h: 32px;
+  /* 糯叽机是整屏 App，美化里的 position: fixed（悬浮底栏等）要固定在小手机屏幕里，而不是整个酒馆页面 */
+  transform: translateZ(0); font-family: var(--nj-msg-font-family, inherit);
   background: linear-gradient(var(--nj-msg-bg-overlay, transparent), var(--nj-msg-bg-overlay, transparent)), var(--nj-msg-bg-image, none) var(--nj-msg-bg-image-position, center) / var(--nj-msg-bg-image-size, cover) no-repeat, var(--nj-msg-bg, #fff); }
 ${tabBg('nj-messaging-chat-tab', 'chat')}
 ${tabBg('nj-messaging-moments-tab', 'moments')}
@@ -299,7 +301,20 @@ ${L} > .wechat-content { background: transparent; }
 ${L}[data-tab-anim="enter"] > .wechat-content { animation: nj-tab-fade-in var(--nj-msg-fade-in-duration, 0s) ease both; }
 ${L} :where(.wcl-v2, .wechat-profile, .moments-page:not(.is-profile)) { background-color: transparent; }
 
-/* ===== 顶部 ===== */
+/* ===== 顶部（柚月顶栏是固定 68px，美化会改 padding，所以改成自动高度） ===== */
+${L} .nj-chat-tab-header, ${L} .nj-profile-tab-header, ${L} .nj-contacts-tab-header { height: auto; min-height: calc(36px + var(--nuo-safe-top)); box-sizing: border-box; }
+${L} .nj-chat-tab-header-back { display: inline-flex; align-items: center; }
+${L} :where(.nj-list-hidden), ${L} :where(.nj-hidden-icon) { display: none !important; }
+${L} :where(.nj-chat-tab-search-wrap) { display: block; padding: 8px 12px 2px; }
+${L} :where(.nj-chat-tab-search-wrap) > .nj-chat-tab-search { margin: 0; }
+${L} .nj-chat-tab-search :where(.nj-hidden-icon) { display: none !important; }
+${L} .nj-chat-tab-search svg { width: 16px; height: 16px; flex: 0 0 16px; }
+${L} .wechat-header :where(.nj-svg-icon) { width: 22px; height: 22px; display: block; }
+${L} :where(.nj-label-fallback)::after { content: attr(data-nj-label); }
+/* 置顶：柚月右上角的蓝三角换成糯叽机的 ::before，美化可以改或删 */
+${L} :where(.chat-pin-corner) { display: none !important; }
+${L} .nj-chat-item-pinned::before { content: ''; position: absolute; top: 0; right: 0; width: 18px; height: 18px; background: #3d8bff; clip-path: polygon(0 0, 100% 0, 100% 100%); z-index: 2; pointer-events: none; }
+${L} .nj-chat-item-avatar > :where(:not(.nj-chat-item-unread-badge)) { width: 100% !important; height: 100% !important; }
 ${L} .nj-chat-tab-header-title { color: var(--nj-msg-chat-header-title-color, inherit); font-family: var(--nj-msg-font-family-heading, inherit); }
 
 /* ===== 搜索 / 便签 / 小标题 ===== */
