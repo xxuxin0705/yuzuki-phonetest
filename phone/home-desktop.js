@@ -515,7 +515,9 @@ function buildSrcdoc(data, state) {
 /* ------------------------------ 默认数据 ------------------------------ */
 function defaultStyle() {
     return {
-        iconRadius: 24,      // 0-50（百分比）
+        iconShape: 'rounded', // 默认圆角方形；也可选圆形、原图或直角方形
+        iconRadius: 24,      // 圆角方形的半径，0-50（百分比）
+        iconFit: 'cover',    // cover 铺满裁切 / contain 完整显示
         iconScale: 100,      // 70-120
         labelColor: '#2b2b33',
         showLabels: true,
@@ -591,7 +593,16 @@ export class FreeDesktop {
         s.hidden = Array.isArray(s.hidden) ? s.hidden : [];
         s.widgetState = s.widgetState && typeof s.widgetState === 'object' ? s.widgetState : {};
         s.icons = s.icons && typeof s.icons === 'object' ? s.icons : {};
-        s.style = { ...defaultStyle(), ...(s.style || {}) };
+        // 老版本从美化 JSON 导入的主题可能把 0 圆角直接应用到全部图标。
+        // 只对没有新外形设置的旧主题做一次兼容处理，保留后来手动选的直角模式。
+        const previousStyle = s.style || {};
+        const migratedSquareTheme = s.themeIcons?.enabled && Number(previousStyle.iconRadius) === 0
+            && previousStyle.iconShape === undefined;
+        s.style = { ...defaultStyle(), ...previousStyle };
+        if (migratedSquareTheme) {
+            s.style.iconRadius = 24;
+            Store.save('state');
+        }
         s.pages = Math.max(1, Number(s.pages) || 1);
         if (!Array.isArray(s.dock)) s.dock = this._legacyDock();
         // 旧版内置组件 → 新内置组件
@@ -833,7 +844,12 @@ export class FreeDesktop {
     applyStyleVars() {
         const st = this.S.style;
         const r = this.root;
-        r.style.setProperty('--yzd-radius', `${clamp(Number(st.iconRadius) || 0, 0, 50)}%`);
+        const shape = ['rounded', 'circle', 'square', 'original'].includes(st.iconShape) ? st.iconShape : 'rounded';
+        const radius = shape === 'circle' ? 50 : (shape === 'square' || shape === 'original' ? 0
+            : clamp(Number(st.iconRadius ?? 24) || 0, 0, 50));
+        r.style.setProperty('--yzd-radius', `${radius}%`);
+        r.style.setProperty('--yzd-icon-fit', shape === 'original' ? 'contain' : (st.iconFit === 'contain' ? 'contain' : 'cover'));
+        r.classList.toggle('yzd-icon-original', shape === 'original');
         r.style.setProperty('--yzd-label', st.labelColor || '#2b2b33');
         r.style.setProperty('--yzd-plate', hexToRgba(normHex(st.plateColor), clamp(Number(st.plateAlpha) || 0, 0, 1)));
         r.style.setProperty('--yzd-plate-blur', Number(st.plateAlpha) > 0 ? '10px' : '0px');
@@ -2464,7 +2480,17 @@ Object.assign(FreeDesktop.prototype, {
 
         const look = body.querySelector('.yzd-look');
         const getLook = this._buildFields(look, [
-            { key: 'iconRadius', label: '图标圆角', type: 'range', min: 0, max: 50, step: 1 },
+            { key: 'iconShape', label: '图标外形', type: 'select', options: [
+                ['rounded', '圆角方形（推荐，适配美化）'],
+                ['circle', '圆形'],
+                ['original', '原图形状（适合透明 PNG）'],
+                ['square', '直角方形']
+            ] },
+            { key: 'iconRadius', label: '圆角大小（圆角方形模式）', type: 'range', min: 0, max: 50, step: 1 },
+            { key: 'iconFit', label: '图标图片适配方式', type: 'select', options: [
+                ['cover', '铺满图标（可能裁剪边缘）'],
+                ['contain', '完整显示图片（不裁剪）']
+            ] },
             { key: 'iconScale', label: '图标大小 %', type: 'range', min: 60, max: 130, step: 1 },
             { key: 'labelColor', label: '图标文字颜色', type: 'color' },
             { key: 'showLabels', label: '显示图标名字', type: 'select', options: [['1', '显示'], ['0', '隐藏']] },
@@ -2760,7 +2786,11 @@ Object.assign(FreeDesktop.prototype, {
         const hs = json.homeIconStyle || {};
         s.style = {
             ...defaultStyle(),
-            iconRadius: hs.radius !== undefined ? clamp(Math.round(Number(hs.radius) / 60 * 100), 0, 50) : 24,
+            // 某些美化文件把圆角记为 0（或未提供），不能强制桌面所有图标变成直角。
+            iconShape: 'rounded',
+            iconRadius: Number(hs.radius) > 0
+                ? clamp(Math.round(Number(hs.radius) / 60 * 100), 1, 50) : 24,
+            iconFit: 'cover',
             iconScale: clamp(Number(hs.size) || 100, 60, 130),
             labelColor: json.textColor || '#ffffff',
             showLabels: json.showAppLabels !== false,
@@ -3083,12 +3113,14 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-page{flex:0 0 100%;width:100%;height:100%;padding:4px var(--yzd-padx,14px);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:repeat(6,minmax(0,1fr));position:relative}
 .yzd-root .yzd-item{position:relative;min-width:0;min-height:0}
 .yzd-root .yzd-app-body{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
-.yzd-root .yzd-icon{width:var(--yzd-icon);height:var(--yzd-icon);border-radius:var(--yzd-radius,24%);background-color:var(--yzd-plate,transparent);background-size:cover;background-position:center;background-repeat:no-repeat;flex:0 0 auto;box-shadow:0 2px 8px rgba(0,0,0,.08);transition:transform .15s}
+.yzd-root .yzd-icon{width:var(--yzd-icon);height:var(--yzd-icon);border-radius:var(--yzd-radius,24%);overflow:hidden;isolation:isolate;background-color:var(--yzd-plate,transparent);background-size:var(--yzd-icon-fit,cover);background-position:center;background-repeat:no-repeat;flex:0 0 auto;box-shadow:0 2px 8px rgba(0,0,0,.08);transition:transform .15s}
+.yzd-root.yzd-icon-original .yzd-icon{background-color:transparent!important;box-shadow:none;background-size:contain}
 .yzd-root .yzd-item .yzd-icon,.yzd-root .yzd-dock-app .yzd-icon{backdrop-filter:blur(var(--yzd-plate-blur,0px));-webkit-backdrop-filter:blur(var(--yzd-plate-blur,0px))}
 .yzd-root .yzd-pool{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .yzd-root .yzd-pool-item{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;min-width:0;--yzd-icon:54px}
 .yzd-root .yzd-pool-item small{font-size:10.5px;color:#555;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.yzd-root .yzd-pool-ic{display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:14px;background:#e3e3ea center/cover no-repeat;font-style:normal;font-size:20px;color:#666;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.yzd-root .yzd-pool-ic{display:flex;align-items:center;justify-content:center;width:54px;height:54px;border-radius:var(--yzd-radius,24%);overflow:hidden;background:#e3e3ea center/var(--yzd-icon-fit,cover) no-repeat;font-style:normal;font-size:20px;color:#666;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.yzd-root.yzd-icon-original .yzd-pool-ic{background-color:transparent;box-shadow:none}
 .yzd-root .yzd-pool-ic.plate{background-color:rgba(255,255,255,.9)}
 .yzd-root .yzd-pool-ic.up{background:#fff;border:1.5px dashed #c5c5cc;box-shadow:none}
 .yzd-root .yzd-pool-dl{position:absolute;top:-4px;right:4px;width:22px;height:22px;border-radius:50%;background:#fff;color:#1677ff;font-size:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.2)}
@@ -3104,7 +3136,7 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-choice small{display:block;font-size:11.5px;color:#888;margin-top:2px}
 .yzd-root .yzd-choice-prev{display:flex;gap:6px;margin-bottom:6px}
 .yzd-root .yzd-choice-prev:empty{display:none}
-.yzd-root .yzd-choice-prev i{width:34px;height:34px;border-radius:9px;background:var(--yzd-plate,#f0f0f5) center/cover no-repeat;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.yzd-root .yzd-choice-prev i{width:34px;height:34px;border-radius:var(--yzd-radius,24%);background:var(--yzd-plate,#f0f0f5) center/var(--yzd-icon-fit,cover) no-repeat;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .yzd-root .yzd-icon-emoji{display:flex;align-items:center;justify-content:center;font-size:calc(var(--yzd-icon)*.46);color:#fff}
 .yzd-root .yzd-label{max-width:100%;font-size:11.5px;line-height:14px;height:14px;color:var(--yzd-label,#2b2b33)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;padding:0 2px;text-shadow:0 1px 3px rgba(0,0,0,.16)}
 .yzd-root.yzd-no-labels{--yzd-ioff:calc(var(--yzd-icon)/2)}
