@@ -10282,9 +10282,6 @@ export class WechatApp {
                     </div>
                 </div>
 
-                <!-- 🍡 糯叽机美化 -->
-                <div style="margin: 15px;">${this.nuoji?.renderCardHtml?.({}) || ''}</div>
-
                 <!-- 数据管理 -->
                 <div style="background: #fff3cd; border-radius: 12px; padding: 15px; margin: 15px; border: 1px solid #ffc107;">
                     <div style="font-size: 14px; font-weight: 600; color: #856404; margin-bottom: 12px;">
@@ -10309,7 +10306,6 @@ export class WechatApp {
 
         this.phoneShell.setContent(html);
         this.renderWechatWorldbookList();
-        try { this.nuoji?.bindCard?.(document.querySelector('.phone-view-current') || document); } catch (e) { console.warn('糯叽机美化卡片绑定失败', e); }
 
         // 返回按钮
         const backBtn = document.getElementById('back-from-settings');

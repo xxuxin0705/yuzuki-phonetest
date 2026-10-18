@@ -15581,8 +15581,6 @@ ${transLines.join('\n')}`);
                         .wechat-chat-settings-content .wechat-detail-card { background: rgba(255,255,255,.82) !important; backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
                     </style>
                     ${isGroupChat ? this._renderGroupInfoCardHtml(currentChat.id) : ''}
-                    ${isGroupChat ? this._renderSkinCardHtml() : ''}
-                    ${isGroupChat ? (this.app.nuoji?.renderCardHtml?.({ chatId: String(currentChat.id || '') }) || '') : ''}
                     ${isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id, { sides: ['me'], title: '我的气泡样式' }) : ''}
                     ${!isGroupChat ? `<section class="wechat-detail-card" data-collapse-key="profile">
                         <div class="wechat-detail-profile is-compact">
@@ -15603,8 +15601,6 @@ ${transLines.join('\n')}`);
                         </div>
                     </section>` : ''}
                     ${!isGroupChat && contact ? this._renderContactExtraCardsHtml(contact) : ''}
-                    ${!isGroupChat ? this._renderSkinCardHtml() : ''}
-                    ${!isGroupChat ? (this.app.nuoji?.renderCardHtml?.({ chatId: String(currentChat.id || '') }) || '') : ''}
                     ${!isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? `<section class="wechat-detail-card">
                         <div class="wechat-detail-heading">翻译</div>
@@ -15650,6 +15646,9 @@ ${transLines.join('\n')}`);
                         ${!isGroupChat ? `<label class="wechat-detail-setting-row"><span>注入蜜语聊天记录<small>开启后，此好友在蜜语直播间互动时会带上当前微信聊天记录</small></span><input type="checkbox" id="wechat-honey-history-toggle" ${honeyInjectEnabled ? 'checked' : ''}></label>` : ''}
                     </section>
 
+                    <!-- 🎨 界面风格（导入的糯叽机美化 + 柚月内置 微信/QQ/LINE + 列表美化 / 头像框），放在后面 -->
+                    ${this._renderSkinCardHtml()}
+
                     <!-- 危险操作 -->
                     <section class="wechat-detail-card">
                         <div class="wechat-detail-heading">管理</div>
@@ -15682,8 +15681,6 @@ ${transLines.join('\n')}`);
         }
         this._bindBubbleStyleCard(String(currentChat.id || ''));
         this._bindSkinCard();
-        // 🍡 糯叽机美化卡片（聊天界面 / 聊天列表 CSS 导入 + 头像框）
-        try { this.app.nuoji?.bindCard?.(document.querySelector('.phone-view-current') || document); } catch (e) { console.warn('糯叽机美化卡片绑定失败', e); }
         if (!isGroupChat && contact) this._bindContactExtraCards(contact);
         (document.querySelector('.phone-view-current') || document).querySelector('#wechat-pat-toggle')?.addEventListener('change', (e) => {
             const live = this.app.wechatData.getChat?.(currentChat.id);
@@ -20617,9 +20614,11 @@ ${callTranscript}`;
 
     // 🎨 界面风格卡片：微信 / QQ / LINE + 日间 / 夜间（所有聊天通用）
     _renderSkinTilesHtml(state) {
+        // 用了导入的糯叽机聊天美化时，内置风格方块都不算选中
+        const nuojiOn = !!this.app.nuoji?.isActive?.('chat');
         return WECHAT_SKINS.map(sk => {
             const p = WECHAT_SKIN_PALETTE[sk.id]?.[state.mode] || WECHAT_SKIN_PALETTE[sk.id].day;
-            return `<button type="button" class="wsk-tile${state.skin === sk.id ? ' active' : ''}" data-wx-skin-pick="${sk.id}">
+            return `<button type="button" class="wsk-tile${state.skin === sk.id && !nuojiOn ? ' active' : ''}" data-wx-skin-pick="${sk.id}">
                 <span class="wsk-mock" style="background:${p.page}">
                     <i class="wsk-h" style="background:${p.head}"></i>
                     ${sk.id === 'line' ? '<i class="wsk-av"></i>' : ''}
@@ -20634,15 +20633,22 @@ ${callTranscript}`;
 
     _renderSkinCardHtml() {
         const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
+        const chatId = String(this.app.currentChat?.id || '');
+        const nj = this.app.nuoji;
         return `
-            <section class="wechat-detail-card wsk-card" data-collapse-key="skin">
+            <section class="wechat-detail-card wsk-card" data-collapse-key="appearance">
                 <div class="wechat-detail-heading">界面风格</div>
-                <div class="wsk-tiles">${this._renderSkinTilesHtml(state)}</div>
-                <div class="wsk-modes">
-                    <button type="button" data-wx-mode-pick="day" class="${state.mode !== 'night' ? 'active' : ''}"><i class="fa-solid fa-sun"></i> 日间</button>
-                    <button type="button" data-wx-mode-pick="night" class="${state.mode === 'night' ? 'active' : ''}"><i class="fa-solid fa-moon"></i> 夜间</button>
+                ${nj?.renderChatPartHtml?.({ chatId }) || ''}
+                <div class="wsk-builtin">
+                    <div class="njc-sec-title">柚月内置风格<small>选这里会关掉上面导入的美化</small></div>
+                    <div class="wsk-tiles">${this._renderSkinTilesHtml(state)}</div>
+                    <div class="wsk-modes">
+                        <button type="button" data-wx-mode-pick="day" class="${state.mode !== 'night' ? 'active' : ''}"><i class="fa-solid fa-sun"></i> 日间</button>
+                        <button type="button" data-wx-mode-pick="night" class="${state.mode === 'night' ? 'active' : ''}"><i class="fa-solid fa-moon"></i> 夜间</button>
+                    </div>
+                    <div class="wsk-note">所有聊天通用，只改变样子，功能不变；聊天背景只铺在消息区域</div>
                 </div>
-                <div class="wsk-note">所有聊天通用，只改变样子，功能不变；聊天背景只铺在消息区域</div>
+                ${nj?.renderExtrasPartHtml?.({ chatId }) || ''}
             </section>`;
     }
 
@@ -20651,6 +20657,7 @@ ${callTranscript}`;
         const card = view.querySelector('.wsk-card');
         if (!card || card.dataset.bound === '1') return;
         card.dataset.bound = '1';
+        try { this.app.nuoji?.bindCard?.(card); } catch (e) { console.warn('糯叽机美化绑定失败', e); }
         const refresh = () => {
             const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
             const tiles = card.querySelector('.wsk-tiles');
@@ -20658,9 +20665,16 @@ ${callTranscript}`;
             card.querySelectorAll('[data-wx-mode-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxModePick === state.mode));
             card.querySelectorAll('[data-wx-moments-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxMomentsPick === (state.moments || 'auto')));
         };
+        card.addEventListener('njc:changed', refresh);
         card.addEventListener('click', (e) => {
             const tile = e.target.closest('[data-wx-skin-pick]');
             if (tile) {
+                // 选内置风格 = 不用导入的聊天美化
+                if (this.app.nuoji?.isActive?.('chat')) {
+                    this.app.nuoji.setActiveId('chat', '');
+                    this.app.nuoji.applyStyles();
+                    card.querySelectorAll('.njc-part[data-njc-part="chat"]').forEach(p => this.app.nuoji._rerenderPart(p));
+                }
                 const res = this.app.setWechatSkin?.({ skin: tile.dataset.wxSkinPick });
                 refresh();
                 void res;

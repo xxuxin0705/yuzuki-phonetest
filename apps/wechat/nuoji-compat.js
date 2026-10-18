@@ -34,6 +34,8 @@ const VAR_FLAGS = {
 };
 
 const PHONE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
+const BACK_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+const MORE_SVG = '<svg class="nj-svg-icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>';
 const VIDEO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>';
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -174,7 +176,25 @@ export class NuojiCompat {
         userList.textContent = listCss;
         document.head.appendChild(userChat);
         document.head.appendChild(userList);
+        this._syncReferrer(anyOn);
         this.schedule();
+    }
+
+    // 图床防盗链：美化开着时让页面上的图片请求不带来源（酒馆本身不依赖来源）
+    _syncReferrer(anyOn) {
+        try {
+            const want = anyOn && this.getOptions().noReferrer !== false;
+            let meta = document.getElementById('nj-compat-referrer');
+            if (want && !meta) {
+                meta = document.createElement('meta');
+                meta.id = 'nj-compat-referrer';
+                meta.name = 'referrer';
+                meta.content = 'no-referrer';
+                document.head.prepend(meta);
+            } else if (!want && meta) {
+                meta.remove();
+            }
+        } catch (e) { /* 忽略 */ }
     }
 
     // 切换美化后整页重绘，让关掉的部分回到柚月原样
@@ -295,6 +315,7 @@ export class NuojiCompat {
             addCls(left, 'nj-header-left');
             const back = header.querySelector('.wechat-back-btn');
             addCls(back, 'header-btn-back', 'header-action-btn');
+            this._svgIcon(back, BACK_SVG);
             const title = header.querySelector(':scope > .wechat-header-title');
             addCls(title, 'header-profile-section');
             const av = title?.querySelector(':scope > .wx-head-avatar');
@@ -306,9 +327,14 @@ export class NuojiCompat {
             addCls(right, 'nj-header-right');
             const info = right?.querySelector('#chat-info');
             addCls(info, 'header-btn-info', 'header-action-btn');
+            this._svgIcon(info, MORE_SVG);
             this._ensureHeaderCallButtons(right, info);
             this._ensureHeaderUnread(back, chatId);
             this._ensureHeaderDeco(header);
+            // 美化自己在顶栏画了状态文字（例如仿QQ的「在线＞幸福來臨中」）时，柚月自带的「在线」就不再叠着显示
+            let drawn = '';
+            try { drawn = String(getComputedStyle(header, '::after').content || ''); } catch (e) { drawn = ''; }
+            togCls(appEl, 'nj-theme-subtitle', !!drawn && !['none', 'normal', '""', "''"].includes(drawn));
         }
 
         // ---- 消息 ----
@@ -415,20 +441,16 @@ export class NuojiCompat {
         }
         if (!body) return;
 
-        // 单个聊天里自己选了「气泡样式」时，尊重自己的设置，不套糯叽机气泡
-        const ownBubble = /\bwbx-c-/.test(row.className);
+        // 导入的美化优先：单个聊天里自选的「气泡样式」先让位（关掉美化后重绘就回来）
+        Array.from(row.classList).forEach(c => { if (c.startsWith('wbx-c-')) row.classList.remove(c); });
         const textEl = body.querySelector(':scope > .message-text, :scope > .wechat-inner-os-wrapper > .message-text');
         const isText = !!textEl;
         const bubbleCls = isMe ? 'bubble-me-custom' : 'bubble-them-custom';
-        if (ownBubble) {
-            ['bubble-me-custom', 'bubble-them-custom', 'msg-bubble-container', 'nj-bubble-text', 'nj-bubble-card', 'first', 'mid', 'last', 'single'].forEach(c => togCls(body, c, false));
-        } else {
-            addCls(body, bubbleCls, 'msg-bubble-container');
-            togCls(body, isMe ? 'bubble-them-custom' : 'bubble-me-custom', false);
-            togCls(body, 'nj-bubble-text', isText);
-            togCls(body, 'nj-bubble-card', !isText);
-            ['first', 'mid', 'last', 'single'].forEach(c => togCls(body, c, c === pos));
-        }
+        addCls(body, bubbleCls, 'msg-bubble-container');
+        togCls(body, isMe ? 'bubble-them-custom' : 'bubble-me-custom', false);
+        togCls(body, 'nj-bubble-text', isText);
+        togCls(body, 'nj-bubble-card', !isText);
+        ['first', 'mid', 'last', 'single'].forEach(c => togCls(body, c, c === pos));
 
         // ---- 各种消息内容 ----
         const type = msg?.type || '';
@@ -549,6 +571,13 @@ export class NuojiCompat {
             const on = !!val && val !== 'none' && val !== 'initial';
             appEl.querySelectorAll(sel).forEach(el => togCls(el, 'nj-has-icon', on));
         });
+    }
+
+    // 柚月顶栏用的是字体图标 <i>，糯叽机美化都按 <svg> 写（例如 .header-btn-back svg { display:none }），这里换成 svg
+    _svgIcon(btn, svg) {
+        if (!btn || btn.querySelector(':scope > svg.nj-svg-icon')) return;
+        btn.querySelectorAll(':scope > i, :scope > svg:not(.nj-svg-icon)').forEach(el => el.classList.add('nj-hidden-icon'));
+        btn.insertAdjacentHTML('afterbegin', svg);
     }
 
     _ensureHeaderCallButtons(right, info) {
@@ -908,17 +937,48 @@ export class NuojiCompat {
     }
 
     // ================= 设置卡片 =================
-    _sectionHtml(kind) {
-        const profiles = this.getProfiles(kind);
-        const activeId = this.getActiveId(kind);
-        const title = kind === 'chat' ? '聊天界面美化' : '聊天列表美化';
-        const desc = kind === 'chat'
-            ? '导入糯叽机「聊天美化」的 CSS（例如仿QQ、轻松一点熊），作用于聊天窗口'
-            : '导入糯叽机「消息 App 美化」的 CSS（例如 NACRE），作用于聊天列表、朋友圈、我、底栏';
+    // 聊天界面：导入的糯叽机主题做成和「微信 / QQ / LINE」一样的风格方块
+    _chatThemesHtml() {
+        const profiles = this.getProfiles('chat');
+        const activeId = this.isActive('chat') ? this.getActiveId('chat') : '';
+        const tile = p => `
+            <button type="button" class="njc-tile${p.id === activeId ? ' active' : ''}" data-njc-pick="${esc(p.id)}" title="${esc(p.name)}">
+                <span class="njc-tile-mock"><i class="njc-tm-h"></i><i class="njc-tm-in"></i><i class="njc-tm-out"></i><i class="njc-tm-f"></i><b>🍡</b></span>
+                <em>${esc(p.name)}</em>
+            </button>`;
         return `
-            <div class="njc-sec" data-njc-kind="${kind}">
-                <div class="njc-sec-title">${title}</div>
-                <div class="njc-desc">${desc}</div>
+            <div class="njc-sec" data-njc-kind="chat">
+                <div class="njc-sec-title">导入的聊天美化<small>糯叽机「聊天界面美化」CSS，例如仿QQ、轻松一点熊；选中后会盖过下面的柚月内置风格</small></div>
+                <div class="njc-tiles">
+                    ${profiles.map(tile).join('')}
+                    <button type="button" class="njc-tile is-add" data-njc="import"><span class="njc-tile-mock"><b>＋</b></span><em>导入文件</em></button>
+                    <button type="button" class="njc-tile is-add" data-njc="paste"><span class="njc-tile-mock"><b>✎</b></span><em>粘贴 CSS</em></button>
+                </div>
+                ${activeId ? `
+                <div class="njc-btns">
+                    <button type="button" data-njc="edit">编辑</button>
+                    <button type="button" data-njc="rename">改名</button>
+                    <button type="button" data-njc="export">导出</button>
+                    <button type="button" class="is-danger" data-njc="delete">删除</button>
+                    <button type="button" data-njc="off">不用了，换回内置风格</button>
+                </div>` : ''}
+                <input type="file" accept=".css,.txt,text/css,text/plain" data-njc="file" hidden>
+                <div class="njc-editor" data-njc="editor" hidden>
+                    <textarea data-njc="text" spellcheck="false" placeholder="把糯叽机的聊天美化 CSS 粘贴到这里"></textarea>
+                    <div class="njc-btns">
+                        <button type="button" class="is-primary" data-njc="save">保存并应用</button>
+                        <button type="button" data-njc="cancel">取消</button>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    _listThemesHtml() {
+        const profiles = this.getProfiles('list');
+        const activeId = this.isActive('list') ? this.getActiveId('list') : '';
+        return `
+            <div class="njc-sec" data-njc-kind="list">
+                <div class="njc-sec-title">聊天列表美化<small>糯叽机「消息 App 美化」CSS，例如 NACRE；作用于聊天列表、朋友圈、我、底栏</small></div>
                 <select class="njc-select" data-njc="select">
                     <option value="" ${activeId ? '' : 'selected'}>不使用（柚月原样）</option>
                     ${profiles.map(p => `<option value="${esc(p.id)}" ${p.id === activeId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
@@ -933,7 +993,7 @@ export class NuojiCompat {
                 </div>
                 <input type="file" accept=".css,.txt,text/css,text/plain" data-njc="file" hidden>
                 <div class="njc-editor" data-njc="editor" hidden>
-                    <textarea data-njc="text" spellcheck="false" placeholder="把糯叽机的美化 CSS 粘贴到这里"></textarea>
+                    <textarea data-njc="text" spellcheck="false" placeholder="把糯叽机的消息 App 美化 CSS 粘贴到这里"></textarea>
                     <div class="njc-btns">
                         <button type="button" class="is-primary" data-njc="save">保存并应用</button>
                         <button type="button" data-njc="cancel">取消</button>
@@ -954,19 +1014,20 @@ export class NuojiCompat {
             </div>`;
     }
 
-    renderCardHtml({ chatId = '', inModal = false } = {}) {
+    // 合进「界面风格」卡片的两块：上面的导入主题、下面的列表美化/头像框/选项
+    renderChatPartHtml({ chatId = '' } = {}) {
+        return `<div class="njc-part" data-njc-part="chat" data-njc-chat="${esc(chatId)}">${this._chatThemesHtml()}</div>`;
+    }
+
+    renderExtrasPartHtml({ chatId = '' } = {}) {
         const f = this.getFrames();
         const own = chatId ? (f.chats?.[chatId] || {}) : {};
         const opt = this.getOptions();
         return `
-            <section class="wechat-detail-card njc-card${inModal ? ' is-modal' : ''}" data-collapse-key="nuoji" data-njc-chat="${esc(chatId)}">
-                ${inModal ? '' : '<div class="wechat-detail-heading">糯叽机美化</div>'}
-                <div class="njc-note">在微信底栏长按「${esc(this.app?._tabLabels?.().chats || '微信')}」也能打开这里。关掉美化即回到柚月原样，功能不受影响。</div>
-                ${this._sectionHtml('chat')}
-                ${this._sectionHtml('list')}
+            <div class="njc-part" data-njc-part="extras" data-njc-chat="${esc(chatId)}">
+                ${this._listThemesHtml()}
                 <div class="njc-sec">
-                    <div class="njc-sec-title">头像框</div>
-                    <div class="njc-desc">聊天里气泡旁的头像加一圈装饰框（透明 PNG / GIF），不开美化也能用</div>
+                    <div class="njc-sec-title">头像框<small>聊天里气泡旁的头像加装饰框（透明 PNG / GIF），不开美化也能用；美化自带头像框时以美化为准</small></div>
                     ${this._frameRow('global', 'them', f.them)}
                     ${this._frameRow('global', 'me', f.me)}
                     <label class="njc-range"><span>大小</span><input type="range" min="1" max="2.2" step="0.05" value="${Number(f.scale) || 1.45}" data-njc-frame-num="scale"><b>${(Number(f.scale) || 1.45).toFixed(2)}×</b></label>
@@ -978,8 +1039,19 @@ export class NuojiCompat {
                     <input type="file" accept="image/*" data-njc-frame="file" hidden>
                 </div>
                 <div class="njc-sec">
-                    <label class="njc-switch"><span>顶栏显示电话 / 视频按钮<small>聊天美化开启时，顶栏右上角会多出这两个按钮（糯叽机同款），点它直接发起通话</small></span><input type="checkbox" data-njc-opt="headerCalls" ${opt.headerCalls !== false ? 'checked' : ''}></label>
+                    <label class="njc-switch"><span>顶栏显示电话 / 视频按钮<small>导入的聊天美化开启时，顶栏右上角多出这两个按钮（糯叽机同款），点了直接发起通话</small></span><input type="checkbox" data-njc-opt="headerCalls" ${opt.headerCalls !== false ? 'checked' : ''}></label>
+                    <label class="njc-switch"><span>美化图片不带来源<small>很多图床会拦掉从酒馆页面来的图片请求（防盗链），导致美化里的气泡底图、头像框、图标显示不出来。开着就能正常加载</small></span><input type="checkbox" data-njc-opt="noReferrer" ${opt.noReferrer !== false ? 'checked' : ''}></label>
                 </div>
+            </div>`;
+    }
+
+    // 长按底栏打开的面板用：完整一份
+    renderCardHtml({ chatId = '', inModal = false } = {}) {
+        return `
+            <section class="wechat-detail-card njc-card${inModal ? ' is-modal' : ''}">
+                <div class="njc-note">关掉美化即回到柚月原样，功能不受影响。聊天设置的「界面风格」里也有同样的选项。</div>
+                ${this.renderChatPartHtml({ chatId })}
+                ${this.renderExtrasPartHtml({ chatId })}
             </section>`;
     }
 
@@ -989,51 +1061,57 @@ export class NuojiCompat {
 
     _newId() { return `nj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 
-    _rerenderCard(card) {
-        const chatId = card.dataset.njcChat || '';
-        const inModal = card.classList.contains('is-modal');
+    _rerenderPart(part) {
+        const chatId = part.dataset.njcChat || '';
         const holder = document.createElement('div');
-        holder.innerHTML = this.renderCardHtml({ chatId, inModal }).trim();
+        holder.innerHTML = (part.dataset.njcPart === 'chat' ? this.renderChatPartHtml({ chatId }) : this.renderExtrasPartHtml({ chatId })).trim();
         const fresh = holder.firstElementChild;
-        // 聊天设置页会把卡片内容包进 .wechat-detail-body（可折叠），只换里面的内容
-        const host = card.querySelector(':scope > .wechat-detail-body') || card;
-        Array.from(host.children).forEach(ch => { if (!ch.classList.contains('wechat-detail-heading')) ch.remove(); });
-        Array.from(fresh.children).forEach(ch => { if (!ch.classList.contains('wechat-detail-heading')) host.appendChild(ch); });
-        delete card.dataset.njcBound;
-        this.bindCard(document, card);
+        part.replaceWith(fresh);
+        this.bindCard(fresh.parentElement || document);
+        // 通知「界面风格」卡片刷新内置风格方块的选中状态
+        fresh.dispatchEvent(new CustomEvent('njc:changed', { bubbles: true }));
     }
 
-    bindCard(root = document, onlyCard = null) {
-        const cards = onlyCard ? [onlyCard] : Array.from(root.querySelectorAll('.njc-card'));
-        cards.forEach(card => {
-            if (card.dataset.njcBound === '1') return;
-            card.dataset.njcBound = '1';
-            card.querySelectorAll('.njc-sec[data-njc-kind]').forEach(sec => this._bindSection(card, sec));
-            this._bindFrames(card);
-            card.querySelectorAll('[data-njc-opt]').forEach(inp => inp.addEventListener('change', () => {
+    _rerenderAllParts(from) {
+        const host = from?.closest?.('.wechat-detail-card') || from?.parentElement || document;
+        host.querySelectorAll('.njc-part').forEach(p => this._rerenderPart(p));
+    }
+
+    bindCard(root = document) {
+        const parts = root.matches?.('.njc-part') ? [root] : Array.from(root.querySelectorAll('.njc-part'));
+        parts.forEach(part => {
+            if (part.dataset.njcBound === '1') return;
+            part.dataset.njcBound = '1';
+            part.querySelectorAll('.njc-sec[data-njc-kind]').forEach(sec => this._bindSection(part, sec));
+            this._bindFrames(part);
+            part.querySelectorAll('[data-njc-opt]').forEach(inp => inp.addEventListener('change', () => {
                 const o = this.getOptions();
                 o[inp.dataset.njcOpt] = !!inp.checked;
                 this.saveOptions(o);
-                this.schedule();
+                this.applyStyles();
             }));
         });
     }
 
     _bindSection(card, sec) {
+        // card 这里是 .njc-part
         const kind = sec.dataset.njcKind;
         const q = k => sec.querySelector(`[data-njc="${k}"]`);
         const editor = q('editor');
         const text = q('text');
         let editingId = null;
-        const label = kind === 'chat' ? '聊天界面美化' : '聊天列表美化';
+        const label = kind === 'chat' ? '聊天美化' : '聊天列表美化';
 
-        q('select')?.addEventListener('change', (e) => {
-            this.setActiveId(kind, e.target.value);
+        const pick = (id) => {
+            this.setActiveId(kind, id);
             this.refreshApp();
             const p = this.getActiveProfile(kind);
             this._notify(label, p ? `已应用「${p.name}」` : '已关闭，恢复柚月原样');
-            this._rerenderCard(card);
-        });
+            this._rerenderAllParts(card);
+        };
+        q('select')?.addEventListener('change', (e) => pick(e.target.value));
+        sec.querySelectorAll('[data-njc-pick]').forEach(t => t.addEventListener('click', () => pick(t.classList.contains('active') ? '' : t.dataset.njcPick)));
+        q('off')?.addEventListener('click', () => pick(''));
 
         const upsert = (name, css, id = null) => {
             const list = this.getProfiles(kind);
@@ -1060,7 +1138,7 @@ export class NuojiCompat {
                 const p = upsert(name, css);
                 if (!p) return;
                 this._notify('导入成功', `${label}「${p.name}」已应用`);
-                this._rerenderCard(card);
+                this._rerenderAllParts(card);
             } catch (err) {
                 this._notify('导入失败', err?.message || '读不了这个文件', '❌');
             }
@@ -1088,7 +1166,7 @@ export class NuojiCompat {
             }
             if (!p) return;
             this._notify('已保存', `${label}「${p.name}」已应用`);
-            this._rerenderCard(card);
+            this._rerenderAllParts(card);
         });
         q('rename')?.addEventListener('click', () => {
             const list = this.getProfiles(kind);
@@ -1098,7 +1176,7 @@ export class NuojiCompat {
             if (!name || name === p.name) return;
             p.name = name;
             this.saveProfiles(kind, list);
-            this._rerenderCard(card);
+            this._rerenderAllParts(card);
         });
         q('export')?.addEventListener('click', () => {
             const p = this.getActiveProfile(kind);
@@ -1123,11 +1201,12 @@ export class NuojiCompat {
             this.saveProfiles(kind, list);
             this.setActiveId(kind, '');
             this.refreshApp();
-            this._rerenderCard(card);
+            this._rerenderAllParts(card);
         });
     }
 
     _bindFrames(card) {
+        if (!card.querySelector('.njc-frame-row')) return;
         const chatId = card.dataset.njcChat || '';
         const fileInput = card.querySelector('[data-njc-frame="file"]');
         let target = null;
@@ -1142,7 +1221,7 @@ export class NuojiCompat {
             }
             this.saveFrames(f);
             this.schedule();
-            this._rerenderCard(card);
+            this._rerenderAllParts(card);
         };
         card.querySelectorAll('.njc-frame-row').forEach(row => {
             const scope = row.dataset.njcFrameScope;
@@ -1190,6 +1269,22 @@ export class NuojiCompat {
 }
 
 const NJ_UI_CSS = `
+.njc-sec-title small { display: block; font-size: 11px; font-weight: 400; color: #9a9ea6; line-height: 1.45; margin-top: 2px; }
+.njc-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 6px; }
+.njc-tile { border: 1.5px solid transparent; background: transparent; border-radius: 12px; padding: 0 0 6px; cursor: pointer; -webkit-tap-highlight-color: transparent; min-width: 0; }
+.njc-tile.active { border-color: #07c160; }
+.njc-tile-mock { display: block; position: relative; height: 74px; border-radius: 10px; overflow: hidden; background: linear-gradient(160deg, #fdf3f7, #eef3ff); box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
+.njc-tile-mock i { position: absolute; display: block; }
+.njc-tm-h { left: 0; right: 0; top: 0; height: 15px; background: rgba(255,255,255,.85); }
+.njc-tm-in { left: 7px; top: 24px; width: 46%; height: 13px; border-radius: 7px; background: #fff; }
+.njc-tm-out { right: 7px; top: 42px; width: 40%; height: 13px; border-radius: 7px; background: #f7c6d9; }
+.njc-tm-f { left: 0; right: 0; bottom: 0; height: 12px; background: rgba(255,255,255,.85); }
+.njc-tile-mock b { position: absolute; right: 6px; bottom: 14px; font-size: 14px; font-weight: 400; }
+.njc-tile.is-add .njc-tile-mock { background: #f5f6f8; border: 1.5px dashed #d5d8de; box-shadow: none; box-sizing: border-box; }
+.njc-tile.is-add .njc-tile-mock b { left: 0; right: 0; top: 50%; bottom: auto; transform: translateY(-50%); text-align: center; font-size: 22px; color: #9aa0a8; }
+.njc-tile em { display: block; font-style: normal; font-size: 12px; margin-top: 5px; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
+.wsk-card .wsk-builtin { padding: 10px 0; border-top: 1px solid rgba(0,0,0,.06); }
+.wsk-card .njc-part[data-njc-part="chat"] .njc-sec { border-top: 0; padding-top: 2px; }
 .njc-card .njc-note { font-size: 11px; color: #8a8f98; line-height: 1.5; margin: -4px 0 10px; }
 .njc-sec { padding: 10px 0; border-top: 1px solid rgba(0,0,0,.06); }
 .njc-sec:first-of-type { border-top: 0; }

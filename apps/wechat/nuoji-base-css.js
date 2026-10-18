@@ -88,7 +88,7 @@ ${R} > .wechat-content { position: relative; }
 
 /* ===== 顶栏 ===== */
 ${R} .chat-header-custom { margin-top: var(--nuo-safe-top); padding: 0 12px; height: var(--chat-header-height, 56px); min-height: 0; box-sizing: border-box;
-  display: flex; align-items: center; justify-content: flex-start; gap: 10px; position: relative; z-index: 10; flex-shrink: 0; overflow: visible;
+  display: flex; align-items: center; justify-content: flex-start; gap: 8px; position: relative; z-index: 10; flex-shrink: 0; overflow: visible; padding-right: 16px;
   background: var(--chat-header-bg-image, none) var(--chat-header-bg-position, center) / var(--chat-header-bg-size, cover) no-repeat, var(--chat-header-bg, rgba(255,255,255,.9));
   -webkit-backdrop-filter: blur(var(--chat-header-blur, 15px)); backdrop-filter: blur(var(--chat-header-blur, 15px));
   border-bottom: 1px solid var(--chat-header-border, #efefef); box-shadow: none; }
@@ -107,10 +107,12 @@ ${R} .chat-header-subtitle { display: block; grid-column: 2; grid-row: 2; align-
 ${R} .chat-header-title :where(.status-dot) { display: none; }
 ${R} .header-profile-section :where(.header-badge) { display: none; }
 ${R} .nj-header-right { display: flex; align-items: center; justify-content: flex-end; gap: var(--header-btn-gap, 18px); flex: 0 0 auto; width: auto; min-width: 0; position: relative; z-index: 3; }
-${R} .header-action-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--header-btn-size, 40px); height: var(--header-btn-size, 40px); min-width: 0; min-height: 0; margin: 0; padding: 0;
+${R} .header-action-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--header-btn-size, 44px); height: var(--header-btn-size, 44px); min-width: 0; min-height: 0; margin: 0; padding: 0;
   border: 0; background-color: transparent; color: var(--chat-header-icon-color, #262626); font-size: 18px; cursor: pointer; position: relative; flex-shrink: 0; text-shadow: none; }
 ${R} .header-action-btn svg { width: 22px; height: 22px; }
-${R} .header-btn-info .wx-bars-icon { display: none; }
+${R} .header-btn-info .wx-bars-icon, ${R} .header-action-btn > .nj-hidden-icon { display: none !important; }
+${R}:where(.nj-theme-subtitle) .chat-header-subtitle { display: none; }
+${R}:where(.nj-theme-subtitle) .header-profile-section .chat-header-title { grid-row: 1 / span 2; align-self: center; }
 ${R} :where(.nj-has-icon) > svg, ${R} :where(.nj-has-icon) > i, ${R} :where(.nj-has-icon) > span:not([class*="unread"]) { opacity: 0; }
 ${R} .nuo-chat-header-unread-dot { position: absolute; pointer-events: none; display: block;
   top: var(--chat-header-unread-top, 6px); left: var(--chat-header-unread-left, 16px); right: var(--chat-header-unread-right, auto); bottom: var(--chat-header-unread-bottom, auto);
@@ -140,6 +142,9 @@ ${R} .msg-bubble-wrapper:where(.has-reactions) { margin-bottom: 6px; }
 ${R} .msg-avatar-them-container, ${R} .msg-avatar-me-container { width: var(--avatar-size, 40px); height: var(--avatar-size, 40px); border-radius: var(--avatar-radius, 50%);
   border: var(--avatar-border, none); box-shadow: var(--avatar-shadow, none); background: var(--avatar-placeholder-bg, #ccc); flex-shrink: 0; box-sizing: border-box; }
 ${R} .msg-avatar-them-container { margin: 0 var(--avatar-margin, 8px) 0 0; }
+/* 头像图片的圆角/裁切放在内层：美化给外层开 overflow:visible 挂头像框时，头像本身仍然是圆的 */
+${R} .msg-avatar-them-inner, ${R} .msg-avatar-me-inner { display: block; width: 100%; height: 100%; border-radius: var(--avatar-radius, 50%); overflow: hidden; }
+${R} .msg-avatar-them-inner img, ${R} .msg-avatar-me-inner img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 ${R} .msg-avatar-me-container { margin: 0 0 0 var(--avatar-margin, 8px); }
 ${R} .msg-avatar-them-container:where(.is-mid, .is-last) { visibility: var(--nj-avatar-grouped-visibility, visible); }
 ${R} .msg-avatar-me-container:where(.is-mid, .is-last) { visibility: var(--nj-avatar-grouped-visibility, visible); }
