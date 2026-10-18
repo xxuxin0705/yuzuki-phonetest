@@ -85,6 +85,10 @@ ${R} { --nuo-safe-top: 32px; --nuo-safe-bottom: 0px; --nuo-statusbar-h: 32px; tr
   background: linear-gradient(var(--chat-bg-overlay, transparent), var(--chat-bg-overlay, transparent)), var(--chat-bg-image, none) center / cover no-repeat, var(--chat-bg-color, #f2f2f7); }
 ${R}::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: var(--nuo-safe-top); background: var(--chat-header-bg, rgba(255,255,255,.9)); z-index: 9; pointer-events: none; }
 ${R} > .wechat-content { position: relative; }
+/* 用导入美化时，柚月自己的聊天背景、连续气泡缩进都不要，只用美化的 */
+${R} > .wechat-content { background: transparent !important; }
+${R} .chat-messages-area:where(.wbx-continuous) .chat-message:where(.is-cont) { margin-top: var(--chat-messages-gap, 4px) !important; }
+${R} .chat-messages-area:where(.wbx-continuous) .chat-message:where(.is-cont) .message-avatar { visibility: visible; }
 
 /* ===== 顶栏 ===== */
 ${R} .chat-header-custom { margin-top: var(--nuo-safe-top); padding: 0 12px; height: var(--chat-header-height, 56px); min-height: 0; box-sizing: border-box;
@@ -94,7 +98,7 @@ ${R} .chat-header-custom { margin-top: var(--nuo-safe-top); padding: 0 12px; hei
   border-bottom: 1px solid var(--chat-header-border, #efefef); box-shadow: none; }
 ${R} .nj-header-left { display: contents; }
 ${R} .header-profile-section { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto;
-  column-gap: 10px; align-items: center; align-content: center; justify-items: start; text-align: left; font-size: inherit; color: inherit; position: static; }
+  column-gap: 10px; align-items: center; align-content: center; justify-items: start; text-align: left; font-size: inherit; color: inherit; position: relative; align-self: stretch; }
 ${R} .header-avatar-container { display: flex; grid-row: 1 / span 2; grid-column: 1; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;
   width: var(--chat-header-avatar-size, 32px); height: var(--chat-header-avatar-size, 32px); border-radius: var(--chat-header-avatar-radius, 50%);
   border: var(--chat-header-avatar-border, none); box-shadow: var(--chat-header-avatar-shadow, none); background: #eee; font-size: 16px; box-sizing: border-box; }

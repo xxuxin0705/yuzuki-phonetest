@@ -165,7 +165,9 @@ export class NuojiCompat {
         const list = this.getActiveProfile('list');
         const anyOn = !!(chat?.css?.trim() || list?.css?.trim());
         this._styleTag('nj-compat-keyframes').textContent = anyOn ? NJ_KEYFRAMES : '';
-        this._styleTag('nj-compat-chat-base').textContent = chat?.css?.trim() ? buildChatBaseCss(CHAT_ROOT) : '';
+        const bg = String(this.getOptions().chatBg || '').trim();
+        const bgRule = bg ? `\n${CHAT_ROOT} { --chat-bg-image: url("${bg.replace(/"/g, '%22')}"); }\n` : '';
+        this._styleTag('nj-compat-chat-base').textContent = chat?.css?.trim() ? buildChatBaseCss(CHAT_ROOT) + bgRule : '';
         this._styleTag('nj-compat-list-base').textContent = list?.css?.trim() ? buildListBaseCss(LIST_ROOT) : '';
         let chatCss = '';
         let listCss = '';
@@ -969,6 +971,79 @@ export class NuojiCompat {
         tab.addEventListener('click', e => { if (fired) { e.stopImmediatePropagation(); e.preventDefault(); fired = false; } }, true);
     }
 
+    // 美化里的外链图片（气泡底图、头像框、贴图）存到柚月本地，避免图床拦截 / 失效导致显示不出来
+    _remoteUrls(css) {
+        const out = new Set();
+        String(css || '').replace(/url\(\s*(['"]?)(https?:\/\/[^'")\s]+)\1\s*\)/gi, (m, q, u) => { out.add(u); return m; });
+        return Array.from(out);
+    }
+
+    async _fetchBlob(url) {
+        const tries = [
+            () => fetch(url, { mode: 'cors', referrerPolicy: 'no-referrer', credentials: 'omit' }),
+            () => fetch(`/proxy/${url}`, { credentials: 'same-origin' })
+        ];
+        for (const t of tries) {
+            try {
+                const r = await t();
+                if (!r.ok) continue;
+                const b = await r.blob();
+                if (b && b.size > 0 && /^image\//.test(b.type || 'image/')) return b;
+            } catch (e) { /* 下一种 */ }
+        }
+        return null;
+    }
+
+    _probeImage(url, timeout = 8000) {
+        return new Promise(res => {
+            const img = new Image();
+            let done = false;
+            const end = ok => { if (!done) { done = true; res(ok); } };
+            try { img.referrerPolicy = 'no-referrer'; } catch (e) { /* 忽略 */ }
+            img.onload = () => end(true);
+            img.onerror = () => end(false);
+            setTimeout(() => end(false), timeout);
+            img.src = url;
+        });
+    }
+
+    async localizeImages(kind, { silent = false } = {}) {
+        const list = this.getProfiles(kind);
+        const p = list.find(x => x.id === this.getActiveId(kind));
+        if (!p) return null;
+        const urls = this._remoteUrls(p.css);
+        if (!urls.length) { if (!silent) this._notify('美化图片', '这套美化没有外链图片'); return { ok: 0, fail: 0, total: 0 }; }
+        if (!silent) this._notify('美化图片', `正在把 ${urls.length} 张图片存到本地…`, '⏳');
+        const im = window.VirtualPhone?.imageManager;
+        let css = p.css;
+        let ok = 0;
+        const failed = [];
+        for (const url of urls) {
+            const blob = await this._fetchBlob(url);
+            let local = '';
+            if (blob) {
+                try { local = im?.uploadBlob ? await im.uploadBlob(blob, 'nuoji_theme') : ''; } catch (e) { local = ''; }
+                if (!local) {
+                    try { local = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result || '')); r.onerror = rej; r.readAsDataURL(blob); }); } catch (e) { local = ''; }
+                }
+            }
+            if (local) { css = css.split(url).join(local); ok++; } else failed.push(url);
+        }
+        // 存不下来的再测一下能不能直接显示，告诉用户是图床的问题还是只是不能存
+        let visible = 0;
+        for (const url of failed) { if (await this._probeImage(url)) visible++; }
+        if (ok) {
+            p.css = css;
+            p.updatedAt = Date.now();
+            this.saveProfiles(kind, list);
+            this.applyStyles();
+        }
+        const dead = failed.length - visible;
+        const msg = `存到本地 ${ok} 张` + (visible ? `，${visible} 张可以直接显示（图床不允许下载）` : '') + (dead ? `，${dead} 张打不开（图床链接失效或被网络拦截）` : '');
+        this._notify('美化图片', msg, dead ? '⚠️' : '✅');
+        return { ok, fail: failed.length, dead, total: urls.length };
+    }
+
     // 「我」页面入口下面那行小字
     listEntryDesc() {
         const p = this.isActive('list') ? this.getActiveProfile('list') : null;
@@ -1016,8 +1091,10 @@ export class NuojiCompat {
                     <button type="button" data-njc="rename">改名</button>
                     <button type="button" data-njc="export">导出</button>
                     <button type="button" class="is-danger" data-njc="delete">删除</button>
+                    <button type="button" data-njc="localize">修复图片显示</button>
                     <button type="button" data-njc="off">不用了，换回内置风格</button>
-                </div>` : ''}
+                </div>
+                <div class="njc-desc" style="margin-top:6px">使用导入美化时，柚月自己的聊天背景、单聊「气泡样式」都不生效，全部按美化来；背景可以在下面「美化聊天背景」里设。</div>` : ''}
                 <input type="file" accept=".css,.txt,text/css,text/plain" data-njc="file" hidden>
                 <div class="njc-editor" data-njc="editor" hidden>
                     <textarea data-njc="text" spellcheck="false" placeholder="把糯叽机的聊天美化 CSS 粘贴到这里"></textarea>
@@ -1046,6 +1123,7 @@ export class NuojiCompat {
                     <button type="button" data-njc="rename" ${activeId ? '' : 'disabled'}>改名</button>
                     <button type="button" data-njc="export" ${activeId ? '' : 'disabled'}>导出</button>
                     <button type="button" class="is-danger" data-njc="delete" ${activeId ? '' : 'disabled'}>删除</button>
+                    <button type="button" data-njc="localize" ${activeId ? '' : 'disabled'}>修复图片显示</button>
                 </div>
                 <input type="file" accept=".css,.txt,text/css,text/plain" data-njc="file" hidden>
                 <div class="njc-editor" data-njc="editor" hidden>
@@ -1082,6 +1160,17 @@ export class NuojiCompat {
         return `
             <div class="njc-part" data-njc-part="extras" data-njc-chat="${esc(chatId)}">
                 ${this._listThemesHtml()}
+                <div class="njc-sec">
+                    <div class="njc-sec-title">美化聊天背景<small>使用导入的聊天美化时用这张当聊天背景（所有聊天通用）；美化自己写了背景时以美化为准</small></div>
+                    <div class="njc-frame-row" data-njc-bg-row>
+                        <span class="njc-frame-prev" style="${opt.chatBg ? `background-image:url('${esc(opt.chatBg)}');background-size:cover` : ''}">${opt.chatBg ? '' : '无'}</span>
+                        <span class="njc-frame-label">聊天背景</span>
+                        <button type="button" data-njc-bg="upload">上传</button>
+                        <button type="button" data-njc-bg="link">链接</button>
+                        <button type="button" data-njc-bg="clear" ${opt.chatBg ? '' : 'disabled'}>清除</button>
+                    </div>
+                    <input type="file" accept="image/*" data-njc-bg="file" hidden>
+                </div>
                 <div class="njc-sec">
                     <div class="njc-sec-title">头像框<small>聊天里气泡旁的头像加装饰框（透明 PNG / GIF），不开美化也能用；美化自带头像框时以美化为准</small></div>
                     ${this._frameRow('global', 'them', f.them)}
@@ -1141,6 +1230,7 @@ export class NuojiCompat {
             part.dataset.njcBound = '1';
             part.querySelectorAll('.njc-sec[data-njc-kind]').forEach(sec => this._bindSection(part, sec));
             this._bindFrames(part);
+            this._bindChatBg(part);
             part.querySelectorAll('[data-njc-opt]').forEach(inp => inp.addEventListener('change', () => {
                 const o = this.getOptions();
                 o[inp.dataset.njcOpt] = !!inp.checked;
@@ -1169,6 +1259,7 @@ export class NuojiCompat {
         q('select')?.addEventListener('change', (e) => pick(e.target.value));
         sec.querySelectorAll('[data-njc-pick]').forEach(t => t.addEventListener('click', () => pick(t.classList.contains('active') ? '' : t.dataset.njcPick)));
         q('off')?.addEventListener('click', () => pick(''));
+        q('localize')?.addEventListener('click', () => this.localizeImages(kind));
 
         const upsert = (name, css, id = null) => {
             const list = this.getProfiles(kind);
@@ -1196,6 +1287,7 @@ export class NuojiCompat {
                 if (!p) return;
                 this._notify('导入成功', `${label}「${p.name}」已应用`);
                 this._rerenderAllParts(card);
+                this.localizeImages(kind, { silent: true });
             } catch (err) {
                 this._notify('导入失败', err?.message || '读不了这个文件', '❌');
             }
@@ -1224,6 +1316,7 @@ export class NuojiCompat {
             if (!p) return;
             this._notify('已保存', `${label}「${p.name}」已应用`);
             this._rerenderAllParts(card);
+            this.localizeImages(kind, { silent: true });
         });
         q('rename')?.addEventListener('click', () => {
             const list = this.getProfiles(kind);
@@ -1259,6 +1352,31 @@ export class NuojiCompat {
             this.setActiveId(kind, '');
             this.refreshApp();
             this._rerenderAllParts(card);
+        });
+    }
+
+    _bindChatBg(part) {
+        const row = part.querySelector('[data-njc-bg-row]');
+        if (!row) return;
+        const file = part.querySelector('[data-njc-bg="file"]');
+        const set = (url) => { const o = this.getOptions(); o.chatBg = url; this.saveOptions(o); this.applyStyles(); this._rerenderPart(part); };
+        row.querySelector('[data-njc-bg="upload"]')?.addEventListener('click', () => { if (file) { file.value = ''; file.click(); } });
+        row.querySelector('[data-njc-bg="link"]')?.addEventListener('click', () => {
+            const url = String(window.prompt('聊天背景图片链接', '') || '').trim();
+            if (url) set(url);
+        });
+        row.querySelector('[data-njc-bg="clear"]')?.addEventListener('click', () => set(''));
+        file?.addEventListener('change', async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            try {
+                let url = '';
+                try { url = await window.VirtualPhone?.imageManager?.uploadBlob?.(f, 'nuoji_chatbg'); } catch (err) { url = ''; }
+                if (!url) url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result || '')); r.onerror = rej; r.readAsDataURL(f); });
+                set(url);
+                this._notify('美化聊天背景', '已更新');
+            } catch (err) { this._notify('上传失败', err?.message || '', '❌'); }
         });
     }
 
