@@ -10,13 +10,14 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m18';
+import { ChatView } from './chat-view.js?v=20261021-m18-nj1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261021-m17';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261018-nj1';
+import { NuojiCompat } from './nuoji-compat.js?v=20261018-nj1';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -84,6 +85,8 @@ export class WechatApp {
         this._applyCustomChatStyle('');
         // 🎨 聊天界面风格（微信 / QQ / LINE · 日间 / 夜间）
         try { applyWechatSkinAttrs(this.getWechatSkin()); } catch (e) { console.warn('⚠️ 界面风格初始化失败:', e); }
+        // 🍡 糯叽机美化兼容（聊天界面 / 聊天列表 CSS 导入、头像框）
+        try { this.nuoji = new NuojiCompat(this); } catch (e) { console.warn('⚠️ 糯叽机美化初始化失败:', e); }
 
         // 🔥 监听滑动返回事件 (防止切换聊天导致重复绑定)
         if (!window._wechatSwipeBackBound) {
@@ -10279,6 +10282,9 @@ export class WechatApp {
                     </div>
                 </div>
 
+                <!-- 🍡 糯叽机美化 -->
+                <div style="margin: 15px;">${this.nuoji?.renderCardHtml?.({}) || ''}</div>
+
                 <!-- 数据管理 -->
                 <div style="background: #fff3cd; border-radius: 12px; padding: 15px; margin: 15px; border: 1px solid #ffc107;">
                     <div style="font-size: 14px; font-weight: 600; color: #856404; margin-bottom: 12px;">
@@ -10303,6 +10309,7 @@ export class WechatApp {
 
         this.phoneShell.setContent(html);
         this.renderWechatWorldbookList();
+        try { this.nuoji?.bindCard?.(document.querySelector('.phone-view-current') || document); } catch (e) { console.warn('糯叽机美化卡片绑定失败', e); }
 
         // 返回按钮
         const backBtn = document.getElementById('back-from-settings');

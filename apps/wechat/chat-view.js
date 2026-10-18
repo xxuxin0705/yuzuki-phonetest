@@ -1,6 +1,6 @@
 import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup.js';
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
-import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
+import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261018-nj1';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
@@ -15582,6 +15582,7 @@ ${transLines.join('\n')}`);
                     </style>
                     ${isGroupChat ? this._renderGroupInfoCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? this._renderSkinCardHtml() : ''}
+                    ${isGroupChat ? (this.app.nuoji?.renderCardHtml?.({ chatId: String(currentChat.id || '') }) || '') : ''}
                     ${isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id, { sides: ['me'], title: '我的气泡样式' }) : ''}
                     ${!isGroupChat ? `<section class="wechat-detail-card" data-collapse-key="profile">
                         <div class="wechat-detail-profile is-compact">
@@ -15603,6 +15604,7 @@ ${transLines.join('\n')}`);
                     </section>` : ''}
                     ${!isGroupChat && contact ? this._renderContactExtraCardsHtml(contact) : ''}
                     ${!isGroupChat ? this._renderSkinCardHtml() : ''}
+                    ${!isGroupChat ? (this.app.nuoji?.renderCardHtml?.({ chatId: String(currentChat.id || '') }) || '') : ''}
                     ${!isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? `<section class="wechat-detail-card">
                         <div class="wechat-detail-heading">翻译</div>
@@ -15680,6 +15682,8 @@ ${transLines.join('\n')}`);
         }
         this._bindBubbleStyleCard(String(currentChat.id || ''));
         this._bindSkinCard();
+        // 🍡 糯叽机美化卡片（聊天界面 / 聊天列表 CSS 导入 + 头像框）
+        try { this.app.nuoji?.bindCard?.(document.querySelector('.phone-view-current') || document); } catch (e) { console.warn('糯叽机美化卡片绑定失败', e); }
         if (!isGroupChat && contact) this._bindContactExtraCards(contact);
         (document.querySelector('.phone-view-current') || document).querySelector('#wechat-pat-toggle')?.addEventListener('change', (e) => {
             const live = this.app.wechatData.getChat?.(currentChat.id);
