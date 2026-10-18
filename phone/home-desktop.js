@@ -9,7 +9,7 @@
  *  数据存 IndexedDB（图片多、体积大，不塞进酒馆 settings.json）
  * ======================================================== */
 
-import { BUILTINS as WIDGET_DEFS, WIDGETS_CSS, LEGACY_WIDGET_MAP } from './home-widgets.js?v=20261018-w3';
+import { BUILTINS as WIDGET_DEFS, WIDGETS_CSS, LEGACY_WIDGET_MAP, REFERENCE_EXTRA_CSS } from './home-widgets.js?v=20261018-ref1';
 
 const STYLE_ID = 'yzd-desktop-style-v2';
 const DB_NAME = 'yuzuki-phone-desktop';
@@ -21,21 +21,32 @@ const ROWS = 6;
 const DOCK_MAX = 5;
 
 export const SIZE_DEFS = {
-    small:    { w: 2, h: 2, label: '小 2×2' },
-    medium:   { w: 4, h: 2, label: '中 4×2' },
-    large:    { w: 4, h: 4, label: '大 4×4' },
-    size_2x1: { w: 2, h: 1, label: '扁 2×1' },
-    size_4x1: { w: 4, h: 1, label: '长条 4×1' },
-    size_1x2: { w: 1, h: 2, label: '瘦高 1×2' },
-    size_1x1: { w: 1, h: 1, label: '迷你 1×1' }
+    size_1x1: { w: 1, h: 1, label: '1×1' },
+    size_1x2: { w: 1, h: 2, label: '1×2' },
+    size_2x1: { w: 2, h: 1, label: '2×1' },
+    size_2x2: { w: 2, h: 2, label: '2×2' },
+    size_4x1: { w: 4, h: 1, label: '4×1' },
+    size_4x2: { w: 4, h: 2, label: '4×2' },
+    size_2x4: { w: 2, h: 4, label: '2×4' },
+    size_3x3: { w: 3, h: 3, label: '3×3' },
+    size_4x3: { w: 4, h: 3, label: '4×3' },
+    size_4x4: { w: 4, h: 4, label: '4×4' },
+    size_4x6: { w: 4, h: 6, label: '4×6' },
+    // 老桌面数据继续兼容，画廊不再展示「大/中/小」。
+    small: {w:2,h:2,label:'2×2'},
+    medium: {w:4,h:2,label:'4×2'},
+    large: {w:4,h:4,label:'4×4'}
 };
-
-const GAL_CATS = [['all', '全部'], ['small', '小组件'], ['medium', '中组件'], ['large', '大组件']];
-/** 尺寸 → 分类：小 = 2×2 及更小（1×1 / 2×1 / 1×2），中 = 4×2 / 4×1，大 = 4×4 */
+const GAL_CATS = [['all', '全部尺寸'], ['size_1x1','1×1'], ['size_1x2','1×2'], ['size_2x1','2×1'], ['size_2x2','2×2'], ['size_4x1','4×1'], ['size_4x2','4×2'], ['size_2x4','2×4'], ['size_3x3','3×3'], ['size_4x3','4×3'], ['size_4x4','4×4'], ['size_4x6','4×6']];
 function sizeCat(size) {
-    if (size === 'large') return 'large';
-    if (size === 'medium' || size === 'size_4x1') return 'medium';
-    return 'small';
+    return ({small:'size_2x2',medium:'size_4x2',large:'size_4x4'})[size] || (SIZE_DEFS[size] ? size : 'size_2x2');
+}
+const REFERENCE_CATALOG = [{"kind":"ref","id":"preset_0","size":"size_4x1","name":"搜索栏"},{"kind":"ref","id":"preset_1","size":"size_4x1","name":"自定義組件"},{"kind":"builtin","type":"photo","size":"size_1x1","name":"图片"},{"kind":"builtin","type":"badge","size":"size_1x1"},{"kind":"builtin","type":"dice","size":"size_1x1","name":"骰子"},{"kind":"builtin","type":"alipay","size":"size_1x2","name":"支付宝"},{"kind":"builtin","type":"vertical_text","size":"size_1x2","name":"竖式文字"},{"kind":"builtin","type":"vertical_goal","size":"size_1x2","name":"竖式目标"},{"kind":"builtin","type":"photo","size":"size_1x2","name":"图片"},{"kind":"builtin","type":"photo","size":"size_2x1","name":"图片"},{"kind":"builtin","type":"horizontal_text","size":"size_2x1","name":"横向文字"},{"kind":"builtin","type":"horizontal_goal","size":"size_2x1","name":"横向目标"},{"kind":"builtin","type":"companion","size":"size_2x1"},{"kind":"builtin","type":"photo","size":"size_2x2","name":"图片"},{"kind":"builtin","type":"vinyl","size":"size_2x2"},{"kind":"builtin","type":"badge","size":"size_2x2"},{"kind":"builtin","type":"heart_badge","size":"size_2x2"},{"kind":"builtin","type":"newmsg","size":"size_2x2"},{"kind":"builtin","type":"videocall","size":"size_2x2"},{"kind":"builtin","type":"analog","size":"size_2x2","name":"圆形时钟"},{"kind":"builtin","type":"muyu","size":"size_2x2"},{"kind":"builtin","type":"capsule","size":"size_2x2","name":"液态胶囊"},{"kind":"builtin","type":"couple","size":"size_2x2","name":"情侣纪念日"},{"kind":"builtin","type":"simple_cal","size":"size_2x2","name":"简约日历"},{"kind":"builtin","type":"zodiac","size":"size_2x2","name":"星座运势"},{"kind":"builtin","type":"countdown","size":"size_2x2"},{"kind":"builtin","type":"water","size":"size_2x2","name":"喝水打卡"},{"kind":"builtin","type":"moon","size":"size_2x2"},{"kind":"builtin","type":"wide_banner","size":"size_4x1","name":"横幅"},{"kind":"builtin","type":"photo","size":"size_4x1","name":"图片"},{"kind":"builtin","type":"week_strip","size":"size_4x1","name":"一周日历"},{"kind":"ref","id":"preset_2","size":"size_4x2","name":"电影日历"},{"kind":"ref","id":"preset_3","size":"size_4x2","name":"日历"},{"kind":"builtin","type":"photo","size":"size_4x2","name":"图片"},{"kind":"builtin","type":"clock","size":"size_4x2"},{"kind":"builtin","type":"memo","size":"size_4x2"},{"kind":"builtin","type":"daily_info","size":"size_4x2"},{"kind":"builtin","type":"player","size":"size_4x2"},{"kind":"builtin","type":"gameboy","size":"size_4x2"},{"kind":"builtin","type":"three_photos","size":"size_4x2"},{"kind":"builtin","type":"love_frame","size":"size_4x2"},{"kind":"builtin","type":"zodiac","size":"size_4x2","name":"星座运势"},{"kind":"builtin","type":"vertical_goal","size":"size_2x4","name":"竖式目标"},{"kind":"builtin","type":"photo","size":"size_2x4","name":"图片"},{"kind":"builtin","type":"vertical_text","size":"size_2x4","name":"竖式文字"},{"kind":"builtin","type":"todo_list","size":"size_3x3","name":"待办事项"},{"kind":"builtin","type":"quote_card","size":"size_3x3","name":"语录卡片"},{"kind":"builtin","type":"photo","size":"size_3x3","name":"图片"},{"kind":"builtin","type":"photo_caption","size":"size_4x3","name":"照片文字"},{"kind":"builtin","type":"month_grid","size":"size_4x3","name":"月历"},{"kind":"builtin","type":"year_progress","size":"size_4x3","name":"年度进度"},{"kind":"builtin","type":"photo","size":"size_4x3","name":"图片"},{"kind":"ref","id":"preset_4","size":"size_4x4","name":"仿iMessage"},{"kind":"builtin","type":"profile","size":"size_4x4"},{"kind":"builtin","type":"photo","size":"size_4x4","name":"图片"},{"kind":"builtin","type":"month_cal","size":"size_4x4"},{"kind":"builtin","type":"polaroid_stack","size":"size_4x4"},{"kind":"builtin","type":"scrapbook","size":"size_4x4"},{"kind":"builtin","type":"big_player","size":"size_4x4"},{"kind":"builtin","type":"moments","size":"size_4x4"},{"kind":"builtin","type":"big_calendar","size":"size_4x6","name":"超大日程"},{"kind":"builtin","type":"big_weather","size":"size_4x6","name":"天气"}];
+let _refPresetsPromise;
+function loadReferenceTemplates() {
+    if (!_refPresetsPromise) _refPresetsPromise = import('./home-widget-reference.js?v=20261018-ref1').then(m => m.REFERENCE_TEMPLATES)
+        .catch(err => { _refPresetsPromise = null; throw err; });
+    return _refPresetsPromise;
 }
 
 const BG_OPTIONS = [['glass', '毛玻璃'], ['clear', '透明'], ['solid', '纯色'], ['image', '图片']];
@@ -49,9 +60,9 @@ const COMMON_FIELDS = [
 ];
 const COMMON_DEFAULTS = { bg: 'clear', bgColor: '#ffffff', bgAlpha: 0.38, bgImage: '', textColor: '#2b2b33', radius: 24 };
 
-// 内置组件定义在 home-widgets.js（按糯叽机的小/中/大内置组件重做）
+// 内置组件定义在 home-widgets.js；画廊按用户提供的糯叽机 JSON 清单与网格尺寸重组。
 const BUILTINS = WIDGET_DEFS;
-const NUO_BUILTIN_TYPE_MAP = { clock: 'clock', calendar: 'month_cal', photo: 'photo', image: 'photo', note: 'text', text: 'text', countdown: 'countdown', music: 'player', vinyl: 'vinyl', badge: 'badge', analog: 'analog', water: 'water', moon: 'moon', zodiac: 'zodiac' };
+const NUO_BUILTIN_TYPE_MAP = {"image":"photo","badge":"badge","dice":"dice","alipay":"alipay","vertical_text":"vertical_text","vertical_goal":"vertical_goal","horizontal_text":"horizontal_text","horizontal_goal":"horizontal_goal","companion":"companion","vinyl":"vinyl","heart_badge":"heart_badge","new_message":"newmsg","video_call":"videocall","round_clock":"analog","woodfish":"muyu","glass_capsules":"capsule","couples":"couple","mini_calendar":"simple_cal","horoscope":"zodiac","countdown":"countdown","water_tracker":"water","moon_phase":"moon","wide_banner":"wide_banner","week_strip":"week_strip","clock":"clock","note":"memo","daily_info":"daily_info","medium_player":"player","gamebox":"gameboy","three_photos":"three_photos","love_photo":"love_frame","todo_list":"todo_list","quote_card":"quote_card","photo_caption":"photo_caption","month_grid":"month_grid","year_progress":"year_progress","profile":"profile","calendar":"month_cal","polaroid_stack":"polaroid_stack","scrapbook_photo":"scrapbook","large_player":"big_player","dynamic_interface":"moments","big_calendar":"big_calendar","big_weather":"big_weather"};
 const defName = (def, size) => def?.names?.[size] || def?.name || '组件';
 
 /* ------------------------------ 工具 ------------------------------ */
@@ -1697,9 +1708,11 @@ Object.assign(FreeDesktop.prototype, {
     },
 
     openResize(item) {
-        const sizes = item.wtype === 'custom' ? Object.keys(SIZE_DEFS) : (BUILTINS[item.wtype]?.sizes || [item.size]);
+        const sizes = item.wtype === 'custom'
+            ? GAL_CATS.slice(1).map(([key]) => key)
+            : [...new Set((BUILTINS[item.wtype]?.sizes || [item.size]).map(sizeCat))];
         const sheet = this.openSheet('调整大小', (body) => {
-            body.innerHTML = `<div class="yzd-chips">${sizes.map(sz => `<span class="yzd-chip ${sz === item.size ? 'on' : ''}" data-sz="${sz}">${SIZE_DEFS[sz].label}</span>`).join('')}</div>
+            body.innerHTML = `<div class="yzd-chips">${sizes.map(sz => `<span class="yzd-chip ${sz === sizeCat(item.size) ? 'on' : ''}" data-sz="${sz}">${SIZE_DEFS[sz].label}</span>`).join('')}</div>
                 <p class="yzd-tip">放不下时会自动挪到本页其他空位或下一页。</p>`;
             body.addEventListener('click', (e) => {
                 const c = e.target.closest('[data-sz]');
@@ -1953,7 +1966,7 @@ Object.assign(FreeDesktop.prototype, {
             const render = () => {
                 body.innerHTML = `
                     <div class="yzd-field"><label class="yzd-flabel">组件名称</label><input class="yzd-input" data-f="name" value="${esc(data.name || '')}"></div>
-                    <div class="yzd-field"><label class="yzd-flabel">尺寸</label><select class="yzd-input" data-f="size">${Object.entries(SIZE_DEFS).map(([k, v]) => `<option value="${k}" ${k === size ? 'selected' : ''}>${v.label}</option>`).join('')}</select></div>
+                    <div class="yzd-field"><label class="yzd-flabel">尺寸</label><select class="yzd-input" data-f="size">${GAL_CATS.slice(1).map(([k, label]) => `<option value="${k}" ${k === sizeCat(size) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
                     <div class="yzd-sec">用户可填写字段</div>
                     <div class="yzd-uf"></div>
                     <div class="yzd-sec">图片素材 <small>HTML/CSS 里用 {{名称}} 引用</small></div>
@@ -2138,7 +2151,7 @@ Object.assign(FreeDesktop.prototype, {
  *  组件画廊（添加 / 更换样式）
  * ==================================================================== */
 Object.assign(FreeDesktop.prototype, {
-    /* 组件按「小 / 中 / 大 / 未分类」分组，再按来源（内置 / 自建 / 导入 / 某个主题）筛选 */
+    /* 仅展示用户 JSON 清单里的内置组件，按 11 种网格尺寸过滤；主题来源筛选不变。 */
     openGallery({ mode = 'add', target = null } = {}) {
         const replacing = mode === 'replace' && target;
         const s = this.S;
@@ -2178,8 +2191,8 @@ Object.assign(FreeDesktop.prototype, {
         // 来源：内置 → 每个已保存的主题（直接取主题里的组件）→ 单独导入的组件
         const entries = () => {
             const list = [];
-            Object.entries(BUILTINS).forEach(([type, def]) => {
-                def.sizes.forEach(size => list.push({ kind: 'builtin', type, size, name: defName(def, size), cat: sizeCat(size), src: '内置' }));
+            REFERENCE_CATALOG.forEach((e) => {
+                list.push({ ...e, name: e.name || defName(BUILTINS[e.type], e.size), cat: sizeCat(e.size), src: '内置' });
             });
             const seenTheme = new Set();
             this._themeSources().forEach(th => {
@@ -2228,6 +2241,7 @@ Object.assign(FreeDesktop.prototype, {
                 card.className = `yzd-gcard span-${sd.w >= 4 ? 2 : 1}`;
                 if (e.kind === 'builtin') { card.dataset.type = e.type; card.dataset.size = e.size; }
                 else if (e.kind === 'theme') card.dataset.theme = '1';
+                else if (e.kind === 'ref') card.dataset.ref = e.id;
                 else card.dataset.lib = String(e.idx);
                 const { wrap } = this._previewShell(e.size);
                 wrap.classList.add('lazy');
@@ -2256,12 +2270,18 @@ Object.assign(FreeDesktop.prototype, {
                 } else {
                     const box = document.createElement('div');
                     box.className = 'yzd-wbox yzd-wbox-custom';
-                    const iframe = document.createElement('iframe');
-                    iframe.className = 'yzd-frame';
-                    iframe.setAttribute('sandbox', 'allow-scripts');
-                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: Object.fromEntries(Object.entries(e.tpl.images || {}).map(([key, value]) => [key, resolveWidgetMedia(value)])) }, e.wstate || {});
-                    box.appendChild(iframe);
                     inner.appendChild(box);
+                    const appendPreview = tpl => {
+                        if (!tpl || !box.isConnected) return;
+                        const iframe = document.createElement('iframe');
+                        iframe.className = 'yzd-frame';
+                        iframe.setAttribute('sandbox', 'allow-scripts');
+                        iframe.srcdoc = buildSrcdoc({ html: tpl.html, css: tpl.css, images: Object.fromEntries(Object.entries(tpl.images || {}).map(([key, value]) => [key, resolveWidgetMedia(value)])) }, e.wstate || {});
+                        box.appendChild(iframe);
+                    };
+                    if (e.kind === 'ref') {
+                        loadReferenceTemplates().then(t => appendPreview(t[e.id])).catch(err => console.warn('[组件预览] 模板加载失败',err));
+                    } else appendPreview(e.tpl);
                 }
             };
             if (typeof IntersectionObserver !== 'undefined') {
@@ -2334,6 +2354,19 @@ Object.assign(FreeDesktop.prototype, {
                     ['bg', 'bgColor', 'bgAlpha', 'bgImage', 'textColor', 'radius'].forEach(k => { if (target.data?.[k] !== undefined) keep[k] = target.data[k]; });
                     Object.assign(newItem.data, keep);
                 }
+            } else if (card.dataset.ref) {
+                try {
+                    const refs = await loadReferenceTemplates();
+                    const tpl = refs[card.dataset.ref];
+                    if (!tpl) { this.toast('预设组件尚未加载，请重试'); return; }
+                    // 源文件提供的封面/头像按组件素材库单独保存，而不是写入酒馆背景图。
+                    // 不修改只读预设本体，其他组件再次使用时仍能获取完整模板。
+                    const images = { ...(tpl.images || {}) };
+                    for (const [key, value] of Object.entries(images)) {
+                        if (/^data:image\//i.test(String(value))) images[key] = await saveWidgetMedia(value);
+                    }
+                    newItem = makeCustomWidget({ ...tpl, images }, card._entry.size);
+                } catch (err) { console.error('[组件] 内置自定义模板加载失败', err); this.toast('组件模板加载失败'); return; }
             } else if (card.dataset.theme) {
                 const e2 = card._entry;
                 newItem = makeCustomWidget({ ...e2.item.data, images: { ...(e2.item.data?.images || {}) } }, e2.size);
@@ -2376,7 +2409,7 @@ Object.assign(FreeDesktop.prototype, {
     },
 
     _chooseSize() {
-        return this._dialog(`<div class="yzd-dlg-title">选择尺寸</div><div class="yzd-chips">${Object.entries(SIZE_DEFS).map(([k, v]) => `<span class="yzd-chip" data-sz="${k}">${v.label}</span>`).join('')}</div>
+        return this._dialog(`<div class="yzd-dlg-title">选择尺寸</div><div class="yzd-chips">${GAL_CATS.slice(1).map(([k, label]) => `<span class="yzd-chip" data-sz="${k}">${label}</span>`).join('')}</div>
             <div class="yzd-dlg-btns"><span class="yzd-btn" data-v="0">取消</span></div>`, (dlg, close) => {
             dlg.addEventListener('click', (e) => {
                 const c = e.target.closest('[data-sz]');
@@ -2745,12 +2778,13 @@ Object.assign(FreeDesktop.prototype, {
         return finalName;
     },
 
-    /** 主题里的组件要不要存进组件库？存到「按大小分到小/中/大」还是「未分类」；来源记为主题名 */
+    /** 导入主题中的自定义组件按实际网格尺寸统计，来源仍记为主题名。 */
     async _askSaveThemeWidgets(tpls, themeName) {
         if (!tpls?.length) return;
-        const cnt = { small: 0, medium: 0, large: 0 };
-        tpls.forEach(t => { cnt[sizeCat(t.size)]++; });
-        const ok = await this.confirm(`把这个主题的 ${tpls.length} 个组件存进组件库？\n（小组件 ${cnt.small} 个 · 中组件 ${cnt.medium} 个 · 大组件 ${cnt.large} 个，会按它们本身的尺寸出现在「＋ 组件」的小/中/大里，来源标为「${themeName}」）`, '保存');
+        const cnt = {};
+        tpls.forEach(t => { const k = sizeCat(t.size); cnt[k] = (cnt[k] || 0) + 1; });
+        const breakdown = GAL_CATS.slice(1).filter(([k]) => cnt[k]).map(([k, label]) => `${label} ${cnt[k]} 个`).join(' · ');
+        const ok = await this.confirm(`把这个主题的 ${tpls.length} 个组件存进组件库？\n（${breakdown}，会按网格尺寸筛选，来源仍为「${themeName}」）`, '保存');
         if (!ok) return;
         tpls.forEach(t => this.addToLibrary(t, { src: themeName }));
         this.toast(`已存入组件库（来源：${themeName}）`);
@@ -3262,9 +3296,10 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-gdel{position:absolute;top:6px;right:6px;z-index:5;font-size:14px!important;font-weight:700}
 .yzd-root .yzd-gsrc{font-size:10.5px;color:#9a9aa0;margin:-3px 2px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .yzd-root .yzd-gal-filters{position:sticky;top:0;z-index:6;background:#f4f4f7;padding:2px 0 8px;margin:0 -2px}
-.yzd-root .yzd-tabs{display:flex;background:#e5e5ea;border-radius:11px;padding:3px;gap:2px}
-.yzd-root .yzd-tab{flex:1;text-align:center;padding:7px 0;font-size:13px;border-radius:9px;color:#444;cursor:pointer;white-space:nowrap}
-.yzd-root .yzd-tab.on{background:#fff;color:#111;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.yzd-root .yzd-tabs{display:flex;background:transparent;border-radius:11px;padding:3px;gap:6px;overflow-x:auto;scrollbar-width:none;touch-action:pan-x;-webkit-overflow-scrolling:touch}
+.yzd-root .yzd-tab{flex:0 0 auto;text-align:center;padding:7px 12px;font-size:13px;border-radius:15px;background:#e5e5ea;color:#444;cursor:pointer;white-space:nowrap}
+.yzd-root .yzd-tab.on{background:#303036;color:#fff;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.yzd-root .yzd-tabs::-webkit-scrollbar{display:none}
 .yzd-root .yzd-srcs-row{display:flex;align-items:center;gap:6px;padding-top:8px}
 .yzd-root .yzd-srcs-label{flex:0 0 auto;font-size:12px;color:#8e8e93}
 .yzd-root .yzd-srcs{display:flex;gap:6px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none;touch-action:pan-x}
@@ -3360,6 +3395,8 @@ function injectStyle() {
     document.getElementById('yzd-desktop-style-v1')?.remove();
     const st = document.createElement('style');
     st.id = STYLE_ID;
-    st.textContent = DESKTOP_CSS + WIDGETS_CSS;
+    st.textContent = DESKTOP_CSS + WIDGETS_CSS + REFERENCE_EXTRA_CSS;
     document.head.appendChild(st);
 }
+
+/* 11 种尺寸横向滑动，避免窄屏过长；来源主题栏保持原样。 */
