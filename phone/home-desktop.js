@@ -9,7 +9,9 @@
  *  数据存 IndexedDB（图片多、体积大，不塞进酒馆 settings.json）
  * ======================================================== */
 
-const STYLE_ID = 'yzd-desktop-style-v1';
+import { BUILTINS as WIDGET_DEFS, WIDGETS_CSS, LEGACY_WIDGET_MAP } from './home-widgets.js?v=20261018-w2';
+
+const STYLE_ID = 'yzd-desktop-style-v2';
 const DB_NAME = 'yuzuki-phone-desktop';
 const DB_STORE = 'kv';
 export const FREE_DESKTOP_FLAG_KEY = 'phone-home-free-desktop';
@@ -47,68 +49,10 @@ const COMMON_FIELDS = [
 ];
 const COMMON_DEFAULTS = { bg: 'glass', bgColor: '#ffffff', bgAlpha: 0.38, bgImage: '', textColor: '#2b2b33', radius: 24 };
 
-const BUILTINS = {
-    clock: {
-        name: '时钟', sizes: ['medium', 'small', 'size_2x1', 'size_4x1', 'large'], defaultSize: 'medium',
-        defaults: { h24: '24', lang: 'zh' },
-        fields: [
-            { key: 'h24', label: '时间格式', type: 'select', options: [['24', '24 小时制'], ['12', '12 小时制']] },
-            { key: 'lang', label: '日期语言', type: 'select', options: [['zh', '中文'], ['en', 'English']] }
-        ],
-        timeBased: true
-    },
-    analog: {
-        name: '圆形时钟', sizes: ['small', 'size_1x1'], defaultSize: 'small',
-        defaults: { accent: '#ff6b81' },
-        fields: [{ key: 'accent', label: '秒针/强调色', type: 'color' }],
-        timeBased: true
-    },
-    calendar: {
-        name: '日历', sizes: ['small', 'medium'], defaultSize: 'small', app: 'calendar',
-        defaults: { accent: '#ff5a5f' },
-        fields: [{ key: 'accent', label: '强调色', type: 'color' }],
-        timeBased: true
-    },
-    photo: {
-        name: '图片', sizes: ['small', 'medium', 'large', 'size_2x1', 'size_4x1', 'size_1x2', 'size_1x1'], defaultSize: 'small',
-        defaults: { image: '', fit: 'cover', bg: 'clear', caption: '' },
-        fields: [
-            { key: 'image', label: '图片', type: 'image', maxDim: 1200 },
-            { key: 'fit', label: '填充方式', type: 'select', options: [['cover', '铺满裁切'], ['contain', '完整显示']] },
-            { key: 'caption', label: '图片文字（可空）', type: 'text' }
-        ]
-    },
-    music: {
-        name: '音乐唱片', sizes: ['small', 'medium'], defaultSize: 'small', app: 'music',
-        defaults: { title: '', cover: '', spin: 'on' },
-        fields: [
-            { key: 'title', label: '标题（空=应用名）', type: 'text' },
-            { key: 'cover', label: '唱片封面（空=音乐图标）', type: 'image', maxDim: 600 },
-            { key: 'spin', label: '唱片转动', type: 'select', options: [['on', '转'], ['off', '不转']] }
-        ]
-    },
-    countdown: {
-        name: '纪念日 / 倒数日', sizes: ['small', 'medium', 'size_2x1'], defaultSize: 'small',
-        defaults: { title: '在一起', date: '', accent: '#ff7aa2' },
-        fields: [
-            { key: 'title', label: '标题', type: 'text' },
-            { key: 'date', label: '日期（过去=已经N天，未来=还有N天）', type: 'date' },
-            { key: 'accent', label: '数字颜色', type: 'color' }
-        ],
-        timeBased: true
-    },
-    note: {
-        name: '便签', sizes: ['small', 'medium', 'size_2x1', 'size_4x1', 'large', 'size_1x2'], defaultSize: 'small',
-        defaults: { text: '写点什么…', fontSize: 15, align: 'left' },
-        fields: [
-            { key: 'text', label: '内容', type: 'textarea' },
-            { key: 'fontSize', label: '字号', type: 'range', min: 10, max: 40, step: 1 },
-            { key: 'align', label: '对齐', type: 'select', options: [['left', '左'], ['center', '中'], ['right', '右']] }
-        ]
-    }
-};
-
-const NUO_BUILTIN_TYPE_MAP = { clock: 'clock', calendar: 'calendar', photo: 'photo', image: 'photo', note: 'note', countdown: 'countdown', music: 'music' };
+// 内置组件定义在 home-widgets.js（按糯叽机的小/中/大内置组件重做）
+const BUILTINS = WIDGET_DEFS;
+const NUO_BUILTIN_TYPE_MAP = { clock: 'clock', calendar: 'month_cal', photo: 'photo', image: 'photo', note: 'text', text: 'text', countdown: 'countdown', music: 'player', vinyl: 'vinyl', badge: 'badge', analog: 'analog', water: 'water', moon: 'moon', zodiac: 'zodiac' };
+const defName = (def, size) => def?.names?.[size] || def?.name || '组件';
 
 /* ------------------------------ 工具 ------------------------------ */
 const uid = (p = 'w') => `${p}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -450,9 +394,9 @@ function makeWidget(wtype, size, data = {}) {
     const def = BUILTINS[wtype];
     return {
         id: uid('w'), kind: 'widget', wtype,
-        size: size || def?.defaultSize || 'small',
+        size: (def?.sizes || []).includes(size) ? size : (def?.sizes?.[0] || 'small'),
         page: 0, x: 0, y: 0,
-        data: { ...COMMON_DEFAULTS, ...(def?.defaults || {}), ...(wtype === 'photo' ? { bg: 'clear' } : {}), ...data }
+        data: { ...COMMON_DEFAULTS, ...(def?.defaults || {}), _created: Date.now(), ...data }
     };
 }
 function makeCustomWidget(tpl, size) {
@@ -514,6 +458,14 @@ export class FreeDesktop {
         s.style = { ...defaultStyle(), ...(s.style || {}) };
         s.pages = Math.max(1, Number(s.pages) || 1);
         if (!Array.isArray(s.dock)) s.dock = this._legacyDock();
+        // 旧版内置组件 → 新内置组件
+        s.items.forEach(it => {
+            if (it.kind !== 'widget' || it.wtype === 'custom' || BUILTINS[it.wtype]) return;
+            const to = LEGACY_WIDGET_MAP[it.wtype]?.(it.size) || 'text';
+            const fresh = makeWidget(to, it.size);
+            it.wtype = to;
+            it.data = { ...fresh.data, ...(it.data || {}), ...(to === 'text' && it.data?.text === undefined ? {} : {}) };
+        });
         // 修正越界
         s.items.forEach(it => {
             const { w, h } = sizeOf(it);
@@ -544,13 +496,13 @@ export class FreeDesktop {
         const clock = makeWidget('clock', 'medium');
         Object.assign(clock, { page: 0, x: 0, y: 0 });
         s.items.push(clock);
-        const music = makeWidget('music', 'small');
-        Object.assign(music, { page: 1, x: 0, y: 0 });
-        const cal = makeWidget('calendar', 'small');
+        const vinyl = makeWidget('vinyl', 'small');
+        Object.assign(vinyl, { page: 1, x: 0, y: 0 });
+        const cal = makeWidget('simple_cal', 'small');
         Object.assign(cal, { page: 1, x: 2, y: 0 });
-        const note = makeWidget('note', 'medium', { text: '长按桌面空白处进入编辑模式 ✦\n可以拖动、加组件、导入美化～' });
-        Object.assign(note, { page: 1, x: 0, y: 2 });
-        s.items.push(music, cal, note);
+        const memo = makeWidget('memo', 'medium', { items: '长按空白处进入编辑模式\n拖动图标和组件\n＋ 组件 / 🎨 导入美化' });
+        Object.assign(memo, { page: 1, x: 0, y: 2 });
+        s.items.push(vinyl, cal, memo);
         s.pages = 2;
         return s;
     }
@@ -857,7 +809,13 @@ export class FreeDesktop {
         const d = { ...COMMON_DEFAULTS, ...(BUILTINS[item.wtype]?.defaults || {}), ...(item.data || {}) };
         box.className = 'yzd-wbox yzd-wbox-builtin';
         box.setAttribute('style', this._surfaceStyle(d));
-        box.innerHTML = this._renderBuiltin(item, d);
+        const def = BUILTINS[item.wtype];
+        try {
+            box.innerHTML = def?.render ? def.render(item, d, this._widgetCtx(item)) : '<div class="yzw yzw-text"><div>未知组件</div></div>';
+        } catch (e) {
+            console.warn('[自由桌面] 组件渲染失败', item.wtype, e);
+            box.innerHTML = '<div class="yzw yzw-text"><div>组件出错了</div></div>';
+        }
     }
 
     _surfaceStyle(d) {
@@ -884,7 +842,30 @@ export class FreeDesktop {
         return { y, m, d: day, hh, mm, ss: now.getSeconds(), wd: dt.getDay(), ancient: !!info?.isAncient, rawDate: String(info?.date || ''), weekdayText: String(info?.weekday || '') };
     }
 
-    _renderBuiltin(item, d) {
+    _widgetCtx(item) {
+        return {
+            t: this._timeParts(),
+            choose: (title, options) => this._dialog(`<div class="yzd-dlg-title">${esc(title)}</div>
+                <div class="yzd-chips">${options.map(([v, l]) => `<span class="yzd-chip" data-v="${esc(v)}">${esc(l)}</span>`).join('')}</div>
+                <div class="yzd-dlg-btns"><span class="yzd-btn" data-x="1">取消</span></div>`, (dlg, close) => {
+                dlg.addEventListener('click', (e) => {
+                    const c = e.target.closest('[data-v]');
+                    if (c) close(c.dataset.v); else if (e.target.closest('[data-x]')) close(null);
+                });
+            }),
+            float: (txt) => {
+                const el = this.track?.querySelector(`.yzd-item[data-id="${item.id}"]`);
+                if (!el) return;
+                const f = document.createElement('span');
+                f.className = 'yzw-float';
+                f.textContent = txt;
+                el.appendChild(f);
+                setTimeout(() => f.remove(), 900);
+            }
+        };
+    }
+
+    _renderBuiltinLegacy(item, d) {
         const t = this._timeParts();
         const WD_ZH = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
         const WD_EN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1026,7 +1007,7 @@ Object.assign(FreeDesktop.prototype, {
             const dot = e.target.closest('[data-dot]');
             if (dot) { this.goPage(Number(dot.dataset.dot)); return; }
             const itemEl = e.target.closest('.yzd-item, .yzd-dock-app');
-            this._gStart(e.clientX, e.clientY, itemEl, { delHit: !!e.target.closest('[data-del]') });
+            this._gStart(e.clientX, e.clientY, itemEl, { delHit: !!e.target.closest('[data-del]'), act: e.target.closest('[data-wact]')?.dataset.wact || '' });
             const move = (ev) => this._gMove(ev.clientX, ev.clientY);
             const up = (ev) => {
                 window.removeEventListener('pointermove', move, true);
@@ -1138,7 +1119,18 @@ Object.assign(FreeDesktop.prototype, {
         if (!item) return;
         if (item.kind === 'app') { this.home?.openApp?.(item.appId); return; }
         if (g.fromFrame) return;
-        const linked = BUILTINS[item.wtype]?.app;
+        const tdef = BUILTINS[item.wtype];
+        if (tdef?.onTap) {
+            item.data = item.data || {};
+            Promise.resolve(tdef.onTap(item, g.act || '', this._widgetCtx(item))).then((changed) => {
+                if (!changed) return;
+                const box = this.track?.querySelector(`.yzd-item[data-id="${item.id}"] .yzd-wbox`);
+                if (box) this._fillWidget(item, box);
+                this.save();
+            });
+            return;
+        }
+        const linked = tdef?.app;
         if (linked && this.getApp(linked)) this.home?.openApp?.(linked);
         else if (item.wtype === 'photo' && !item.data?.image) this.editContent(item);
     },
@@ -1427,7 +1419,10 @@ Object.assign(FreeDesktop.prototype, {
         this.closeMenu();
         const entries = [];
         if (item.kind === 'widget') {
-            entries.push(['edit', '编辑内容', '✎'], ['style', '更换样式', '▦'], ['resize', '调整大小', '⤢'], ['home', '编辑主画面', '⚙'], ['remove', '移除组件', '⊖', 'danger']);
+            const canResize = item.wtype === 'custom' || (BUILTINS[item.wtype]?.sizes || []).length > 1;
+            entries.push(['edit', '编辑内容', '✎'], ['style', '更换样式', '▦']);
+            if (canResize) entries.push(['resize', '调整大小', '⤢']);
+            entries.push(['home', '编辑主画面', '⚙'], ['remove', '移除组件', '⊖', 'danger']);
         } else {
             entries.push(['icon', '更换图标', '🖼']);
             if (this.S.icons?.[item.appId]) entries.push(['reseticon', '恢复默认图标', '↺']);
@@ -1715,7 +1710,7 @@ Object.assign(FreeDesktop.prototype, {
         const def = BUILTINS[item.wtype];
         if (!def) return;
         const d = { ...COMMON_DEFAULTS, ...(def.defaults || {}), ...(item.data || {}) };
-        this.openSheet(`编辑 ${def.name}`, (body, sheet) => {
+        this.openSheet(`编辑 ${defName(def, item.size)}`, (body, sheet) => {
             const prev = document.createElement('div');
             prev.className = 'yzd-edit-prev';
             body.appendChild(prev);
@@ -1815,7 +1810,7 @@ Object.assign(FreeDesktop.prototype, {
                 } else if (act === 'export') {
                     downloadText(`${(data.name || 'widget').replace(/[\\/:*?"<>|]/g, '_')}.widget.json`, JSON.stringify(this._toTemplateJson(data, size), null, 2));
                 } else if (act === 'lib') {
-                    this.addToLibrary({ ...this._toTemplateJson(data, size), templateId: data.templateId || uid('t') }, { src: data.templateId ? undefined : '自建' });
+                    this.addToLibrary({ ...this._toTemplateJson(data, size), templateId: data.templateId || uid('t') }, { src: '自建' });
                     this.toast('已存入组件库');
                 } else if (act === 'cancel') {
                     sheet.close();
@@ -1888,7 +1883,7 @@ Object.assign(FreeDesktop.prototype, {
         inner.classList.add(`yzd-w-${wtype}`);
         const box = document.createElement('div');
         inner.appendChild(box);
-        const d = { ...COMMON_DEFAULTS, ...(BUILTINS[wtype]?.defaults || {}), ...(wtype === 'photo' ? { bg: 'clear' } : {}), ...(data || {}) };
+        const d = { ...COMMON_DEFAULTS, ...(BUILTINS[wtype]?.defaults || {}), ...(data || {}) };
         this._fillWidget({ id: 'preview', kind: 'widget', wtype, size, data: d }, box);
         return wrap;
     },
@@ -1961,20 +1956,37 @@ Object.assign(FreeDesktop.prototype, {
         };
         sheet.onClose = () => { observer?.disconnect(); queue = []; };
 
+        // 来源：内置 → 每个已保存的主题（直接取主题里的组件）→ 单独导入的组件
         const entries = () => {
             const list = [];
             Object.entries(BUILTINS).forEach(([type, def]) => {
-                def.sizes.forEach(size => list.push({ kind: 'builtin', type, size, name: def.name, cat: sizeCat(size), src: '内置' }));
+                def.sizes.forEach(size => list.push({ kind: 'builtin', type, size, name: defName(def, size), cat: sizeCat(size), src: '内置' }));
             });
-            Store.library.forEach((tpl, i) => list.push({ kind: 'lib', idx: i, tpl, size: tpl.size, name: tpl.name, cat: sizeCat(tpl.size), src: tpl.src || '导入' }));
+            const seenTheme = new Set();
+            this._themeSources().forEach(th => {
+                const seen = new Set();
+                (th.state?.items || []).forEach(it => {
+                    if (it.kind !== 'widget' || it.wtype !== 'custom') return;
+                    const key = `${it.data?.name}|${String(it.data?.html || '').length}|${String(it.data?.css || '').length}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    seenTheme.add(`${it.data?.name}`);
+                    list.push({ kind: 'theme', item: it, wstate: th.state?.widgetState?.[it.id] || {}, size: it.size, name: it.data?.name || '组件', cat: sizeCat(it.size), src: th.name, tpl: it.data });
+                });
+            });
+            Store.library.forEach((tpl, i) => {
+                // 旧版自动塞进库里的主题组件（和已保存主题里的重复）不再单独显示
+                if ((tpl.src === '导入' || this._themeSources().some(t => t.name === tpl.src)) && seenTheme.has(tpl.name)) return;
+                list.push({ kind: 'lib', idx: i, tpl, size: tpl.size, name: tpl.name, cat: sizeCat(tpl.size), src: tpl.src && tpl.src !== '导入' && !this._themeSources().some(t => t.name === tpl.src) ? tpl.src : '单独导入' });
+            });
             return list;
         };
 
         const renderSrcs = () => {
-            const srcs = ['all', '内置', ...new Set(Store.library.map(t => t.src || '导入'))];
+            const srcs = ['all', ...new Set(entries().map(e => e.src))];
             if (!srcs.includes(this._galSrc)) this._galSrc = 'all';
             body.querySelector('.yzd-srcs').innerHTML = srcs.map(x => `<span class="yzd-chip sm ${x === this._galSrc ? 'on' : ''}" data-src="${esc(x)}">${x === 'all' ? '全部主题' : esc(x)}</span>`).join('')
-                + (this._galSrc !== 'all' && this._galSrc !== '内置' ? `<span class="yzd-chip sm danger" data-srcdel="1">删除这个来源的组件</span>` : '');
+                + (this._galSrc === '单独导入' || this._galSrc === '自建' ? `<span class="yzd-chip sm danger" data-srcdel="1">全部删除</span>` : '');
             body.querySelectorAll('.yzd-tab').forEach(t => t.classList.toggle('on', t.dataset.cat === this._galCat));
         };
 
@@ -1996,6 +2008,7 @@ Object.assign(FreeDesktop.prototype, {
                 const card = document.createElement('div');
                 card.className = `yzd-gcard span-${sd.w >= 4 ? 2 : 1}`;
                 if (e.kind === 'builtin') { card.dataset.type = e.type; card.dataset.size = e.size; }
+                else if (e.kind === 'theme') card.dataset.theme = '1';
                 else card.dataset.lib = String(e.idx);
                 const { wrap } = this._previewShell(e.size);
                 wrap.classList.add('lazy');
@@ -2019,7 +2032,7 @@ Object.assign(FreeDesktop.prototype, {
                     inner.classList.add(`yzd-w-${e.type}`);
                     const box = document.createElement('div');
                     inner.appendChild(box);
-                    const d = { ...COMMON_DEFAULTS, ...(BUILTINS[e.type]?.defaults || {}), ...(e.type === 'photo' ? { bg: 'clear' } : {}) };
+                    const d = { ...COMMON_DEFAULTS, ...(BUILTINS[e.type]?.defaults || {}) };
                     this._fillWidget({ id: 'preview', kind: 'widget', wtype: e.type, size: e.size, data: d }, box);
                 } else {
                     const box = document.createElement('div');
@@ -2027,7 +2040,7 @@ Object.assign(FreeDesktop.prototype, {
                     const iframe = document.createElement('iframe');
                     iframe.className = 'yzd-frame';
                     iframe.setAttribute('sandbox', 'allow-scripts');
-                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: e.tpl.images || {} }, {});
+                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: e.tpl.images || {} }, e.wstate || {});
                     box.appendChild(iframe);
                     inner.appendChild(box);
                 }
@@ -2056,9 +2069,9 @@ Object.assign(FreeDesktop.prototype, {
             if (tab) { this._galCat = tab.dataset.cat; render(); return; }
             if (e.target.closest('[data-srcdel]')) {
                 const src = this._galSrc;
-                const n = Store.library.filter(t => (t.src || '导入') === src).length;
-                if (await this.confirm(`从组件库删除来源「${src}」的 ${n} 个组件？（桌面上已放的不受影响）`, '删除')) {
-                    Store.library = Store.library.filter(t => (t.src || '导入') !== src);
+                const ids = new Set(entries().filter(x => x.kind === 'lib' && x.src === src).map(x => x.idx));
+                if (await this.confirm(`删除「${src}」里的 ${ids.size} 个组件？（桌面上已放的不受影响）`, '删除')) {
+                    Store.library = Store.library.filter((t, i) => !ids.has(i));
                     Store.save('library');
                     this._galSrc = 'all';
                     render();
@@ -2102,6 +2115,11 @@ Object.assign(FreeDesktop.prototype, {
                     ['bg', 'bgColor', 'bgAlpha', 'bgImage', 'textColor', 'radius'].forEach(k => { if (target.data?.[k] !== undefined) keep[k] = target.data[k]; });
                     Object.assign(newItem.data, keep);
                 }
+            } else if (card.dataset.theme) {
+                const e2 = card._entry;
+                newItem = makeCustomWidget({ ...e2.item.data, images: { ...(e2.item.data?.images || {}) } }, e2.size);
+                newItem.data.images = { ...(e2.item.data?.images || {}) };
+                s.widgetState[newItem.id] = clone(e2.wstate || {});
             } else if (card.dataset.lib !== undefined) {
                 const tpl = Store.library[Number(card.dataset.lib)];
                 if (!tpl) return;
@@ -2111,7 +2129,7 @@ Object.assign(FreeDesktop.prototype, {
             sheet.close();
             if (replacing) this.replaceWidget(target, newItem);
             else this.placeNewWidget(newItem);
-            if (newItem.wtype === 'custom' && ((newItem.data.userFields || []).length || Object.keys(newItem.data.images || {}).some(k => !newItem.data.images[k]))) {
+            if (!card.dataset.theme && newItem.wtype === 'custom' && ((newItem.data.userFields || []).length || Object.keys(newItem.data.images || {}).some(k => !newItem.data.images[k]))) {
                 setTimeout(() => this.openCustomEditor(newItem), 260);
             }
         });
@@ -2131,6 +2149,11 @@ Object.assign(FreeDesktop.prototype, {
                 this.openCustomEditor(it, { isNew: true });
             }
         });
+    },
+
+    /** 用来筛选组件的已保存主题（不含自动备份） */
+    _themeSources() {
+        return Store.themes.filter(t => t && t.name && t.name !== AUTO_BACKUP_NAME && Array.isArray(t.state?.items));
     },
 
     _chooseSize() {
@@ -2199,7 +2222,6 @@ Object.assign(FreeDesktop.prototype, {
                 ${curName && Store.themes.some(t => t.name === curName) ? `<span class="yzd-btn" data-t="overwrite">覆盖「${esc(curName)}」</span>` : ''}
                 <span class="yzd-btn primary" data-t="import">导入美化 JSON</span>
                 <span class="yzd-btn" data-t="importw">导入组件 JSON</span>
-                <span class="yzd-btn" data-t="savewidgets">把桌面组件存入组件库</span>
             </div>
             <div class="yzd-themes">${Store.themes.length ? Store.themes.map((t, i) => `
                 <div class="yzd-theme ${t.name === curName ? 'on' : ''}">
@@ -2458,8 +2480,8 @@ Object.assign(FreeDesktop.prototype, {
                 const tpls = state._widgetTpls || [];
                 delete state._widgetTpls;
                 await this._askUnmatchedIcons(state);
-                const finalName = await this._importThemeState(state, baseName);
-                await this._askSaveThemeWidgets(tpls, finalName);
+                void tpls;
+                await this._importThemeState(state, baseName);
             } else {
                 const tpls = this.parseWidgetTemplates(json);
                 if (!tpls.length) { this.toast(`「${file.name}」识别不出是美化还是组件`); continue; }
@@ -2550,7 +2572,7 @@ Object.assign(FreeDesktop.prototype, {
                     s.widgetState[item.id] = clone(json.customWidgetState?.[w.id] || {});
                 } else if (NUO_BUILTIN_TYPE_MAP[w.type]) {
                     const t = NUO_BUILTIN_TYPE_MAP[w.type];
-                    item = makeWidget(t, BUILTINS[t].sizes.includes(size) ? size : BUILTINS[t].defaultSize);
+                    item = makeWidget(t, size);
                 }
                 if (!item) return;
                 item.page = Math.max(0, Number(w.pageIndex) || 0);
@@ -3088,8 +3110,9 @@ const DESKTOP_CSS = `
 
 function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
+    document.getElementById('yzd-desktop-style-v1')?.remove();
     const st = document.createElement('style');
     st.id = STYLE_ID;
-    st.textContent = DESKTOP_CSS;
+    st.textContent = DESKTOP_CSS + WIDGETS_CSS;
     document.head.appendChild(st);
 }
