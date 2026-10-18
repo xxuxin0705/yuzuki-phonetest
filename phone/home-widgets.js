@@ -6,9 +6,17 @@
  * ======================================================== */
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+// This string is written inside HTML style="..." attributes. Using double
+// quotes in url("...") truncated the style attribute for uploaded badges,
+// portraits, albums and other image widgets.
 const bg = (u) => {
     const s = String(u || '').trim();
-    return s ? `background-image:url("${s.replace(/"/g, '%22')}")` : '';
+    if (!s) return '';
+    // CSS single quotes don't terminate the enclosing HTML double-quoted attr.
+    const safe = s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/'/g, '%27').replace(/</g, '%3C').replace(/>/g, '%3E')
+        .replace(/[\r\n]/g, '');
+    return `background-image:url('${safe}')`;
 };
 const pad = (n) => String(n).padStart(2, '0');
 const WD_ZH = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -96,8 +104,8 @@ const LUCK_COLORS = ['樱花粉', '天空蓝', '奶油白', '薄荷绿', '香芋
 const LUCK_WORDS = ['适合主动联系想念的人', '会有小小的惊喜', '慢下来，好运在路上', '适合整理房间和心情', '今天说出口的话会被认真听见', '适合吃一顿好的', '灵感很多，记得写下来', '有人在偷偷关心你'];
 
 /* 通用：小组件统一的「白色卡片」默认外观 */
-const WHITE = { bg: 'solid', bgColor: '#ffffff', textColor: '#1f1f24', radius: 22 };
-const DARK = { bg: 'solid', bgColor: '#1c1c22', textColor: '#ffffff', radius: 22 };
+const WHITE = { bg: 'clear', bgColor: '#ffffff', textColor: '#1f1f24', radius: 22 };
+const DARK = { bg: 'clear', bgColor: '#1c1c22', textColor: '#ffffff', radius: 22 };
 
 /* ======================================================================
  *  组件定义
@@ -324,17 +332,18 @@ export const BUILTINS = {
     },
     clock: {
         name: '时钟', sizes: ['medium'], timeBased: true,
-        defaults: { ...WHITE, bgColor: '#ececef', textColor: '#f7f7f9', h24: '24', lang: 'zh' },
+        defaults: { ...WHITE, bgColor: '#ececef', textColor: '#f7f7f9', h24: '24', lang: 'zh', timeSource: 'story' },
         fields: [
             { key: 'h24', label: '时间格式', type: 'select', options: [['24', '24 小时制'], ['12', '12 小时制']] },
-            { key: 'lang', label: '日期语言', type: 'select', options: [['zh', '中文'], ['en', 'English']] }
+            { key: 'lang', label: '日期语言', type: 'select', options: [['zh', '中文'], ['en', 'English']] },
+            { key: 'timeSource', label: '时间来源', type: 'select', options: [['story', '酒馆当前剧情时间'], ['real', '现实真实时间']] }
         ],
         render: (it, d, ctx) => {
             const t = ctx.t;
             const is12 = String(d.h24) === '12';
             const h = is12 ? ((t.hh % 12) || 12) : t.hh;
             const date = t.ancient ? esc(t.rawDate) : (d.lang === 'en' ? `${MON_EN[t.m - 1]} ${t.d} ${WD_EN[t.wd]}` : `${t.m}月${t.d}日 ${WD_ZH[t.wd]}`);
-            return `<div class="yzw yzw-clock"><div class="yzw-ck-t">${pad(h)}:${pad(t.mm)}${is12 ? `<small>${t.hh < 12 ? 'AM' : 'PM'}</small>` : ''}</div><div class="yzw-ck-d">${date}</div></div>`;
+            return `<div class="yzw yzw-clock"><div class="yzw-ck-t">${pad(h)}:${pad(t.mm)}${is12 ? `<small class="yzw-ck-ampm">${t.hh < 12 ? 'AM' : 'PM'}</small>` : ''}</div><div class="yzw-ck-d">${date}</div></div>`;
         }
     },
     memo: {
@@ -670,7 +679,7 @@ export const WIDGETS_CSS = `
 /* 时钟（浮雕） */
 .yzd-root .yzw-clock{align-items:center;justify-content:center;text-align:center}
 .yzd-root .yzw-ck-t{font-size:min(52cqh,27cqw);font-weight:800;letter-spacing:-.02em;line-height:1;color:var(--yzd-wtext);text-shadow:.6cqh .6cqh 1.2cqh rgba(0,0,0,.2),-.4cqh -.4cqh .8cqh rgba(255,255,255,.9);font-variant-numeric:tabular-nums}
-.yzd-root .yzw-ck-t small{font-size:.3em;margin-left:.15em}
+.yzd-root .yzw-ck-t small,.yzd-root .yzw-ck-t .yzw-ck-ampm{font-size:.3em;margin-left:.15em;color:inherit!important;-webkit-text-fill-color:currentColor!important;text-shadow:inherit!important;opacity:1!important;font-weight:inherit}
 .yzd-root .yzw-ck-d{font-size:min(11cqh,5cqw);margin-top:2cqh;font-weight:600;color:var(--yzd-wtext);text-shadow:.3cqh .3cqh .8cqh rgba(0,0,0,.22),-.2cqh -.2cqh .5cqh rgba(255,255,255,.8)}
 
 /* 便签 */

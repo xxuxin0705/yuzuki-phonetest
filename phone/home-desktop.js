@@ -9,7 +9,7 @@
  *  数据存 IndexedDB（图片多、体积大，不塞进酒馆 settings.json）
  * ======================================================== */
 
-import { BUILTINS as WIDGET_DEFS, WIDGETS_CSS, LEGACY_WIDGET_MAP } from './home-widgets.js?v=20261018-w2';
+import { BUILTINS as WIDGET_DEFS, WIDGETS_CSS, LEGACY_WIDGET_MAP } from './home-widgets.js?v=20261018-w3';
 
 const STYLE_ID = 'yzd-desktop-style-v2';
 const DB_NAME = 'yuzuki-phone-desktop';
@@ -47,7 +47,7 @@ const COMMON_FIELDS = [
     { key: 'textColor', label: '文字颜色', type: 'color' },
     { key: 'radius', label: '圆角', type: 'range', min: 0, max: 44, step: 1 }
 ];
-const COMMON_DEFAULTS = { bg: 'glass', bgColor: '#ffffff', bgAlpha: 0.38, bgImage: '', textColor: '#2b2b33', radius: 24 };
+const COMMON_DEFAULTS = { bg: 'clear', bgColor: '#ffffff', bgAlpha: 0.38, bgImage: '', textColor: '#2b2b33', radius: 24 };
 
 // 内置组件定义在 home-widgets.js（按糯叽机的小/中/大内置组件重做）
 const BUILTINS = WIDGET_DEFS;
@@ -202,6 +202,137 @@ async function idbSet(key, value) {
     }
 }
 
+/* 图片组件独立素材库：不借用酒馆背景图存储；state 仅保留素材引用。 */
+const WIDGET_MEDIA_DB = 'yuzuki-phone-widget-media';
+const WIDGET_MEDIA_STORE = 'images';
+const WIDGET_MEDIA_PREFIX = 'yzd-media:';
+const widgetMediaCache = new Map();
+let widgetMediaDbPromise = null;
+function openWidgetMediaDb() {
+    if (!widgetMediaDbPromise) {
+        widgetMediaDbPromise = new Promise((resolve, reject) => {
+            try {
+                const req = indexedDB.open(WIDGET_MEDIA_DB, 1);
+                req.onupgradeneeded = () => req.result.createObjectStore(WIDGET_MEDIA_STORE);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            } catch (e) { reject(e); }
+        }).catch(e => { widgetMediaDbPromise = null; throw e; });
+    }
+    return widgetMediaDbPromise;
+}
+async function hydrateWidgetMedia() {
+    try {
+        const db = await openWidgetMediaDb();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(WIDGET_MEDIA_STORE, 'readonly');
+            const store = tx.objectStore(WIDGET_MEDIA_STORE);
+            const request = store.openCursor();
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) return resolve();
+                widgetMediaCache.set(String(cursor.key), cursor.value);
+                cursor.continue();
+            };
+            request.onerror = () => reject(request.error);
+        });
+    } catch (e) { console.warn('[组件素材库] 无法读取独立素材库', e); }
+}
+async function saveWidgetMedia(dataUrl) {
+    if (!dataUrl) return '';
+    const id = uid('img');
+    try {
+        const db = await openWidgetMediaDb();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(WIDGET_MEDIA_STORE, 'readwrite');
+            tx.objectStore(WIDGET_MEDIA_STORE).put(dataUrl, id);
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+        widgetMediaCache.set(id, dataUrl);
+        return WIDGET_MEDIA_PREFIX + id;
+    } catch (e) {
+        console.warn('[组件素材库] 独立存储不可用，改用桌面本地数据', e);
+        return dataUrl; // 无 IndexedDB 时仍能使用上传内容，不丢图
+    }
+}
+function resolveWidgetMedia(url) {
+    const s = String(url || '');
+    return s.startsWith(WIDGET_MEDIA_PREFIX) ? (widgetMediaCache.get(s.slice(WIDGET_MEDIA_PREFIX.length)) || '') : s;
+}
+// Export JSON is self-contained: the separate local DB must not result in
+// broken images after importing a theme on another device/browser.
+function embedWidgetMediaForExport(state) {
+    const result = clone(state);
+    for (const item of result.items || []) {
+        if (item.kind !== 'widget' || !item.data) continue;
+        const d = item.data;
+        if (item.wtype === 'custom') {
+            for (const k of Object.keys(d.images || {})) d.images[k] = resolveWidgetMedia(d.images[k]);
+            for (const field of d.userFields || []) {
+                if (field.type === 'image' && result.widgetState?.[item.id]) {
+                    result.widgetState[item.id][field.key] = resolveWidgetMedia(result.widgetState[item.id][field.key]);
+                }
+            }
+        } else {
+            for (const field of BUILTINS[item.wtype]?.fields || []) {
+                if (field.type === 'image') d[field.key] = resolveWidgetMedia(d[field.key]);
+            }
+            d.bgImage = resolveWidgetMedia(d.bgImage);
+        }
+    }
+    return result;
+}
+async function isolateWidgetMediaInState(state) {
+    for (const item of state.items || []) {
+        if (item.kind !== 'widget' || !item.data) continue;
+        const d = item.data;
+        if (item.wtype === 'custom') {
+            for (const k of Object.keys(d.images || {})) {
+                const v = String(d.images[k] || '');
+                if (/^data:image\//i.test(v)) d.images[k] = await saveWidgetMedia(v);
+            }
+            for (const field of d.userFields || []) {
+                const values = state.widgetState?.[item.id];
+                if (field.type === 'image' && values && /^data:image\//i.test(String(values[field.key] || ''))) {
+                    values[field.key] = await saveWidgetMedia(values[field.key]);
+                }
+            }
+        } else {
+            for (const field of [...(BUILTINS[item.wtype]?.fields || []), { key: 'bgImage', type: 'image' }]) {
+                if (field.type !== 'image') continue;
+                const v = String(d[field.key] || '');
+                if (/^data:image\//i.test(v)) d[field.key] = await saveWidgetMedia(v);
+            }
+        }
+    }
+    return state;
+}
+
+function resolveWidgetFields(data, fields) {
+    const resolved = { ...data };
+    for (const f of fields || []) if (f.type === 'image') resolved[f.key] = resolveWidgetMedia(resolved[f.key]);
+    resolved.bgImage = resolveWidgetMedia(resolved.bgImage);
+    return resolved;
+}
+function applyWidgetImagePositions(box, resolved, original, fields) {
+    for (const field of fields || []) {
+        if (field.type !== 'image') continue;
+        const url = resolved[field.key];
+        if (!url) continue;
+        const zoom = clamp(Number(original[field.key + 'Zoom'] ?? 100) || 100, 100, 300);
+        const x = clamp(Number(original[field.key + 'PosX'] ?? 50), 0, 100);
+        const y = clamp(Number(original[field.key + 'PosY'] ?? 50), 0, 100);
+        // 以对应素材的 URL 精确定位背景元素，不会误改其他图的布局。
+        for (const el of box.querySelectorAll('[style]')) {
+            if (!el.style.backgroundImage || !el.style.backgroundImage.includes(url)) continue;
+            el.style.backgroundPosition = `${x}% ${y}%`;
+            if (zoom !== 100) el.style.backgroundSize = `${zoom}% auto`;
+        }
+    }
+}
+
 /* ------------------------------ 主题风格图标（线条图标，按主题颜色上色） ------------------------------ */
 // 自绘 24×24 线条图标，风格对齐糯叽机的 component:IconXxx（它的图标本身也是矢量线条 + 主题色）
 const GLYPHS = {
@@ -298,7 +429,7 @@ const Store = {
         if (this.loaded) return Promise.resolve();
         if (this.loading) return this.loading;
         this.loading = (async () => {
-            const [state, themes, library] = await Promise.all([idbGet('state'), idbGet('themes'), idbGet('library')]);
+            const [state, themes, library] = await Promise.all([idbGet('state'), idbGet('themes'), idbGet('library'), hydrateWidgetMedia()]);
             this.state = state && typeof state === 'object' ? state : null;
             this.themes = Array.isArray(themes) ? themes : [];
             this.library = Array.isArray(library) ? library : [];
@@ -369,11 +500,16 @@ function buildSrcdoc(data, state) {
     const images = data.images || {};
     const html = fillPlaceholders(data.html, images, state, { html: true });
     const css = fillPlaceholders(data.css, images, state, { html: false }).replace(/<\/style/gi, '<\\/style');
+    const transforms = Object.keys(images).filter(k => !/(Zoom|PosX|PosY)$/.test(k) && images[k]).map(k => ({
+        url: String(images[k]), zoom: clamp(Number(images[k + 'Zoom'] ?? 100) || 100, 100, 300),
+        x: clamp(Number(images[k + 'PosX'] ?? 50), 0, 100), y: clamp(Number(images[k + 'PosY'] ?? 50), 0, 100)
+    }));
+    const adjustJs = `addEventListener('DOMContentLoaded',()=>{for(const p of ${JSON.stringify(transforms).replace(/</g, '\\u003c')}){for(const el of document.querySelectorAll('*')){if(el.tagName==='IMG'&&el.getAttribute('src')===p.url){el.style.objectPosition=p.x+'% '+p.y+'%';if(p.zoom!==100){el.style.width=p.zoom+'%';el.style.height=p.zoom+'%';el.style.maxWidth='none';el.style.maxHeight='none'}}else if(el.style?.backgroundImage?.includes(p.url)){el.style.backgroundPosition=p.x+'% '+p.y+'%';if(p.zoom!==100)el.style.backgroundSize=p.zoom+'% auto'}}}});`;
     const stateJson = JSON.stringify(state || {}).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
 <style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;touch-action:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;}</style>
 <script>${BRIDGE_JS.replace('__STATE__', stateJson)}<\/script>
-<style>${css}</style></head><body>${html}</body></html>`;
+<style>${css}</style><script>${adjustJs.replace(/<\/script/gi, '<\\/script')}<\/script></head><body>${html}</body></html>`;
 }
 
 /* ------------------------------ 默认数据 ------------------------------ */
@@ -466,6 +602,16 @@ export class FreeDesktop {
             it.wtype = to;
             it.data = { ...fresh.data, ...(it.data || {}), ...(to === 'text' && it.data?.text === undefined ? {} : {}) };
         });
+        // 首次升级：仅转换沿用原始预设纯色的组件，不覆盖用户自定的颜色/样式。
+        if (!s.transparentDefaultsV1) {
+            s.items.forEach(it => {
+                const def = BUILTINS[it.wtype];
+                if (it.kind === 'widget' && def && it.data?.bg === 'solid'
+                    && it.data.bgColor === def.defaults?.bgColor) it.data.bg = 'clear';
+            });
+            s.transparentDefaultsV1 = true;
+            Store.save();
+        }
         // 修正越界
         s.items.forEach(it => {
             const { w, h } = sizeOf(it);
@@ -644,8 +790,18 @@ export class FreeDesktop {
 
     _startTick() {
         clearInterval(this._tick);
+        // 剧情时间在正文/聊天更新时，立刻同步；现实时间仍定期刷新。
+        if (!this._storyTimeListener) {
+            this._storyTimeListener = () => { if (this.root?.isConnected) this.updateTime(); };
+            window.addEventListener('phone:timeUpdated', this._storyTimeListener);
+        }
         this._tick = setInterval(() => {
-            if (!this.root?.isConnected) { clearInterval(this._tick); this._tick = null; return; }
+            if (!this.root?.isConnected) {
+                clearInterval(this._tick); this._tick = null;
+                window.removeEventListener('phone:timeUpdated', this._storyTimeListener);
+                this._storyTimeListener = null;
+                return;
+            }
             this.updateTime();
         }, 20000);
     }
@@ -798,7 +954,12 @@ export class FreeDesktop {
             iframe.setAttribute('scrolling', 'no');
             iframe.setAttribute('allowtransparency', 'true');
             iframe.setAttribute('title', item.data?.name || 'widget');
-            iframe.srcdoc = buildSrcdoc(item.data || {}, this.S.widgetState[item.id] || {});
+            const customData = item.data || {};
+            const customState = { ...(this.S.widgetState[item.id] || {}) };
+            for (const field of customData.userFields || []) {
+                if (field.type === 'image') customState[field.key] = resolveWidgetMedia(customState[field.key]);
+            }
+            iframe.srcdoc = buildSrcdoc({ ...customData, images: Object.fromEntries(Object.entries(customData.images || {}).map(([key, value]) => [key, resolveWidgetMedia(value)])) }, customState);
             box.appendChild(iframe);
             FRAME_MAP.set(iframe.contentWindow, { desk: this, id: item.id, iframe });
             iframe.addEventListener('load', () => {
@@ -808,10 +969,12 @@ export class FreeDesktop {
         }
         const d = { ...COMMON_DEFAULTS, ...(BUILTINS[item.wtype]?.defaults || {}), ...(item.data || {}) };
         box.className = 'yzd-wbox yzd-wbox-builtin';
-        box.setAttribute('style', this._surfaceStyle(d));
         const def = BUILTINS[item.wtype];
+        const resolved = resolveWidgetFields(d, [...(def?.fields || []), { key: 'bgImage', type: 'image' }]);
+        box.setAttribute('style', this._surfaceStyle(resolved));
         try {
-            box.innerHTML = def?.render ? def.render(item, d, this._widgetCtx(item)) : '<div class="yzw yzw-text"><div>未知组件</div></div>';
+            box.innerHTML = def?.render ? def.render(item, resolved, this._widgetCtx(item)) : '<div class="yzw yzw-text"><div>未知组件</div></div>';
+            applyWidgetImagePositions(box, resolved, d, [...(def?.fields || []), { key: 'bgImage', type: 'image' }]);
         } catch (e) {
             console.warn('[自由桌面] 组件渲染失败', item.wtype, e);
             box.innerHTML = '<div class="yzw yzw-text"><div>组件出错了</div></div>';
@@ -828,12 +991,17 @@ export class FreeDesktop {
         return parts.join(';');
     }
 
-    _timeParts() {
+    _timeParts(source = 'phone') {
         let info = null;
-        try { info = this.home?._getCurrentPhoneTimeInfo?.(); } catch (e) { info = null; }
+        try {
+            const manager = window.VirtualPhone?.timeManager;
+            if (source === 'real') info = manager?.getRealTime?.() || null;
+            else if (source === 'story') info = manager?.getCurrentStoryTime?.() || null;
+            else info = this.home?._getCurrentPhoneTimeInfo?.() || null;
+        } catch (e) { info = null; }
         const now = new Date();
         let y = now.getFullYear(), m = now.getMonth() + 1, day = now.getDate();
-        const mt = String(info?.date || '').match(/(\d+)年(\d+)月(\d+)日/);
+        const mt = String(info?.date || '').match(/(\d+)年(\d+)月(\d+)日/) || String(info?.date || '').match(/(\d{4,6})[-/](\d{1,2})[-/](\d{1,2})/);
         if (mt) { y = +mt[1]; m = +mt[2]; day = +mt[3]; }
         let hh = now.getHours(), mm = now.getMinutes();
         const tm = String(info?.time || '').match(/(\d{1,2}):(\d{2})/);
@@ -844,7 +1012,7 @@ export class FreeDesktop {
 
     _widgetCtx(item) {
         return {
-            t: this._timeParts(),
+            t: this._timeParts(item?.data?.timeSource || (item?.wtype === 'clock' ? 'story' : 'phone')),
             choose: (title, options) => this._dialog(`<div class="yzd-dlg-title">${esc(title)}</div>
                 <div class="yzd-chips">${options.map(([v, l]) => `<span class="yzd-chip" data-v="${esc(v)}">${esc(l)}</span>`).join('')}</div>
                 <div class="yzd-dlg-btns"><span class="yzd-btn" data-x="1">取消</span></div>`, (dlg, close) => {
@@ -1661,27 +1829,49 @@ Object.assign(FreeDesktop.prototype, {
                 }
                 case 'image': {
                     row._val = String(v || '');
-                    const paint = () => {
-                        row.querySelector('.yzd-thumb').style.backgroundImage = row._val ? cssUrl(row._val) : 'none';
-                        row.querySelector('.yzd-thumb').classList.toggle('empty', !row._val);
-                    };
+                    const getNum = (suffix, fallback) => Number(values?.[f.key + suffix] ?? fallback);
                     row.innerHTML = `${label}<div class="yzd-imgrow"><div class="yzd-thumb"></div>
-                        <span class="yzd-btn sm" data-i="up">上传</span><span class="yzd-btn sm" data-i="url">链接</span><span class="yzd-btn sm" data-i="clr">清除</span></div>`;
+                        <span class="yzd-btn sm" data-i="up">上传</span><span class="yzd-btn sm" data-i="url">链接</span><span class="yzd-btn sm" data-i="clr">清除</span></div>
+                        <div class="yzd-image-adjust">
+                            <label>图片缩放 <input data-adjust="Zoom" type="range" min="100" max="300" step="5" value="${clamp(getNum('Zoom', 100), 100, 300)}"><output></output></label>
+                            <label>左右位置 <input data-adjust="PosX" type="range" min="0" max="100" step="1" value="${clamp(getNum('PosX', 50), 0, 100)}"><output></output></label>
+                            <label>上下位置 <input data-adjust="PosY" type="range" min="0" max="100" step="1" value="${clamp(getNum('PosY', 50), 0, 100)}"><output></output></label>
+                        </div>`;
+                    const paint = () => {
+                        const resolved = resolveWidgetMedia(row._val);
+                        row.querySelector('.yzd-thumb').style.backgroundImage = resolved ? cssUrl(resolved) : 'none';
+                        const thumb = row.querySelector('.yzd-thumb');
+                        thumb.classList.toggle('empty', !resolved);
+                        thumb.style.backgroundSize = `${row.querySelector('[data-adjust="Zoom"]').value}% auto`;
+                        thumb.style.backgroundPosition = `${row.querySelector('[data-adjust="PosX"]').value}% ${row.querySelector('[data-adjust="PosY"]').value}%`;
+                        for (const i of row.querySelectorAll('[data-adjust]')) {
+                            i.nextElementSibling.textContent = i.dataset.adjust === 'Zoom' ? `${i.value}%` : `${i.value}%`;
+                        }
+                    };
                     paint();
+                    row.addEventListener('input', e => { if (e.target.matches('[data-adjust]')) { paint(); onChange?.(); } });
                     row.addEventListener('click', async (e) => {
                         const b = e.target.closest('[data-i]');
                         if (!b) return;
                         if (b.dataset.i === 'up') {
                             const [file] = await pickFiles({ accept: 'image/*' });
-                            if (file) row._val = await readImageFile(file, f.maxDim || 1400);
+                            if (!file) return;
+                            try {
+                                const dataUrl = await readImageFile(file, f.maxDim || 1400);
+                                row._val = await saveWidgetMedia(dataUrl);
+                            } catch (err) { console.error('[组件图片] 上传失败', err); this.toast('图片上传失败，请重试'); return; }
                         } else if (b.dataset.i === 'url') {
-                            const u = await this.prompt('图片链接', /^data:/.test(row._val) ? '' : row._val);
-                            if (u !== null) row._val = u.trim();
+                            const u = await this.prompt('图片链接', row._val.startsWith(WIDGET_MEDIA_PREFIX) || /^data:/.test(row._val) ? '' : row._val);
+                            if (u === null) return;
+                            row._val = u.trim();
                         } else row._val = '';
                         paint();
                         onChange?.();
                     });
                     get = () => row._val;
+                    for (const suffix of ['Zoom', 'PosX', 'PosY']) {
+                        getters.push([f.key + suffix, () => Number(row.querySelector(`[data-adjust="${suffix}"]`).value)]);
+                    }
                     break;
                 }
                 case 'number':
@@ -1697,7 +1887,7 @@ Object.assign(FreeDesktop.prototype, {
                     row.innerHTML = `${label}<input class="yzd-input" type="text" value="${esc(v ?? '')}">`;
                     get = () => row.querySelector('input').value;
             }
-            row.querySelectorAll('input:not([type=range]):not([type=color]),textarea').forEach(i => i.addEventListener('change', () => onChange?.()));
+            row.querySelectorAll('input:not([type=range]):not([type=color]),textarea').forEach(i => { i.addEventListener('change', () => onChange?.()); i.addEventListener('input', () => onChange?.()); });
             container.appendChild(row);
             getters.push([f.key, get]);
         });
@@ -1716,24 +1906,24 @@ Object.assign(FreeDesktop.prototype, {
             body.appendChild(prev);
             const form = document.createElement('div');
             body.appendChild(form);
-            const get = this._buildFields(form, [...def.fields, ...COMMON_FIELDS], d, () => paint());
-            const paint = () => {
+            let pending = 0;
+            const get = this._buildFields(form, [...def.fields, ...COMMON_FIELDS], d, () => {
+                clearTimeout(pending);
+                // 上传图片和拖动位置后，直接将设置写回桌面；无需点保存。
+                commit();
+            });
+            const commit = () => {
+                item.data = { ...d, ...get() };
+                this._rebuildItem(item);
+                this.save();
                 prev.innerHTML = '';
-                prev.appendChild(this._previewBuiltin(item.wtype, item.size, { ...d, ...get() }));
+                prev.appendChild(this._previewBuiltin(item.wtype, item.size, item.data));
                 this._scalePreviews(prev);
             };
-            paint();
-            body.insertAdjacentHTML('beforeend', `<div class="yzd-dlg-btns"><span class="yzd-btn" data-b="cancel">取消</span><span class="yzd-btn primary" data-b="save">保存</span></div>`);
-            body.addEventListener('click', (e) => {
-                const b = e.target.closest('[data-b]');
-                if (!b) return;
-                if (b.dataset.b === 'save') {
-                    item.data = { ...d, ...get() };
-                    this._rebuildItem(item);
-                    this.save();
-                }
-                sheet.close();
-            });
+            prev.appendChild(this._previewBuiltin(item.wtype, item.size, d));
+            this._scalePreviews(prev);
+            sheet.onClose = () => { clearTimeout(pending); commit(); Store.save('state', 0); };
+            body.insertAdjacentHTML('beforeend', '<div class="yzd-tip">修改会实时保存，完成后直接点右上角 ✕ 关闭即可。</div>');
         }, { tall: true });
     },
 
@@ -1763,66 +1953,79 @@ Object.assign(FreeDesktop.prototype, {
                     </details>
                     <div class="yzd-dlg-btns wrap">
                         <span class="yzd-btn" data-b="export">导出组件</span><span class="yzd-btn" data-b="lib">存入组件库</span>
-                        <span class="yzd-btn" data-b="cancel">取消</span><span class="yzd-btn primary" data-b="save">保存</span></div>`;
+                        <span class="yzd-tip">修改自动保存，点右上角 ✕ 关闭</span></div>`;
                 const imgs = body.querySelector('.yzd-imgs');
-                const keys = Object.keys(data.images);
+                const keys = Object.keys(data.images).filter(k => !/(Zoom|PosX|PosY)$/.test(k));
                 if (!keys.length) imgs.innerHTML = '<div class="yzd-tip">没有图片占位符</div>';
                 this._imgGetters = {};
                 keys.forEach(k => {
                     const wrap = document.createElement('div');
                     wrap.className = 'yzd-imgkey';
                     imgs.appendChild(wrap);
-                    const get = this._buildFields(wrap, [{ key: k, label: `{{${k}}}`, type: 'image', maxDim: 1200 }], data.images);
+                    const get = this._buildFields(wrap, [{ key: k, label: `{{${k}}}`, type: 'image', maxDim: 1200 }], data.images, () => { pull(); commit(); });
                     wrap.insertAdjacentHTML('beforeend', `<span class="yzd-x sm" data-delimg="${esc(k)}">✕</span>`);
-                    this._imgGetters[k] = () => get()[k];
+                    this._imgGetters[k] = get;
                 });
                 const uf = body.querySelector('.yzd-uf');
                 if (!data.userFields.length) uf.innerHTML = '<div class="yzd-tip">这个组件没有可填写字段</div>';
-                this._ufGet = this._buildFields(uf, data.userFields.map(f => ({ ...f, type: f.type === 'string' ? 'text' : f.type })), stateVals);
+                this._ufGet = this._buildFields(uf, data.userFields.map(f => ({ ...f, type: f.type === 'string' ? 'text' : f.type })), stateVals, () => { pull(); commit(); });
             };
             const pull = () => {
                 data.name = body.querySelector('[data-f=name]').value;
                 size = body.querySelector('[data-f=size]').value;
                 data.html = body.querySelector('[data-f=html]').value;
                 data.css = body.querySelector('[data-f=css]').value;
-                Object.entries(this._imgGetters || {}).forEach(([k, g]) => { data.images[k] = g(); });
+                Object.entries(this._imgGetters || {}).forEach(([k, g]) => {
+                    const vals = g();
+                    data.images[k] = vals[k];
+                    for (const suffix of ['Zoom', 'PosX', 'PosY']) data.images[k + suffix] = vals[k + suffix];
+                });
                 Object.assign(stateVals, this._ufGet ? this._ufGet() : {});
             };
+            const commit = () => {
+                item.data = clone(data);
+                const declared = new Set(data.userFields.map(f => f.key));
+                const st = (this.S.widgetState[item.id] = this.S.widgetState[item.id] || {});
+                Object.entries(stateVals).forEach(([k, v]) => {
+                    if (declared.has(k)) { if (v === '' || v === undefined) delete st[k]; else st[k] = v; }
+                });
+                if (size !== item.size) this.resizeItem(item, size);
+                else this._rebuildItem(item);
+                this.save();
+            };
             render();
+            let customCommitTimer;
+            body.addEventListener('input', () => {
+                clearTimeout(customCommitTimer);
+                customCommitTimer = setTimeout(() => { pull(); commit(); }, 160);
+            });
+            body.addEventListener('change', () => { clearTimeout(customCommitTimer); pull(); commit(); });
+            sheet.onClose = () => { clearTimeout(customCommitTimer); pull(); commit(); Store.save('state', 0); };
             body.addEventListener('click', (e) => {
                 const b = e.target.closest('[data-b],[data-delimg],[data-delf]');
                 if (!b) return;
                 pull();
-                if (b.dataset.delimg) { delete data.images[b.dataset.delimg]; render(); return; }
-                if (b.dataset.delf !== undefined) { data.userFields.splice(Number(b.dataset.delf), 1); render(); return; }
+                if (b.dataset.delimg) { const k = b.dataset.delimg; for (const suffix of ['', 'Zoom', 'PosX', 'PosY']) delete data.images[k + suffix]; commit(); render(); return; }
+                if (b.dataset.delf !== undefined) { data.userFields.splice(Number(b.dataset.delf), 1); commit(); render(); return; }
                 const act = b.dataset.b;
                 if (act === 'addimg') {
                     const k = body.querySelector('[data-f=newimg]').value.trim().replace(/[^\w$-]/g, '');
                     if (k && !(k in data.images)) data.images[k] = '';
-                    render();
+                    commit(); render();
                 } else if (act === 'addf') {
                     const key = body.querySelector('[data-f=fkey]').value.trim().replace(/[^\w$]/g, '');
                     if (!key) { this.toast('请填写字段标识'); return; }
                     const f = { key, label: body.querySelector('[data-f=flabel]').value.trim() || key, type: body.querySelector('[data-f=ftype]').value };
                     if (f.type === 'select') f.options = body.querySelector('[data-f=fopts]').value.split(/[,，]/).map(s => s.trim()).filter(Boolean);
                     data.userFields = data.userFields.filter(x => x.key !== key).concat(f);
-                    render();
+                    commit(); render();
                 } else if (act === 'export') {
-                    downloadText(`${(data.name || 'widget').replace(/[\\/:*?"<>|]/g, '_')}.widget.json`, JSON.stringify(this._toTemplateJson(data, size), null, 2));
+                    const exported = this._toTemplateJson(data, size);
+                    exported.images = Object.fromEntries(Object.entries(data.images || {}).map(([k, v]) => [k, resolveWidgetMedia(v)]));
+                    downloadText(`${(data.name || 'widget').replace(/[\\/:*?"<>|]/g, '_')}.widget.json`, JSON.stringify(exported, null, 2));
                 } else if (act === 'lib') {
-                    this.addToLibrary({ ...this._toTemplateJson(data, size), templateId: data.templateId || uid('t') }, { src: '自建' });
+                    this.addToLibrary({ ...this._toTemplateJson(data, size), images: clone(data.images), templateId: data.templateId || uid('t') }, { src: '自建' });
                     this.toast('已存入组件库');
-                } else if (act === 'cancel') {
-                    sheet.close();
-                    if (isNew) { this.S.items = this.S.items.filter(i => i.id !== item.id); this.syncLayout(); }
-                } else if (act === 'save') {
-                    item.data = data;
-                    const declared = new Set(data.userFields.map(f => f.key));
-                    const st = (this.S.widgetState[item.id] = this.S.widgetState[item.id] || {});
-                    Object.entries(stateVals).forEach(([k, v]) => { if (declared.has(k)) { if (v === '' || v === undefined) delete st[k]; else st[k] = v; } });
-                    if (size !== item.size) this.resizeItem(item, size); else this._rebuildItem(item);
-                    this.save();
-                    sheet.close();
                 }
             });
         }, { tall: true });
@@ -1833,7 +2036,7 @@ Object.assign(FreeDesktop.prototype, {
             type: 'custom_widget_template', version: 2,
             name: data.name || '自定义组件', size: SIZE_DEFS[size] ? size : 'small',
             html: data.html || '', css: data.css || '',
-            imageKeys: Object.keys(data.images || {}),
+            imageKeys: Object.keys(data.images || {}).filter(k => !/(Zoom|PosX|PosY)$/.test(k)),
             userFields: clone(data.userFields || [])
         };
     },
@@ -1846,7 +2049,7 @@ Object.assign(FreeDesktop.prototype, {
             html: String(tpl.html || ''), css: String(tpl.css || ''),
             imageKeys: Array.isArray(tpl.imageKeys) ? tpl.imageKeys : Object.keys(tpl.images || {}),
             userFields: clone(tpl.userFields || []),
-            images: Object.fromEntries(Object.entries(tpl.images || {}).filter(([, v]) => /^https?:/i.test(String(v || ''))))
+            images: Object.fromEntries(Object.entries(tpl.images || {}).filter(([, v]) => /^(https?:|yzd-media:)/i.test(String(v || ''))))
         };
         const idx = Store.library.findIndex(x => x.tid === t.tid || (x.name === t.name && x.html.length === t.html.length && x.css.length === t.css.length));
         const old = idx >= 0 ? Store.library[idx] : null;
@@ -1895,7 +2098,7 @@ Object.assign(FreeDesktop.prototype, {
         iframe.className = 'yzd-frame';
         iframe.setAttribute('sandbox', 'allow-scripts');
         iframe.setAttribute('loading', 'lazy');
-        iframe.srcdoc = buildSrcdoc({ html: tpl.html, css: tpl.css, images: tpl.images || {} }, {});
+        iframe.srcdoc = buildSrcdoc({ html: tpl.html, css: tpl.css, images: Object.fromEntries(Object.entries(tpl.images || {}).map(([key, value]) => [key, resolveWidgetMedia(value)])) }, {});
         box.appendChild(iframe);
         inner.appendChild(box);
         return wrap;
@@ -2040,7 +2243,7 @@ Object.assign(FreeDesktop.prototype, {
                     const iframe = document.createElement('iframe');
                     iframe.className = 'yzd-frame';
                     iframe.setAttribute('sandbox', 'allow-scripts');
-                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: e.tpl.images || {} }, e.wstate || {});
+                    iframe.srcdoc = buildSrcdoc({ html: e.tpl.html, css: e.tpl.css, images: Object.fromEntries(Object.entries(e.tpl.images || {}).map(([key, value]) => [key, resolveWidgetMedia(value)])) }, e.wstate || {});
                     box.appendChild(iframe);
                     inner.appendChild(box);
                 }
@@ -2431,8 +2634,9 @@ Object.assign(FreeDesktop.prototype, {
 
     exportTheme(theme) {
         if (!theme) return;
-        const ok = downloadText(`${theme.name.replace(/[\\/:*?"<>|]/g, '_')}.yuzuki-theme.json`, JSON.stringify({ type: 'yuzuki_phone_desktop_theme', version: 1, name: theme.name, exportDate: new Date().toISOString(), state: theme.state }));
-        this.toast(ok ? '已导出（看浏览器下载）' : '导出失败');
+        const state = embedWidgetMediaForExport(theme.state);
+        const ok = downloadText(`${theme.name.replace(/[\\/:*?"<>|]/g, '_')}.yuzuki-theme.json`, JSON.stringify({ type: 'yuzuki_phone_desktop_theme', version: 2, name: theme.name, exportDate: new Date().toISOString(), state }));
+        this.toast(ok ? '已导出（已包含组件图片）' : '导出失败');
     },
 
     async bulkImportIcons() {
@@ -2485,6 +2689,12 @@ Object.assign(FreeDesktop.prototype, {
             } else {
                 const tpls = this.parseWidgetTemplates(json);
                 if (!tpls.length) { this.toast(`「${file.name}」识别不出是美化还是组件`); continue; }
+                for (const tpl of tpls) {
+                    for (const k of Object.keys(tpl.images || {})) {
+                        const value = String(tpl.images[k] || '');
+                        if (/^data:image\//i.test(value)) tpl.images[k] = await saveWidgetMedia(value);
+                    }
+                }
                 const added = tpls.map(t => this.addToLibrary(t));
                 if (added.length === 1 || prefer === 'widget') {
                     const it = makeCustomWidget(added[0], added[0].size);
@@ -2499,8 +2709,9 @@ Object.assign(FreeDesktop.prototype, {
     },
 
     async _importThemeState(state, name) {
+        const imported = await isolateWidgetMediaInState(clone(state));
         const finalName = (await this.prompt('导入成功，给这个主题起个名字', name)) || name;
-        const theme = { id: uid('th'), name: finalName, savedAt: Date.now(), state: { ...state, themeName: finalName } };
+        const theme = { id: uid('th'), name: finalName, savedAt: Date.now(), state: { ...imported, themeName: finalName } };
         const idx = Store.themes.findIndex(t => t.name === finalName);
         if (idx >= 0) Store.themes[idx] = theme; else Store.themes.unshift(theme);
         Store.save('themes', 50);
@@ -2900,7 +3111,7 @@ const DESKTOP_CSS = `
 .yzd-root.yzd-no-labels .yzd-label{display:none}
 .yzd-root .yzd-badge{position:absolute;top:calc(50% - var(--yzd-ioff) - 6px);left:calc(50% + var(--yzd-icon)/2 - 13px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#ff3b30;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;z-index:3;pointer-events:none}
 .yzd-root .yzd-widget .yzd-wbox{position:absolute;inset:5px;overflow:hidden;color:var(--yzd-wtext,#2b2b33);container-type:size}
-.yzd-root .yzd-wbox-builtin{box-shadow:0 4px 16px rgba(0,0,0,.08)}
+.yzd-root .yzd-wbox-builtin{box-shadow:none}
 .yzd-root .yzd-wbox-custom{background:transparent;inset:3px!important}
 .yzd-root .yzd-frame{width:100%;height:100%;border:0;display:block;background:transparent;color-scheme:light}
 .yzd-root .yzd-shield{position:absolute;inset:0;z-index:4;display:none}
@@ -2973,6 +3184,10 @@ const DESKTOP_CSS = `
 .yzd-root .yzd-btn.primary{background:#1677ff;color:#fff}
 .yzd-root .yzd-btn.sm{padding:5px 10px;font-size:12.5px;border-radius:9px}
 .yzd-root .yzd-btnrow{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+.yzd-root .yzd-image-adjust{display:grid;gap:8px;margin:10px 1px 14px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.75)}
+.yzd-root .yzd-image-adjust label{display:grid;grid-template-columns:68px minmax(0,1fr) 40px;align-items:center;gap:7px;font-size:12px;color:#555;min-width:0}
+.yzd-root .yzd-image-adjust input[type=range]{width:100%;min-width:0;accent-color:#729cbd;margin:0}
+.yzd-root .yzd-image-adjust output{text-align:right;font-variant-numeric:tabular-nums;color:#656569}
 .yzd-root .yzd-dlg-btns{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
 .yzd-root .yzd-dlg-btns.wrap{flex-wrap:wrap}
 .yzd-root .yzd-dialog{width:100%;max-width:340px;max-height:80%;overflow:auto;background:#f7f7fa;color:#1c1c1e;border-radius:18px;padding:18px;box-shadow:0 16px 50px rgba(0,0,0,.3);animation:yzd-pop .18s}
