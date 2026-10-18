@@ -26,10 +26,13 @@ import {
     WECHAT_NATIVE_CHAT_STYLE_ID,
     getBuiltinWechatChatStyleProfiles
 } from './chat-style-presets.js?v=20260906-wechat-back-color';
+import { buildYzChatThemeCss, YZ_CHAT_THEME_BUILTINS } from './chat-theme-adapter.js?v=20261019-theme-adapter-1';
 
 const CHAT_CSS_VALUE_KEY = 'phone_global_chat_css';
 const CHAT_CSS_PROFILES_KEY = 'phone_chat_css_profiles';
 const CHAT_CSS_ACTIVE_PROFILE_KEY = 'phone_chat_css_active_profile';
+const YZ_CHAT_THEME_PROFILES_KEY = 'yz_chat_theme_profiles_v1';
+const YZ_CHAT_THEME_ASSIGNMENTS_KEY = 'yz_chat_theme_per_chat_v1';
 
 export class WechatApp {
     constructor(phoneShell, storage) {
@@ -80,8 +83,8 @@ export class WechatApp {
         // 加载样式
         this._ensureChatCssPresetState();
         this.loadStyles();
-        // 会话样式模块已移除：样式统一交给“界面风格”和“气泡样式”
-        this._applyCustomChatStyle('');
+        // 聊天外观独立于微信主页/朋友圈；渲染时根据当前聊天注入对应主题。
+        this._syncActiveChatTheme();
         // 🎨 聊天界面风格（微信 / QQ / LINE · 日间 / 夜间）
         try { applyWechatSkinAttrs(this.getWechatSkin()); } catch (e) { console.warn('⚠️ 界面风格初始化失败:', e); }
 
@@ -123,6 +126,75 @@ export class WechatApp {
     resumeAfterPanelOpen() {
         if (!this.currentChat) return false;
         return this.chatView?.resumeAfterPanelOpen?.() === true;
+    }
+
+    // 🎨 柚月聊天界面主题：每个私聊/群聊单独使用一套皮肤；导入主题组成公共素材库。
+    _readYzChatThemeJSON(key, fallback) {
+        try {
+            const raw = this.storage?.get?.(key);
+            const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            return value && typeof value === 'object' ? value : fallback;
+        } catch (e) { return fallback; }
+    }
+
+    _getYzChatThemeProfiles() {
+        const profiles = this._readYzChatThemeJSON(YZ_CHAT_THEME_PROFILES_KEY, []);
+        return Array.isArray(profiles)
+            ? profiles.filter(p => p && typeof p.id === 'string' && p.id.startsWith('custom_'))
+                .map(p => ({id:p.id,name:String(p.name||'自定义主题'),css:String(p.css||'')}))
+            : [];
+    }
+
+    _saveYzChatThemeProfiles(profiles) {
+        return this.storage?.set?.(YZ_CHAT_THEME_PROFILES_KEY, JSON.stringify(profiles));
+    }
+
+    _getYzChatThemeAssignments() {
+        const map = this._readYzChatThemeJSON(YZ_CHAT_THEME_ASSIGNMENTS_KEY, {});
+        return !Array.isArray(map) && map && typeof map === 'object' ? map : {};
+    }
+
+    _getChatThemeForChat(chatId) {
+        const selection = String(this._getYzChatThemeAssignments()[String(chatId||'')] || this.getWechatSkin?.()?.skin || 'wechat');
+        const builtIn = YZ_CHAT_THEME_BUILTINS.find(x => x.id === selection);
+        if (builtIn) return {...builtIn, css:'', builtin:true};
+        const profile = this._getYzChatThemeProfiles().find(p => p.id === selection);
+        return profile ? {...profile,builtin:false} : {...YZ_CHAT_THEME_BUILTINS[0],css:'',builtin:true};
+    }
+
+    _setChatThemeForChat(chatId, themeId) {
+        const id = String(chatId||'');
+        const theme = String(themeId||'wechat');
+        if (!id || !(YZ_CHAT_THEME_BUILTINS.some(p => p.id === theme) || this._getYzChatThemeProfiles().some(p => p.id === theme))) return false;
+        const assignments = this._getYzChatThemeAssignments();
+        assignments[id] = theme;
+        this.storage?.set?.(YZ_CHAT_THEME_ASSIGNMENTS_KEY, JSON.stringify(assignments));
+        this._syncActiveChatTheme();
+        return true;
+    }
+
+    _isCustomChatTheme(chatId) { return !this._getChatThemeForChat(chatId).builtin; }
+
+    _syncActiveChatTheme() {
+        let style = document.getElementById('yz-chat-theme-runtime');
+        if (!style) {
+            style = document.createElement('style');
+            style.id = 'yz-chat-theme-runtime';
+            document.head.appendChild(style);
+        }
+        if (!this.currentChat) {style.textContent='';return;}
+        const theme = this._getChatThemeForChat(this.currentChat.id);
+        try {
+            const key = theme.id + ':' + theme.css;
+            if (this._lastCompiledYzChatTheme !== key) {
+                this._lastCompiledYzChatTheme = key;
+                this._compiledYzChatTheme = buildYzChatThemeCss(theme.id,theme.css);
+            }
+            if (style.textContent !== (this._compiledYzChatTheme || '')) style.textContent = this._compiledYzChatTheme || '';
+        } catch (e) {
+            console.warn('[柚月聊天美化] CSS 自动转化失败，保留默认聊天布局：', e);
+            style.textContent = buildYzChatThemeCss('wechat');
+        }
     }
 
     _getUserCustomChatCss() {
@@ -7155,7 +7227,7 @@ export class WechatApp {
         if (!this.currentChat) {
             this.chatView?.resetTransientInputPanels?.();
         }
-        this._applyCustomChatStyle('');
+        this._syncActiveChatTheme();
         const chatList = this.wechatData.getChatList();
 
         // 🔥 强制消红点：只要用户看到了这个聊天，立即清空未读
@@ -7284,14 +7356,15 @@ export class WechatApp {
         const appClass = [
             'wechat-app',
             isMainRootView ? 'wechat-main-shell' : '',
-            hasMainShellBackground ? 'wechat-chatlist-bg-enabled' : ''
+            hasMainShellBackground ? 'wechat-chatlist-bg-enabled' : '',
+            this.currentChat ? 'yz-chat-theme-active' : ''
         ].filter(Boolean).join(' ');
         const contentBgStyle = this.currentChat
             ? (chatAreaBgStyle || 'background: transparent;')
             : (hasMainShellBackground ? 'background: transparent;' : '');
 
         const html = `
-            <div class="${appClass}" style="${appBgStyle}">
+            <div class="${appClass}" data-yz-chat-theme="${this.currentChat ? this._getChatThemeForChat(this.currentChat.id).id.startsWith('custom_') ? 'custom' : this._getChatThemeForChat(this.currentChat.id).id : ''}" style="${appBgStyle}">
                 <!-- 顶部栏 -->
                 <div class="${headerClass}">
                     <div class="wechat-header-left">

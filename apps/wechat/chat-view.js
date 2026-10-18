@@ -2,6 +2,7 @@ import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
+import { convertNuoChatCss, YZ_CHAT_THEME_BUILTINS } from './chat-theme-adapter.js?v=20261019-theme-adapter-1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
  *  作者 (Author): yuzuki
@@ -2978,6 +2979,31 @@ export class ChatView {
             ...this._getMessageTimelineFields(source)
         };
     }
+    _installYzThemeMessageObserver(chatId) {
+        this._yzThemeMessageObserver?.disconnect?.();
+        this._yzThemeMessageObserver = null;
+        if (!this.app._isCustomChatTheme?.(chatId)) return;
+        const room = this._getVisibleChatRoom?.(chatId)
+            || (document.querySelector('.phone-view-current') || document).querySelector('.chat-room');
+        const container = room?.querySelector?.('.chat-messages');
+        if (!container || String(room?.dataset.chatId||'') !== String(chatId||'')) return;
+        const decorate = () => {
+            const messages = Array.from(container.querySelectorAll(':scope > .chat-message'));
+            messages.forEach((node, idx) => {
+                const sender = node.dataset.sender;
+                const samePrev = idx > 0 && messages[idx-1].dataset.sender === sender;
+                const sameNext = idx < messages.length-1 && messages[idx+1].dataset.sender === sender;
+                node.classList.remove('yz-first','yz-mid','yz-last','yz-single');
+                node.classList.add(samePrev ? (sameNext ? 'yz-mid' : 'yz-last') : (sameNext ? 'yz-first' : 'yz-single'));
+            });
+        };
+        decorate();
+        this._yzThemeMessageObserver = new MutationObserver(records => {
+            if (records.some(record => record.type === 'childList')) decorate();
+        });
+        this._yzThemeMessageObserver.observe(container, { childList:true });
+    }
+
 renderChatRoom(chat) {
         this.app.wechatData.currentChatId = String(chat?.id || '');
         queueMicrotask(() => this._translateExistingIncomingMessages(String(chat?.id || '')));
@@ -2985,6 +3011,7 @@ renderChatRoom(chat) {
         try { this._repairMixedStickerMessages(messages, chat.id); } catch (e) { console.warn('表情包修复失败', e); }
         // 页面插入后、画出来之前就把连续气泡 / LINE 时间排好，避免先画一遍再跳一下
         queueMicrotask(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } });
+        queueMicrotask(() => { try { this._installYzThemeMessageObserver(chat.id); } catch(e) { console.warn('[柚月聊天美化] 连发标记初始化失败',e); } });
         requestAnimationFrame(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } });
         setTimeout(() => { try { this._installContinuousObserver(chat.id); } catch (e) { /* 忽略 */ } }, 0);
         const userInfo = this.app.wechatData.getUserInfo();
@@ -2998,7 +3025,7 @@ renderChatRoom(chat) {
 
         return `
     <div class="chat-room" data-chat-id="${safeChatId}">
-                <div class="chat-messages" id="chat-messages" data-chat-id="${safeChatId}">
+                <div class="chat-messages" id="chat-messages" data-chat-kind="${chat?.type === 'group' ? 'group' : 'single'}" data-chat-id="${safeChatId}">
                     ${this.renderMessagesWithDateDividers(messages, userInfo)}
                 </div>
 
@@ -4352,13 +4379,22 @@ renderChatRoom(chat) {
         const bubbleSideCfg = isMe
             ? this.app.wechatData.getChatBubbleConfig?.(this.app.currentChat?.id)?.me
             : this._resolveThemBubbleConfig(senderMemberKey || senderName, liveGroupChat);
-        const bubbleStyleClass = this._ensureBubbleStyleClass(bubbleSideCfg);
+        // 自定义聊天主题完全接管气泡：不叠加旧的单/群聊天气泡预设与角色 CSS。
+        const bubbleStyleClass = this.app._isCustomChatTheme?.(this.app.currentChat?.id)
+            ? '' : this._ensureBubbleStyleClass(bubbleSideCfg);
 
         // 😀 表情回应行（贴在消息下面）
         const reactionsHtml = this._renderMessageReactionsHtml(msg, isMe);
 
+        const sourceName = String(isMe ? (userInfo.name || '我') : (displaySenderName || senderName || '对方'));
+        const sourceAvatar = String(isMe ? (userInfo.avatar || '') : (senderAvatar || ''));
+        const cssQuote = text => String(text).replace(/[\\"\n\r]/g, ' ');
+        const cssAvatar = url => /^(?:https?:|data:image\/|blob:|\/|\.\/?)/i.test(url) ? `url(&quot;${this._escapeAttr(cssQuote(url))}&quot;)` : 'none';
+        const nameCss = this._escapeAttr(cssQuote(sourceName));
+        const avatarCss = cssAvatar(sourceAvatar);
+        const userCssAvatar = cssAvatar(String(userInfo.avatar || ''));
         return `
-        <div class="chat-message ${isMe ? 'message-right' : 'message-left'}${bubbleStyleClass}${selectionClass}${selectedClass}" data-message-id="${this._escapeAttr(messageId)}" data-message-index="${Number(messageIndex)}" data-sender="${this._escapeAttr(isMe ? 'me' : (senderMemberKey || senderName || ''))}">
+        <div class="chat-message ${isMe ? 'message-right' : 'message-left'}${bubbleStyleClass}${selectionClass}${selectedClass}" style="--char-name:&quot;${nameCss}&quot;;--char-avatar:${avatarCss};--user-avatar:${userCssAvatar};" data-message-id="${this._escapeAttr(messageId)}" data-message-index="${Number(messageIndex)}" data-sender="${this._escapeAttr(isMe ? 'me' : (senderMemberKey || senderName || ''))}">
             ${selectionCheckHtml}
             ${!isMe ? `<div class="message-avatar">${this.app.renderAvatar(senderAvatar, '👤', senderName)}</div>` : ''}
             <div class="message-content" style="display: inline-flex; flex-direction: column; ${isMe ? 'align-items: flex-end;' : 'align-items: flex-start;'}">
@@ -15602,6 +15638,7 @@ ${transLines.join('\n')}`);
                         </div>
                     </section>` : ''}
                     ${!isGroupChat && contact ? this._renderContactExtraCardsHtml(contact) : ''}
+                    ${this._renderChatThemeCardHtml(currentChat.id)}
                     ${!isGroupChat ? this._renderSkinCardHtml() : ''}
                     ${!isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? `<section class="wechat-detail-card">
@@ -15678,6 +15715,7 @@ ${transLines.join('\n')}`);
                 if (desc) desc.textContent = ({ low: '低：偶尔才会发新便签（约 15%）', medium: '中：有时会按剧情发新便签（约 40%）', high: '高：经常更新便签（约 70%）', extreme: '极高：每一轮都必发新便签' })[btn.dataset.mindLevel] || '';
             }));
         }
+        this._bindChatThemeCard(String(currentChat.id || ''));
         this._bindBubbleStyleCard(String(currentChat.id || ''));
         this._bindSkinCard();
         if (!isGroupChat && contact) this._bindContactExtraCards(contact);
@@ -20626,6 +20664,174 @@ ${callTranscript}`;
                 <em>${sk.name}</em>
             </button>`;
         }).join('');
+    }
+
+    _renderChatThemeCardHtml(chatId) {
+        const theme = this.app._getChatThemeForChat(chatId);
+        const profiles = [...YZ_CHAT_THEME_BUILTINS.map(p => ({...p,builtin:true})), ...this.app._getYzChatThemeProfiles()];
+        return `
+            <section class="wechat-detail-card yz-theme-settings" data-collapse-key="chat-theme" data-yz-theme-chat="${this._escapeAttr(chatId)}">
+                <div class="wechat-detail-heading">聊天界面主题</div>
+                <div class="yz-theme-note">只美化当前${this.app.currentChat?.type === 'group' ? '群聊' : '私聊'}；预设库可供其他聊天选用，不改变主页、朋友圈或通讯录。</div>
+                <label class="yz-theme-label">正在使用
+                    <select class="yz-theme-select" data-yz-theme-select>
+                        ${profiles.map(p => `<option value="${this._escapeAttr(p.id)}" ${p.id === theme.id ? 'selected' : ''}>${this._escapeHtml(p.name)}${p.builtin?'（内置）':''}</option>`).join('')}
+                    </select>
+                </label>
+                <div class="yz-theme-actions">
+                    <button type="button" data-yz-theme-action="import"><i class="fa-solid fa-file-import"></i> 导入 CSS / TXT</button>
+                    <button type="button" data-yz-theme-action="new"><i class="fa-solid fa-plus"></i> 新建</button>
+                    <button type="button" data-yz-theme-action="show"><i class="fa-solid fa-pen"></i> 编辑</button>
+                </div>
+                <input type="file" accept=".css,.txt,text/css,text/plain" data-yz-theme-file hidden>
+                <div class="yz-theme-note" data-yz-theme-hint>${theme.builtin ? '微信、QQ、LINE 为三套内置主题，可独立应用于每个会话。' : '自定义主题已覆盖旧气泡预设；可以继续编辑原始 CSS，转换后的样式在返回聊天页时自动生效。'}</div>
+                <div class="yz-theme-editor" data-yz-theme-editor ${theme.builtin ? 'hidden' : ''}>
+                    <label class="yz-theme-label">主题名称 <input data-yz-theme-name maxlength="64" value="${this._escapeAttr(theme.builtin?'':theme.name)}" placeholder="例如：我的轻松熊"></label>
+                    <label class="yz-theme-label">原始 CSS（糯叽机或柚月 CSS 都可编辑）
+                        <textarea data-yz-theme-css rows="9" spellcheck="false" placeholder="粘贴原始 CSS，或者点击上方的导入按钮">${this._escapeHtml(theme.builtin?'':theme.css)}</textarea>
+                    </label>
+                    <div class="yz-theme-actions">
+                        <button type="button" data-yz-theme-action="convert">自动转换预览</button>
+                        <button type="button" data-yz-theme-action="save" class="yz-theme-main">保存并应用</button>
+                        <button type="button" data-yz-theme-action="delete" class="yz-theme-danger">删除</button>
+                    </div>
+                    <div class="yz-theme-conversion-result" data-yz-theme-result role="status"></div>
+                    <details class="yz-theme-output-wrap"><summary>查看适配柚月后的 CSS（可复制）</summary>
+                        <textarea data-yz-theme-output rows="8" readonly spellcheck="false"></textarea>
+                    </details>
+                </div>
+                <div class="yz-theme-note">转换会保留原主题的异形气泡贴图、配色与可映射布局，并自动限制样式到聊天页面；原 CSS 中没有柚月对应功能的元素可能无法完全还原，所有现有操作按钮都会保留。</div>
+                <style>
+                  .yz-theme-settings .yz-theme-note{font-size:11px;color:#82828a;line-height:1.65;margin:6px 0 10px}
+                  .yz-theme-settings .yz-theme-label{display:block;font-size:12px;color:#555;margin:9px 0}
+                  .yz-theme-settings select,.yz-theme-settings textarea,.yz-theme-settings input[data-yz-theme-name]{box-sizing:border-box;width:100%;max-width:100%;border:1px solid #e2e5ed;background:#fbfcff;color:#30343c;border-radius:9px;padding:9px;font-size:12px;margin-top:5px}
+                  .yz-theme-settings textarea{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.5;resize:vertical;min-height:104px}
+                  .yz-theme-settings .yz-theme-actions{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0}
+                  .yz-theme-settings .yz-theme-actions button{border:1px solid #dcdfe8;background:#fff;color:#3e4550;border-radius:8px;padding:8px 9px;font-size:11px;cursor:pointer;touch-action:manipulation}
+                  .yz-theme-settings .yz-theme-actions .yz-theme-main{background:#576b95;color:#fff;border-color:#576b95}
+                  .yz-theme-settings .yz-theme-actions .yz-theme-danger{color:#d75454;border-color:#f4d9d9}
+                  .yz-theme-settings .yz-theme-editor[hidden]{display:none!important}
+                  .yz-theme-settings .yz-theme-conversion-result{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;color:#58697c;line-height:1.55}
+                  .yz-theme-settings .yz-theme-output-wrap{font-size:11px;color:#576b95;margin-top:10px}
+                </style>
+            </section>`;
+    }
+
+    _bindChatThemeCard(chatId) {
+        const view = document.querySelector('.phone-view-current') || document;
+        const card = view.querySelector('.yz-theme-settings');
+        if (!card || card.dataset.bound === '1') return;
+        card.dataset.bound = '1';
+        const app = this.app;
+        const select = card.querySelector('[data-yz-theme-select]');
+        const editor = card.querySelector('[data-yz-theme-editor]');
+        const fileInput = card.querySelector('[data-yz-theme-file]');
+        const cssInput = card.querySelector('[data-yz-theme-css]');
+        const nameInput = card.querySelector('[data-yz-theme-name]');
+        const out = card.querySelector('[data-yz-theme-output]');
+        const result = card.querySelector('[data-yz-theme-result]');
+        const hint = card.querySelector('[data-yz-theme-hint]');
+        const notify = (title, message, symbol='✅') => app.phoneShell?.showNotification?.(title,message,symbol);
+        const themeFor = () => app._getChatThemeForChat(chatId);
+        const syncSelect = () => {
+            const active = themeFor();
+            const profiles = [...YZ_CHAT_THEME_BUILTINS.map(p=>({...p,builtin:true})),...app._getYzChatThemeProfiles()];
+            select.innerHTML = profiles.map(p=>`<option value="${this._escapeAttr(p.id)}" ${p.id===active.id?'selected':''}>${this._escapeHtml(p.name)}${p.builtin?'（内置）':''}</option>`).join('');
+            nameInput.value = active.builtin ? '' : active.name;
+            cssInput.value = active.builtin ? '' : active.css;
+            editor.hidden = active.builtin;
+            out.value=''; result.textContent='';
+            if (hint) hint.textContent = active.builtin ? '当前使用内置主题，可从三个预设中切换。' : '自定义主题独占气泡外观，旧气泡设置不参与本主题。';
+        };
+        const makeNew = (name, css) => {
+            const profiles = app._getYzChatThemeProfiles();
+            const id = `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
+            profiles.push({id,name,css});
+            app._saveYzChatThemeProfiles(profiles);
+            app._setChatThemeForChat(chatId,id);
+            syncSelect();
+            return id;
+        };
+        const doConvert = () => {
+            try {
+                const converted = convertNuoChatCss(cssInput.value);
+                out.value = converted.css;
+                const {rules,selectors,unmapped=[]} = converted.stats;
+                result.textContent = `已转化 ${rules} 条 CSS 规则、${selectors} 个选择器。` +
+                    (converted.warnings.length ? `\n提醒：${converted.warnings.join('；')}` : '\n没有检测到明显兼容问题。') +
+                    (unmapped.length ? `\n暂未匹配：${unmapped.slice(0,10).join('、')}` : '');
+                return true;
+            } catch(e) {
+                result.textContent = '转换失败：' + (e?.message || '请检查 CSS 语法');
+                return false;
+            }
+        };
+        select.addEventListener('change', () => {
+            app._setChatThemeForChat(chatId, select.value);
+            syncSelect();
+            notify('切换成功','返回聊天页即可看到主题效果');
+        });
+        card.addEventListener('click', async (ev) => {
+            const action = ev.target.closest('[data-yz-theme-action]')?.dataset.yzThemeAction;
+            if (!action) return;
+            ev.stopPropagation();
+            if (action === 'import') {fileInput.value='';fileInput.click();return;}
+            if (action === 'show') {
+                if (themeFor().builtin) {
+                    const name = String(window.prompt('给新主题起个名字','我的聊天主题') || '').trim();
+                    if (!name) return;
+                    makeNew(name,'');
+                }
+                editor.hidden = false;cssInput.focus();return;
+            }
+            if (action === 'new') {
+                const name = String(window.prompt('新建聊天主题名称','我的聊天主题') || '').trim();
+                if (!name) return;
+                makeNew(name,'');editor.hidden = false;cssInput.focus();return;
+            }
+            if (action === 'convert') {doConvert();return;}
+            const current = themeFor();
+            if (current.builtin) {notify('提示','请先新建或导入自定义主题','⚠️');return;}
+            if (action === 'save') {
+                const name = String(nameInput.value||'').trim();
+                if (!name) {notify('保存失败','请填写主题名称','⚠️');return;}
+                if (!doConvert()) return;
+                const profiles = app._getYzChatThemeProfiles();
+                const profile = profiles.find(p=>p.id===current.id);
+                if (!profile) return;
+                profile.name=name;profile.css=cssInput.value;
+                app._saveYzChatThemeProfiles(profiles);
+                app._setChatThemeForChat(chatId,current.id);
+                syncSelect();doConvert();
+                notify('保存成功','CSS 已自动转化，返回聊天页查看');
+            }
+            if (action === 'delete') {
+                if (!window.confirm(`确定删除自定义主题「${current.name}」？使用它的其他聊天也会恢复微信主题。`)) return;
+                app._saveYzChatThemeProfiles(app._getYzChatThemeProfiles().filter(p=>p.id!==current.id));
+                app._setChatThemeForChat(chatId,'wechat');
+                syncSelect();notify('删除成功',`已删除「${current.name}」`);
+            }
+        });
+        fileInput.addEventListener('change',async () => {
+            const file = fileInput.files?.[0];
+            fileInput.value='';
+            if (!file) return;
+            if (!/\.(css|txt)$/i.test(file.name)) {notify('导入失败','只支持 .css 和 .txt','⚠️');return;}
+            if (file.size > 1024*1024) {notify('导入失败','文件不能超过 1MB','⚠️');return;}
+            try {
+                const css = String(await file.text()).replace(/^\uFEFF/,'');
+                const parsed = convertNuoChatCss(css);
+                if (!parsed.css.trim()) {notify('导入失败','CSS 没有可转换的有效规则','⚠️');return;}
+                const name = (file.name.replace(/\.(css|txt)$/i,'').trim() || '导入主题').slice(0,64);
+                makeNew(name,css);
+                editor.hidden=false;
+                doConvert();
+                notify('自动转换成功',`已导入「${name}」；共适配 ${parsed.stats.rules} 条规则`);
+            } catch (e) {
+                result.textContent='导入失败：'+(e?.message||'文件读取失败');
+                notify('导入失败',e?.message||'无法读取 CSS','❌');
+            }
+        });
     }
 
     _renderSkinCardHtml() {
