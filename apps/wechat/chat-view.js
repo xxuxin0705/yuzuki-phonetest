@@ -2,7 +2,7 @@ import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
-import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261105-t4';
+import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers, getActiveChatThemeId, getThemeBubblePreview, yztBubbleScope } from './chat-themes.js?v=20261106-t5';
 import { syncAvatarFrames, openAvatarFrameSheet } from './avatar-frames.js?v=20261023-f1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
@@ -4354,7 +4354,8 @@ renderChatRoom(chat) {
 
         // 🫧 气泡样式：我的气泡用当前会话“我的气泡”；对方私聊用该会话“对方的气泡”，群聊在开启“沿用私聊气泡样式”时用各成员私聊里的设置
         const bubbleSideCfg = isMe
-            ? this.app.wechatData.getChatBubbleConfig?.(this.app.currentChat?.id)?.me
+            ? this._bubbleCfgForTheme(this.app.wechatData.getChatBubbleConfig?.(this.app.currentChat?.id)?.me,
+                this.app.wechatData.getChat?.(this.app.currentChat?.id) || this.app.currentChat, 'me', this._bubbleThemeIdFor(this.app.currentChat?.id))
             : this._resolveThemBubbleConfig(senderMemberKey || senderName, liveGroupChat);
         const bubbleStyleClass = this._ensureBubbleStyleClass(bubbleSideCfg);
 
@@ -5273,10 +5274,55 @@ renderChatRoom(chat) {
         const data = this.app.wechatData;
         if (groupChat && groupChat.type === 'group') {
             if (data.getGroupFeatureSettings?.(groupChat)?.useMemberBubbleStyles === false) return null;
-            return data.getMemberBubbleConfig?.(memberKey) || null;
+            const themeId = this._bubbleThemeIdFor(groupChat.id);
+            const owner = themeId ? data.findSingleChatForMember?.(memberKey) : null;
+            return this._bubbleCfgForTheme(data.getMemberBubbleConfig?.(memberKey) || null, owner, 'them', themeId);
         }
         const chatId = this.app.currentChat?.id;
-        return chatId ? (data.getChatBubbleConfig?.(chatId)?.them || null) : null;
+        if (!chatId) return null;
+        return this._bubbleCfgForTheme(data.getChatBubbleConfig?.(chatId)?.them || null,
+            data.getChat?.(chatId) || this.app.currentChat, 'them', this._bubbleThemeIdFor(chatId));
+    }
+
+    // 🎨 这个聊天现在用的导入主题（没有返回空）
+    _bubbleThemeIdFor(chatId) {
+        if (!chatId) return '';
+        try { return getActiveChatThemeId(this.app.storage, chatId); } catch (e) { return ''; }
+    }
+
+    // 🎨 用了导入主题时，气泡以主题为准；只有在这个主题下改过的气泡样式才叠上去，
+    //    没用主题时（或别的主题下）设的样式先不生效，换回去 / 重置美化后还会回来
+    _bubbleCfgForTheme(cfg, ownerChat, side, themeId) {
+        if (!themeId || !cfg) return cfg || null;
+        return ownerChat?.bubbleThemeStamp?.[side] === themeId ? cfg : null;
+    }
+
+    // 保存气泡样式：开着主题时先以主题为底（清掉主题之前的旧设置），并记下是在哪个主题下改的
+    _setBubbleCfgThemed(chatId, side, patch = {}) {
+        const data = this.app.wechatData;
+        const themeId = this._bubbleThemeIdFor(chatId);
+        const live = data.getChat?.(chatId);
+        let next = patch;
+        if (themeId && live?.bubbleThemeStamp?.[side] !== themeId) {
+            next = { preset: 'default', css: '', bg: '', bg2: '', color: '', fontSize: '', fontFamily: '', texture: '', radius: '', decos: {}, decoSize: '26', ...patch };
+        }
+        if (live) {
+            const stamp = live.bubbleThemeStamp && typeof live.bubbleThemeStamp === 'object' ? live.bubbleThemeStamp : {};
+            if (themeId) stamp[side] = themeId; else delete stamp[side];
+            if (Object.keys(stamp).length) live.bubbleThemeStamp = stamp; else delete live.bubbleThemeStamp;
+            if (this.app.currentChat && String(this.app.currentChat.id) === String(chatId) && this.app.currentChat !== live) {
+                if (live.bubbleThemeStamp) this.app.currentChat.bubbleThemeStamp = { ...live.bubbleThemeStamp }; else delete this.app.currentChat.bubbleThemeStamp;
+            }
+        }
+        return data.setChatBubbleConfig?.(chatId, side, next);
+    }
+
+    // 气泡样式卡片里显示 / 编辑用的设置（开着主题时就是“主题下的设置”）
+    _bubbleCardCfg(chatId, side) {
+        const data = this.app.wechatData;
+        const raw = data.getChatBubbleConfig?.(chatId)?.[side] || null;
+        const eff = this._bubbleCfgForTheme(raw, data.getChat?.(chatId), side, this._bubbleThemeIdFor(chatId));
+        return eff || data._normalizeBubbleSide?.({}) || {};
     }
 
     // 气泡样式的 CSS 源码：手写 CSS > 自定义预设 > 内置预设，再叠加背景色/文字色
@@ -5394,7 +5440,11 @@ ${ownSource}`;
                 `.wechat-app .chat-message.${cls} .wechat-voice-transcript`,
                 `.wbx-scope.${cls} .wbx-bubble`
             ];
-            const compiled = compileBubbleCss(source, scopes);
+            let compiled = compileBubbleCss(source, scopes);
+            // 🎨 开着导入主题时用更高的权重盖在主题上。只改颜色 / 字号 / 字体 / 圆角时保留主题画的小尾巴、箭头；
+            //    换了预设 / 质感 / 手写 CSS 才把主题的伪元素清掉
+            const heavy = !!(cfg?.css || cfg?.texture || String(cfg?.preset || '').startsWith('u_') || getBubblePreset(cfg?.preset)?.css);
+            try { compiled += '\n' + compileBubbleCss(heavy ? source : ownSource, [yztBubbleScope(cls)]); } catch (e) { /* 忽略 */ }
             let sheet = document.getElementById('wechat-bubble-style-sheet');
             if (!sheet) {
                 sheet = document.createElement('style');
@@ -20991,7 +21041,11 @@ ${callTranscript}`;
     _renderBubbleStyleCardHtml(chatId, { sides = ['them', 'me'], title = '气泡样式' } = {}) {
         const data = this.app.wechatData;
         const chat = data.getChat?.(chatId) || this.app.currentChat || {};
-        const cfgAll = data.getChatBubbleConfig?.(chatId) || { them: {}, me: {} };
+        const cfgAll = { them: this._bubbleCardCfg(chatId, 'them'), me: this._bubbleCardCfg(chatId, 'me') };
+        // 🎨 开着导入主题时，预览气泡显示主题的样子
+        let themePrev = null;
+        try { themePrev = getThemeBubblePreview(this.app.storage, chatId); } catch (e) { themePrev = null; }
+        const prevStyle = sd => (themePrev?.[sd] ? ` style="${this._escapeAttr(themePrev[sd])}"` : '');
         if (!this._bubbleCardSide || !sides.includes(this._bubbleCardSide)) this._bubbleCardSide = sides[0];
         const side = this._bubbleCardSide;
         const cfg = cfgAll[side] || {};
@@ -21015,9 +21069,10 @@ ${callTranscript}`;
         return `
             <section class="wechat-detail-card wbx-card" data-bx-chat="${this._escapeAttr(chatId)}" data-bx-sides="${sides.join(',')}" data-bx-title="${this._escapeAttr(title)}">
                 <div class="wechat-detail-heading">${this._escapeHtml(title)}</div>
+                ${themePrev ? '<div class="wce-hint" style="margin:-4px 0 8px;">正在用导入的主题：预览就是主题的气泡，在这里改的颜色、字号、圆角等会盖在主题上；点「恢复默认」回到主题原样</div>' : ''}
                 <div class="wbx-preview" style="${previewBg}">
-                    ${sides.includes('them') || chat.type !== 'group' ? `<div class="wbx-row is-them wbx-scope ${themCls}"><span class="wbx-av">${this.app.renderAvatar(contact?.avatar || chat.avatar, '👤', contact?.name || chat.name)}</span><span class="wbx-bubble">你好👋</span></div>` : ''}
-                    <div class="wbx-row is-me wbx-scope ${meCls}"><span class="wbx-bubble is-me">很高兴认识你☺</span><span class="wbx-av">${this.app.renderAvatar((chat.type === 'group' && data.getGroupMemberAvatar?.(chat, 'me')) || userInfo.avatar, '😊', userInfo.name)}</span></div>
+                    ${sides.includes('them') || chat.type !== 'group' ? `<div class="wbx-row is-them wbx-scope ${themCls}"><span class="wbx-av">${this.app.renderAvatar(contact?.avatar || chat.avatar, '👤', contact?.name || chat.name)}</span><span class="wbx-bubble"${prevStyle('them')}>你好👋</span></div>` : ''}
+                    <div class="wbx-row is-me wbx-scope ${meCls}"><span class="wbx-bubble is-me"${prevStyle('me')}>很高兴认识你☺</span><span class="wbx-av">${this.app.renderAvatar((chat.type === 'group' && data.getGroupMemberAvatar?.(chat, 'me')) || userInfo.avatar, '😊', userInfo.name)}</span></div>
                 </div>
                 ${sides.length > 1 ? `<div class="wbx-sides">${sides.map(sd => `<button type="button" class="wechat-seg-btn${sd === side ? ' active' : ''}" data-bx-side="${sd}">${sd === 'me' ? '我的气泡' : '对方的气泡'}</button>`).join('')}</div>` : ''}
                 <div class="wbx-field">
@@ -21112,7 +21167,7 @@ ${callTranscript}`;
         const chatId = card.dataset.bxChat;
         const side = () => this._bubbleCardSide || 'them';
         const save = patch => {
-            data.setChatBubbleConfig?.(chatId, side(), patch);
+            this._setBubbleCfgThemed(chatId, side(), patch);
             this._rerenderBubbleCard(card);
         };
         card.querySelectorAll('[data-bx-side]').forEach(btn => btn.addEventListener('click', () => {
@@ -21141,7 +21196,7 @@ ${callTranscript}`;
         radius?.addEventListener('input', () => { const v = radius.parentElement.querySelector('.wbx-range-val'); if (v) v.textContent = `${radius.value}px`; });
         radius?.addEventListener('change', () => save({ radius: radius.value }));
         const setDeco = (slot, url) => {
-            const cur = data.getChatBubbleConfig?.(chatId)?.[side()]?.decos || {};
+            const cur = this._bubbleCardCfg(chatId, side())?.decos || {};
             const decoded = Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, v ? this._safeDecode(v) : '']));
             save({ decos: { ...decoded, [slot]: url } });
         };
@@ -21185,7 +21240,7 @@ ${callTranscript}`;
         });
         card.querySelector('[data-bx-act="reset"]')?.addEventListener('click', () => save({ preset: 'default', css: '', bg: '', bg2: '', color: '', fontSize: '', fontFamily: '', texture: '', radius: '', decos: {}, decoSize: '26' }));
         card.querySelector('[data-bx-act="save"]')?.addEventListener('click', async () => {
-            const cfg = data.getChatBubbleConfig?.(chatId)?.[side()];
+            const cfg = this._bubbleCardCfg(chatId, side());
             const source = this._getBubbleSource({ ...cfg, fontSize: '', fontFamily: '' });
             if (!source) { this.app.phoneShell?.showNotification?.('提示', '当前是默认气泡，先选一个样式或改颜色再保存', 'ℹ️'); return; }
             const name = await this._showWechatMiniPrompt({ title: '存为预设', placeholder: '给这个气泡起个名字', maxLength: 12, allowClear: false, hint: '保存后所有角色都能选用' });
@@ -21198,7 +21253,7 @@ ${callTranscript}`;
 
     _openBubbleCssEditor(chatId, side, card) {
         const data = this.app.wechatData;
-        const cfg = data.getChatBubbleConfig?.(chatId)?.[side] || {};
+        const cfg = this._bubbleCardCfg(chatId, side);
         const pretty = css => String(css || '')
             .replace(/\s*\{\s*/g, ' {\n  ')
             .replace(/;\s*(?!\n)/g, ';\n  ')
@@ -21225,7 +21280,7 @@ ${callTranscript}`;
         mask.querySelector('[data-act="template"]')?.addEventListener('click', () => { input.value = WECHAT_BUBBLE_CSS_TEMPLATE; });
         mask.querySelector('[data-act="apply"]')?.addEventListener('click', () => {
             const css = String(input.value || '').trim();
-            data.setChatBubbleConfig?.(chatId, side, css ? { css } : { preset: 'default', css: '' });
+            this._setBubbleCfgThemed(chatId, side, css ? { css } : { preset: 'default', css: '' });
             close();
             this._rerenderBubbleCard(card);
         });
@@ -21236,7 +21291,7 @@ ${callTranscript}`;
             const name = await this._showWechatMiniPrompt({ title: '存为预设', placeholder: '给这个气泡起个名字', maxLength: 12, allowClear: false, hint: '保存后所有角色都能选用' });
             if (!name) return;
             const item = data.addCustomBubblePreset?.({ name, css });
-            if (item) data.setChatBubbleConfig?.(chatId, side, { preset: item.id, css: '' });
+            if (item) this._setBubbleCfgThemed(chatId, side, { preset: item.id, css: '' });
             this._rerenderBubbleCard(card);
         });
     }

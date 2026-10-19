@@ -10,8 +10,8 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261102-lang';
-import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261105-t4';
+import { ChatView } from './chat-view.js?v=20261106-bx1';
+import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261106-t5';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261102-lang';

@@ -131,11 +131,21 @@ ${I} > .wechat-content { position: relative !important; }
 ${I} .chat-messages { padding: calc(var(--yim-head-h) + 10px) 14px 10px !important; }
 ${MSG} { margin-bottom: 12px !important; gap: 0 !important; }
 ${MSG}:is(.yzt-first, .yzt-mid) { margin-bottom: 3px !important; }
-${MSG}:has(.wechat-reaction-row) { margin-top: 22px !important; }
 ${MSG} > .message-avatar, ${MSG} .yzf-frame { display: none !important; }
 ${MSG} > .message-content { max-width: 76% !important; margin: 0 !important; }
 ${MSG} .message-sender { color: ${inkSoft} !important; font-size: 11.5px !important; margin: 0 0 3px 12px !important; }
 ${MSG}.message-right .message-sender { margin: 0 12px 3px 0 !important; }
+/* 群聊名字行浮在气泡上方、不占内容区：这样表情回应量的是气泡自己的上角，不会被名字行顶到上一条消息底下 */
+${MSG}:has(> .message-content > .message-sender) { padding-top: 19px !important; }
+${MSG} > .message-content > .message-sender {
+    position: absolute !important; bottom: 100% !important; top: auto !important; left: 0 !important; right: auto !important;
+    white-space: nowrap !important; z-index: 1 !important;
+}
+${MSG}.message-right > .message-content > .message-sender { left: auto !important; right: 0 !important; justify-content: flex-end !important; }
+${MSG}:has(.wechat-reaction-row) { padding-top: 24px !important; }
+/* 既有名字又有表情回应：名字让到回应泡泡上面，不叠在一起 */
+${MSG}:has(> .message-content > .message-sender):has(.wechat-reaction-row) { padding-top: 42px !important; }
+${MSG}:has(.wechat-reaction-row) > .message-content > .message-sender { bottom: calc(100% + 24px) !important; }
 /* 气泡 */
 ${MSG} .message-text {
     position: relative !important; overflow: visible !important; isolation: isolate;

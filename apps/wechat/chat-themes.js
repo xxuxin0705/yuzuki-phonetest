@@ -4,12 +4,14 @@
 // · 导入的主题可以只给某个聊天用，也可以设成所有聊天的默认
 // · 导入后：原来的气泡样式、风格配色都不再作用于这个聊天，完全按主题显示；按钮一个都不会被藏起来
 
-import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261105-im2';
+import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261106-im3';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
 import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
 import { openAvatarFrameSheet, readFrames } from './avatar-frames.js?v=20261023-f1';
 
 export const YZT_STORE_KEY = 'wechat_chat_themes_v1';
+// 气泡样式在导入主题时的作用范围：比主题自己的规则多几层 ID 权重，改了颜色 / 字号 / 圆角等能盖在主题上
+export const yztBubbleScope = cls => `html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):not(#yzt-im):not(#yzt-bx):not(#yzt-bx2) .chat-room .chat-message.${cls}.${cls}:not(.message-system) .message-text`;
 const R = YZT_ROOT;
 
 // ───────────────────────────── 存储 ─────────────────────────────
@@ -87,6 +89,21 @@ export function resolveChatTheme(store, chatId) {
     const pick = id && Object.prototype.hasOwnProperty.call(store.chats, id) ? store.chats[id] : store.defaultId;
     if (!pick || pick === 'none') return null;
     return store.themes.find(t => t.id === pick) || null;
+}
+
+// 渲染每条消息时都要问一次“这个聊天用的哪个主题”：主题源码可能很大，按存储原文缓存，别每条都重新解析
+let storeCache = { raw: undefined, store: null };
+function cachedThemeStore(storage) {
+    let raw;
+    try { raw = storage?.get?.(YZT_STORE_KEY, false); } catch (e) { raw = null; }
+    if (!storeCache.store || raw !== storeCache.raw) storeCache = { raw, store: readThemeStore(storage) };
+    return storeCache.store;
+}
+export function getActiveChatTheme(storage, chatId) {
+    return resolveChatTheme(cachedThemeStore(storage), chatId);
+}
+export function getActiveChatThemeId(storage, chatId) {
+    return getActiveChatTheme(storage, chatId)?.id || '';
 }
 
 // ───────────────────────────── 主题图片：下载到柚月本地 ─────────────────────────────
@@ -257,6 +274,24 @@ ${R} .chat-message:not(.message-system).message-right .yzt-trans-detached { alig
 html[data-yzt-theme]:not([data-yzt-trans-always]) :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):has(.chat-room) .chat-message:not(.message-system) > .message-content:has(.wechat-trans-fold:not(.expanded)) > .yzt-trans-detached.yzt-trans-detached.yzt-trans-detached { display: none !important; }
 ${R} .time-divider-text { color: #8e8e8e !important; background: transparent !important; font-size: 11px !important; padding: 2px 8px !important; border-radius: 10px !important; text-shadow: none !important; }
 ${R} .system-message-bubble { background: transparent !important; color: #8e8e8e !important; }
+/* 表情回应：界面风格（比如 LINE）会把它贴到气泡角上、还给消息加上边距，和主题画的头像 / 名字区挤在一起；
+   主题自己没写回应样式时，统一放在气泡下面做成小标签 */
+${R} .chat-message:not(.message-system) > .message-content { margin-top: 0 !important; }
+${R} .chat-message:not(.message-system) .wechat-reaction-row {
+    position: static !important; top: auto !important; right: auto !important; bottom: auto !important; left: auto !important; z-index: auto !important;
+    display: flex !important; flex-direction: row !important; flex-wrap: wrap !important; justify-content: flex-start !important; gap: 4px !important;
+    width: auto !important; height: auto !important; margin: 4px 0 0 !important; padding: 0 !important; background: none !important; border: 0 !important; box-shadow: none !important;
+}
+${R} .chat-message:not(.message-system).message-right .wechat-reaction-row { justify-content: flex-end !important; }
+${R} .chat-message:not(.message-system) .wechat-reaction-row::before, ${R} .chat-message:not(.message-system) .wechat-reaction-row::after { content: none !important; }
+${R} .chat-message:not(.message-system) .wechat-reaction-pill {
+    position: relative !important; display: inline-flex !important; align-items: center !important; gap: 3px !important; width: auto !important; height: auto !important; min-width: 0 !important;
+    margin: 0 !important; padding: 1px 8px !important; border: 0 !important; border-radius: 11px !important; box-shadow: none !important;
+    background: rgba(0,0,0,.06) !important; color: #555 !important; font-size: 12px !important; line-height: 18px !important;
+}
+${R} .chat-message:not(.message-system) .wechat-reaction-pill::before, ${R} .chat-message:not(.message-system) .wechat-reaction-pill::after { content: none !important; }
+${R} .chat-message:not(.message-system) .wechat-reaction-pill .wechat-reaction-emoji { font-size: 13px !important; line-height: 1 !important; }
+${R} .chat-message:not(.message-system) .wechat-reaction-pill .wechat-reaction-by { display: inline !important; font-size: 11px !important; opacity: .75; }
 /* 群聊名字行：不被气泡宽度截断 */
 ${R} .chat-message:not(.message-system) .message-sender { width: max-content !important; min-width: 0 !important; max-width: calc(100 * var(--yzt-vw) - 100px); overflow: visible !important; }
 /* 气泡外的翻译：块本身不撑宽气泡；里面的文字按内容自适应，气泡很短时也能伸出去，最多到这一行能用的宽度 */
@@ -462,10 +497,13 @@ export function syncThemeMarkers(box, app) {
         run.push(el);
     });
     flush();
+    // 只有在气泡样式里勾了「连续气泡」，同一个人连发才合并成一组（后面几条不显示头像 / 名字）；没勾就每条都是单条
+    const chatId = box.dataset.chatId || app?.currentChat?.id;
+    const continuous = !!(app?.wechatData?.getChat?.(chatId) || app?.currentChat)?.bubbleContinuous;
     let userAvatar = '';
     rows.forEach(group => {
         group.forEach((el, i) => {
-            const pos = group.length === 1 ? 'single' : (i === 0 ? 'first' : (i === group.length - 1 ? 'last' : 'mid'));
+            const pos = !continuous || group.length === 1 ? 'single' : (i === 0 ? 'first' : (i === group.length - 1 ? 'last' : 'mid'));
             ['first', 'mid', 'last', 'single'].forEach(p => {
                 const on = p === pos;
                 if (el.classList.contains(`yzt-${p}`) !== on) el.classList.toggle(`yzt-${p}`, on);
@@ -489,19 +527,122 @@ export function syncThemeMarkers(box, app) {
     });
     if (appEl && userAvatar) setVar(appEl, '--user-avatar', cssUrl(userAvatar));
     guardButtons(appEl);
+    try { snapshotThemeBubbles(box, app); } catch (e) { /* 忽略 */ }
+}
+
+// ───────────────────────────── 气泡样式预览：记下主题气泡的样子 ─────────────────────────────
+// 聊天设置里「气泡样式」顶上的预览要显示主题的气泡，而不是原来的。设置页里没有聊天界面，
+// 所以在聊天界面里放两条看不见的探测消息，读一下主题给气泡的样式存起来（每个主题只读一次）
+
+const SNAP_KEY = 'wechat_yzt_bubble_snap_v1';
+const SNAP_PROPS = ['background-color', 'background-image', 'background-size', 'background-position', 'background-repeat', 'color',
+    'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius', 'border-image-source', 'border-image-slice',
+    'border-image-width', 'border-image-outset', 'border-image-repeat', 'padding', 'font-size', 'font-family', 'font-weight',
+    'line-height', 'letter-spacing', 'box-shadow', 'text-shadow', 'backdrop-filter', '-webkit-backdrop-filter'];
+let snapMem = null;
+const snapTried = new Set();
+function readSnaps() {
+    if (snapMem) return snapMem;
+    try { snapMem = JSON.parse(localStorage.getItem(SNAP_KEY) || '{}') || {}; } catch (e) { snapMem = {}; }
+    return snapMem;
+}
+function writeSnaps() {
+    try {
+        const keys = Object.keys(snapMem || {});
+        if (keys.length > 12) keys.slice(0, keys.length - 12).forEach(k => delete snapMem[k]);
+        localStorage.setItem(SNAP_KEY, JSON.stringify(snapMem));
+    } catch (e) { /* 存不下就只留在内存里 */ }
+}
+const snapKeyOf = theme => `${theme.id}:${theme.updatedAt || 0}:${Object.keys(theme.assets || {}).length}`;
+
+function readBubbleStyle(el) {
+    if (!el) return '';
+    const cs = getComputedStyle(el);
+    const parts = [];
+    SNAP_PROPS.forEach(prop => {
+        const v = cs.getPropertyValue(prop);
+        if (!v || v.length > 20000) return;
+        if (/^border-image/.test(prop) && cs.getPropertyValue('border-image-source') === 'none') return;
+        parts.push(`${prop}:${v}`);
+    });
+    return parts.join(';');
+}
+
+function snapshotThemeBubbles(box, app) {
+    const theme = getActiveChatTheme(app?.storage, box.dataset.chatId || app?.currentChat?.id);
+    if (!theme || document.documentElement.getAttribute('data-yzt-theme') !== theme.id) return;
+    // 主题样式表还没加载完时读到的是底座样式，等加载好再读
+    if (!document.querySelector('link#wechat-yzt-theme[href], style#wechat-yzt-theme')) return;
+    const link = document.querySelector('link#wechat-yzt-theme');
+    if (link && !link.sheet) return;
+    const key = snapKeyOf(theme);
+    const snaps = readSnaps();
+    if (snaps[key] || snapTried.has(key)) return;
+    snapTried.add(key);
+    const make = side => {
+        const row = document.createElement('div');
+        row.className = `chat-message ${side === 'me' ? 'message-right' : 'message-left'} yzt-single`;
+        row.setAttribute('data-yzt-probe', '1');
+        row.setAttribute('aria-hidden', 'true');
+        row.style.cssText = 'visibility:hidden;pointer-events:none;';
+        row.innerHTML = `<div class="message-avatar"></div><div class="message-content" style="display:inline-flex;flex-direction:column;"><div style="display:inline-block;max-width:100%;"><div class="message-text">${side === 'me' ? '很高兴认识你' : '你好'}</div></div></div>`;
+        if (side === 'me') row.appendChild(row.firstElementChild);
+        return row;
+    };
+    const them = make('them');
+    const me = make('me');
+    box.appendChild(them);
+    box.appendChild(me);
+    let shot = null;
+    try {
+        shot = { them: readBubbleStyle(them.querySelector('.message-text')), me: readBubbleStyle(me.querySelector('.message-text')), at: Date.now() };
+    } finally {
+        them.remove();
+        me.remove();
+    }
+    if (shot && (shot.them || shot.me)) {
+        snaps[key] = shot;
+        writeSnaps();
+    }
+}
+
+// 给气泡样式卡片用：这个聊天开了导入主题时，返回主题气泡的样子（行内样式），没开返回 null
+export function getThemeBubblePreview(storage, chatId) {
+    const theme = getActiveChatTheme(storage, chatId);
+    if (!theme) return null;
+    const snap = readSnaps()[snapKeyOf(theme)];
+    if (snap && (snap.them || snap.me)) return { themeId: theme.id, them: snap.them || '', me: snap.me || '' };
+    // 还没在聊天界面里打开过这个主题：先用主题配色顶上
+    const p = compileTheme(theme)?.preview || {};
+    const border = p.border ? `border:1px solid ${p.border};` : '';
+    return {
+        themeId: theme.id,
+        them: `background:${p.inBg || '#efefef'};color:#262626;${border}`,
+        me: `background:${p.outBg || '#0095f6'};${border}`
+    };
 }
 
 // 模板里的换行缩进：主题给消息写了 white-space: pre-wrap 时会变成一大片空白，这里清掉
+// 文字后面紧跟着模板换行缩进（比如语音转文字后面接翻译折叠块）也会多出一整行空白，两头的换行缩进一起去掉
 const WS_NEWLINE = /^\s*\n\s*$/;
+const WS_HEAD = /^[ \t\r]*\n\s*/;
+const WS_TAIL = /\s*\n[ \t\r]*$/;
 function cleanTemplateWhitespace(root) {
     if (!root || root.dataset.yztWs === String(root.childElementCount)) return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const kill = [];
+    const trim = [];
     while (walker.nextNode()) {
         const n = walker.currentNode;
-        if (WS_NEWLINE.test(n.nodeValue) && !n.parentElement?.closest('pre, textarea, code')) kill.push(n);
+        if (n.parentElement?.closest('pre, textarea, code')) continue;
+        if (WS_NEWLINE.test(n.nodeValue)) kill.push(n);
+        else if (WS_HEAD.test(n.nodeValue) || WS_TAIL.test(n.nodeValue)) trim.push(n);
     }
     kill.forEach(n => n.remove());
+    trim.forEach(n => {
+        const v = n.nodeValue.replace(WS_HEAD, '').replace(WS_TAIL, '');
+        if (v !== n.nodeValue) n.nodeValue = v;
+    });
     root.dataset.yztWs = String(root.childElementCount);
 }
 
