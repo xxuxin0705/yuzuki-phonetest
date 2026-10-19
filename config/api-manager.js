@@ -709,12 +709,6 @@ export class ApiManager {
             model: apiConfig?.model || 'Unknown'
         });
 
-        // TauriTavern（手机/桌面 App 版酒馆）：业务代码里写死 stream:false 的地方在 Tauri 下统一改走流式，
-        // 和聊天保持同一条链路；流式读取器同样能解析非 SSE 的整段 JSON，结果不受影响。
-        if (options.stream === false && options.forceNonStream !== true && this._isTauriHost()) {
-            options = { ...options, stream: true };
-        }
-
         // 2. 判断是否启用独立 API
         const useIndependentAPI = apiConfig && apiConfig.useIndependentAPI === true;
         const requestStreamEnabled = options.stream !== false && apiConfig?.useStream !== false;
@@ -743,15 +737,6 @@ export class ApiManager {
             }
 
             if (window.VirtualPhone) window.VirtualPhone._isInternalRequest = false;
-        }
-    }
-
-    _isTauriHost() {
-        try {
-            if (window.__TAURITAVERN__ || window.__TAURITAVERN_MAIN_READY__ || window.__TAURI__ || window.__TAURI_INTERNALS__) return true;
-            return /^tauri\.localhost$/i.test(location.hostname) || /^tauri:$/i.test(location.protocol);
-        } catch (e) {
-            return false;
         }
     }
 

@@ -4645,37 +4645,19 @@ renderChatRoom(chat) {
         return this._translateTextViaProvider(source, targetLang);
     }
 
+    // 🚫 不再请求任何翻译接口（不走模型 API、也不走 MyMemory 机翻）。
+    // 翻译只来自角色回复里 AI 同一次请求顺带写出的 [翻译: 中文]，和原版一致。
     async _translateTextViaProvider(text, targetLang) {
-        const safeText = String(text || '').trim();
-        const safeTarget = String(targetLang || '').trim();
-        if (!safeText || !safeTarget) return '';
-
-        // 1️⃣ 优先使用酒馆内置翻译（若用户启用了翻译扩展）
-        const stTranslate = window.translateText || window.VirtualPhone?.translateText;
-        if (typeof stTranslate === 'function') {
-            try {
-                const out = await stTranslate(safeText, safeTarget);
-                const outText = typeof out === 'string' ? out.trim() : String(out?.text || '').trim();
-                if (outText && outText !== safeText) return outText;
-            } catch (e) {
-                console.warn('⚠️ 酒馆内置翻译失败，回退 MyMemory:', e);
-            }
-        }
-
-        // 2️⃣ MyMemory 免费接口
-        const sourceLang = this._detectTranslateSourceLang(safeText);
-        if (sourceLang === safeTarget) return '';
-        const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(safeText.slice(0, 480))}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(safeTarget)}`;
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`翻译接口请求失败(${resp.status})`);
-        const data = await resp.json();
-        const translated = String(data?.responseData?.translatedText || '').trim();
-        if (!translated) throw new Error(String(data?.responseDetails || '翻译接口无返回'));
-        return translated;
+        void text; void targetLang;
+        return '';
     }
 
     // 🌐 译出：我的消息发送后异步翻译，完成后更新气泡（角色收到译文）
     _queueTranslateOut(chatId, messageId, rawText) {
+        // 不再单独发请求翻译我的消息（会额外调用接口、而且是机翻），消息按原文发送
+        void chatId; void messageId; void rawText;
+        return;
+        // eslint-disable-next-line no-unreachable
         const settings = this.app.wechatData.getTranslationSettings?.() || {};
         if (!settings.autoTranslateOut || !messageId || !rawText) return;
         const targetLang = String(settings.translateOutTo || '').trim();
@@ -4728,6 +4710,10 @@ renderChatRoom(chat) {
 
     // 🌐 收到角色消息后的自动翻译（翻译设定 → 自动翻译 + 翻译API）
     _maybeAutoTranslateIncoming(chatId, msgData, senderName) {
+        // 角色消息的翻译由回复时同一次 API 请求带回（外语正文 + [翻译:中文]），这里不再补翻译
+        void chatId; void msgData; void senderName;
+        return;
+        // eslint-disable-next-line no-unreachable
         const data = this.app.wechatData;
         const previousChatId = data.currentChatId;
         let settings;
@@ -4838,6 +4824,10 @@ renderChatRoom(chat) {
             return;
         }
 
+        // 不再单独请求翻译接口：译文只来自 AI 回复时顺带写出的 [翻译: …]
+        this.app.phoneShell?.showNotification?.('提示', '翻译只来自角色回复里自带的译文，不会另外调用接口', 'ℹ️');
+        return;
+        // eslint-disable-next-line no-unreachable
         this.app.phoneShell?.showNotification?.('翻译中', `正在翻译为${this.app.wechatData.getTranslationLanguageLabel?.(targetLang) || targetLang}...`, '⏳');
         try {
             const translated = await this._translateTextImmersive(sourceText, targetLang, chatId, isMine ? '用户' : message.from);

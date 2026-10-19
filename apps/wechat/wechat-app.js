@@ -10,11 +10,11 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261026-t4';
+import { ChatView } from './chat-view.js?v=20261027-t5';
 import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261023-t2';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261026-mt5';
+import { MomentsView } from './moments-view.js?v=20261027-mt6';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
