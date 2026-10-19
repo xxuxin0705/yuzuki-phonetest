@@ -4,7 +4,7 @@
 // · 导入的主题可以只给某个聊天用，也可以设成所有聊天的默认
 // · 导入后：原来的气泡样式、风格配色都不再作用于这个聊天，完全按主题显示；按钮一个都不会被藏起来
 
-import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261022-t1';
+import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261019-finish2';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
 import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
 
@@ -291,6 +291,58 @@ function setThemeCss(cssText) {
     }
 }
 
+// 聊天区域快捷操作：长按消息可恢复当前聊天的 LINE 主题；头像进入对应朋友圈。
+let yztQuickBound = false;
+function bindChatQuickActions(app) {
+    if (yztQuickBound || typeof document === 'undefined') return;
+    yztQuickBound = true;
+    let timer = null, startX = 0, startY = 0, fired = false;
+    const msgSelector = '.chat-message, .msg-bubble-wrapper, .wechat-message, .message-item';
+    const reset = () => {
+        const chat = app.currentChat;
+        if (!chat || !window.confirm('将当前聊天的自定义 CSS 重置为 LINE 样式？聊天记录不会删除。')) return;
+        const store = readThemeStore(app.storage);
+        store.chats[String(chat.id)] = 'none';
+        saveThemeStore(app.storage, store);
+        app.setWechatSkin?.({ skin: 'line' });
+        applyChatTheme(null);
+        app.phoneShell?.showNotification?.('聊天主题', '已恢复 LINE 样式', '✅');
+    };
+    const targetMessage = el => el?.closest?.(msgSelector)?.closest?.('.wechat-app') ? el.closest(msgSelector) : null;
+    document.addEventListener('contextmenu', e => {
+        const m = targetMessage(e.target);
+        if (!m || e.target.closest('button,input,textarea,a,[contenteditable]')) return;
+        e.preventDefault();
+        reset();
+    });
+    document.addEventListener('touchstart', e => {
+        const m = targetMessage(e.target);
+        if (!m || e.target.closest('button,input,textarea,a,[contenteditable]')) return;
+        const t = e.touches[0]; startX = t.clientX; startY = t.clientY; fired = false;
+        clearTimeout(timer);
+        timer = setTimeout(() => { fired = true; reset(); }, 850);
+    }, { passive: true });
+    document.addEventListener('touchmove', e => {
+        const t = e.touches[0]; if (t && Math.hypot(t.clientX-startX,t.clientY-startY)>12) clearTimeout(timer);
+    }, { passive: true });
+    ['touchend','touchcancel'].forEach(type => document.addEventListener(type, () => clearTimeout(timer), { passive:true }));
+    document.addEventListener('click', e => {
+        if (fired) { fired = false; e.preventDefault(); e.stopPropagation(); return; }
+        const av = e.target.closest?.('.wx-head-avatar, .chat-message .message-avatar, .chat-header-avatar, .header-avatar-container, .msg-avatar-them-container, .msg-avatar-custom');
+        if (!av || !av.closest('.wechat-app') || !app.currentChat) return;
+        const row = av.closest('[data-char-id], .chat-message');
+        if (app.currentChat.type === 'group' && !row) return;
+        const id = row?.dataset.charId || row?.dataset.contactId || row?.dataset.senderId;
+        if (id === 'me') return;
+        const contact = id ? app.wechatData?.getContact?.(id) : (app.currentChat.contactId ? app.wechatData?.getContact?.(app.currentChat.contactId) : app.wechatData?.getContactByName?.(app.currentChat.name));
+        const name = app.currentChat.type === 'group' ? (contact?.name || row?.querySelector('.message-sender-name, .grp-sender-name')?.textContent?.trim()) : (contact?.name || app.currentChat.name);
+        if (!name) return;
+        e.preventDefault(); e.stopPropagation();
+        if (app.currentChat.type === 'group' && av.closest('.wechat-header')) return;
+        if (typeof app.momentsView?.openMomentsProfile === 'function') app.momentsView.openMomentsProfile(name);
+    }, true);
+}
+
 let appliedKey = '';
 export function applyChatTheme(theme) {
     const root = document.documentElement;
@@ -315,6 +367,7 @@ export function applyChatTheme(theme) {
 }
 
 export function applyChatThemeForChat(app) {
+    bindChatQuickActions(app);
     const chat = app?.currentChat;
     if (!chat) { applyChatTheme(null); return null; }
     const store = readThemeStore(app.storage);
