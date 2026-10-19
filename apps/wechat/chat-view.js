@@ -2,7 +2,7 @@ import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
-import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261104-t3';
+import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261105-t4';
 import { syncAvatarFrames, openAvatarFrameSheet } from './avatar-frames.js?v=20261023-f1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
@@ -34,7 +34,7 @@ import {
     parseWechatVoiceContent,
     stripWechatTranslationContent,
     stripWechatTtsNonSpeechContent
-} from './voice-text.js?v=20261029-dedupe';
+} from './voice-text.js?v=20261105-q1';
 import { detectImageMime, normalizeImageDataUrlMime, resolveImageMime } from '../../config/image-mime.js';
 import {
     getPhoneInlineEmoji,
@@ -9298,6 +9298,9 @@ ${titleLines || '-（暂无其他成员）'}
         const text = String(message.content || '')
             .replace(/\[表情回应[:：][^\]]*\]/g, '')
             .replace(/\[(?:群头衔|设管理员|撤管理员|取消管理员|转群主)[:：][^\]]*\]/g, '')
+            // 心情便签 / 拍一拍 只是功能标签，不占回复条数（以前会被条数上限截掉，导致便签发不出来）
+            .replace(/[\[【]\s*(?:便签|拍一拍)\s*[:：][^\]】]*[\]】]/g, '')
+            .replace(/[\[【]\s*回复便签\s*[\]】]/g, '')
             .trim();
         return !!text;
     }
@@ -9364,6 +9367,7 @@ ${titleLines || '-（暂无其他成员）'}
         if (/\[\s*内心\s*\]/.test(text)) return false;                        // 内心OS 跟随同一气泡
         if (/^\s*\[[^\]]+\]\s*$/.test(text)) return false;                    // 单个 [表情]/[标签] 不拆
         if (/\[(?:表情回应|群头衔|设管理员|撤管理员|取消管理员|转群主)[:：]/.test(text)) return false;
+        if (/[\[【]\s*(?:便签|拍一拍)\s*[:：]/.test(text)) return false;          // 便签 / 拍一拍 标签整行保留
         return true;
     }
 
@@ -15791,6 +15795,10 @@ ${titleLines || '-（暂无其他成员）'}
                                 ${[['low', '低'], ['medium', '中'], ['high', '高'], ['extreme', '极高']].map(([v, l]) => `<button type="button" class="wechat-seg-btn${(currentChat.mindNoteLevel || this.app.wechatData.getChat?.(currentChat.id)?.mindNoteLevel || 'medium') === v ? ' active' : ''}" data-mind-level="${v}">${l}</button>`).join('')}
                             </div>
                         </div>
+                        <div class="wechat-detail-setting-row is-action" data-mind-roll role="button" tabindex="0">
+                            <span>🎲 手动 roll TA 的便签<small data-mind-roll-desc>按当前剧情和聊天记录，马上生成一条新便签</small></span>
+                            <i class="fa-solid fa-chevron-right"></i>
+                        </div>
                     </section>`}
 
                     <!-- 聊天 -->
@@ -15835,6 +15843,25 @@ ${titleLines || '-（暂无其他成员）'}
                 const desc = mindView.querySelector('[data-mind-level-desc]');
                 if (desc) desc.textContent = ({ low: '低：偶尔才会发新便签（约 15%）', medium: '中：有时会按剧情发新便签（约 40%）', high: '高：经常更新便签（约 70%）', extreme: '极高：每一轮都必发新便签' })[btn.dataset.mindLevel] || '';
             }));
+            mindView.querySelector('[data-mind-roll]')?.addEventListener('click', async (ev) => {
+                const row = ev.currentTarget;
+                if (row.dataset.busy === '1') return;
+                const mind = this.app.mindNotes;
+                const owner = mind?._contactKeyForChat?.(this.app.wechatData.getChat?.(currentChat.id) || currentChat);
+                if (!mind || !owner) return;
+                const desc = row.querySelector('[data-mind-roll-desc]');
+                const oldDesc = desc?.textContent || '';
+                row.dataset.busy = '1';
+                if (desc) desc.textContent = '正在按剧情生成…';
+                try {
+                    const ok = await mind.generateNoteFor(String(currentChat.id), owner, { manual: true });
+                    const note = ok ? mind.getNoteOf(owner) : null;
+                    this.app.phoneShell?.showNotification?.('Mind', ok ? `${owner} 的新便签：${mind._noteLine(note)}` : '生成失败，请检查 API 设置后再试', ok ? '💭' : '⚠️');
+                } finally {
+                    row.dataset.busy = '';
+                    if (desc) desc.textContent = oldDesc;
+                }
+            });
         }
         this._bindBubbleStyleCard(String(currentChat.id || ''));
         this._bindSkinCard();

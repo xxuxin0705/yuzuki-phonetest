@@ -19,7 +19,7 @@ import {
 } from '../../config/image-prompt-format.js';
 import { readPhoneContextLimit } from '../../config/context-settings.js';
 import { replacePhoneEmojiTokens } from '../../config/phone-emoji.js';
-import { parseWechatTranslationContent } from './voice-text.js?v=20261029-dedupe';
+import { parseWechatTranslationContent } from './voice-text.js?v=20261105-q1';
 
 // 朋友圈视图 - 高仿微信版
 export class MomentsView {

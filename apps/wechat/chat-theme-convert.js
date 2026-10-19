@@ -1,4 +1,4 @@
-import { isIMessageTheme, buildIMessageCss } from './chat-theme-imessage.js?v=20261104-im1';
+import { isIMessageTheme, buildIMessageCss } from './chat-theme-imessage.js?v=20261105-im2';
 // 🎨 聊天主题转换器：把「糯叽机」的聊天界面美化 CSS 自动转换成柚月小手机的聊天界面
 //
 // 思路（不靠一一对照硬改）：

@@ -236,10 +236,19 @@ export class MindNotes {
                         <span class="mind-av">${this.app.renderAvatar(this._avatarOf(name), '👤', name)}</span>
                         <span class="mind-name">${this._esc(this._displayName(name))}</span>
                     </button>`).join('')}
+                <button type="button" class="mind-cell is-gen" data-mind-gen title="按剧情生成联系人的心情便签">
+                    <span class="mind-bubble is-empty">🎲 生成</span>
+                    <span class="mind-av mind-gen-av">✨</span>
+                    <span class="mind-name">生成便签</span>
+                </button>
             </div>`;
     }
 
     bindMindRow(root = document) {
+        root.querySelector('[data-mind-gen]')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showGenerateNotesSheet();
+        });
         root.querySelector('[data-mind-me]')?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (this.getMyNote()) this.showNoteCloud('me'); else this.showEditor();
@@ -277,7 +286,7 @@ export class MindNotes {
         const reactions = Array.isArray(note.reactions) ? note.reactions : [];
         const floatBtns = isMe
             ? [['edit', '✏️', '编辑'], ['new', '➕', '新建'], ['share', '💌', '分享'], ['del', '🗑️', '删除']]
-            : [['react', '😊', '贴表情'], ['reply', '💬', '回复'], ['share', '💌', '分享'], ['delOther', '🗑️', '删除']];
+            : [['react', '😊', '贴表情'], ['reply', '💬', '回复'], ['roll', '🎲', '重roll'], ['share', '💌', '分享'], ['delOther', '🗑️', '删除']];
         const mask = this._mount(`
             <div class="mind-cloud-page">
                 <button type="button" class="mind-cloud-close" data-mind-close aria-label="关闭">✕</button>
@@ -325,6 +334,22 @@ export class MindNotes {
                 return;
             }
             if (act === 'share') { this.showShareNote(owner); return; }
+            if (act === 'roll') {
+                if (btn.dataset.busy === '1') return;
+                btn.dataset.busy = '1';
+                const label = btn.querySelector('em');
+                if (label) label.textContent = '生成中…';
+                this.generateNoteFor('', owner, { manual: true }).then(ok => {
+                    if (!ok) {
+                        btn.dataset.busy = '';
+                        if (label) label.textContent = '重roll';
+                        this.app.phoneShell?.showNotification?.('Mind', '生成失败，请检查 API 设置后再试', '⚠️');
+                        return;
+                    }
+                    if (mask.isConnected) rerender();
+                });
+                return;
+            }
             if (act === 'delOther') {
                 mask.remove();
                 this.deleteOther(owner);
@@ -635,7 +660,7 @@ export class MindNotes {
         return out;
     }
 
-    // 一轮结束：极高档位但模型没写 [便签:]，单独让 AI 补一条便签
+    // 一轮结束：极高档位但模型没写 [便签:]（或这一行被回复条数上限截掉了），单独让 AI 按剧情补一条便签
     async afterRound(chatId) {
         const st = this._round[String(chatId || '')];
         if (!st) return;
@@ -643,28 +668,243 @@ export class MindNotes {
         try { this._ensureReplyCard(chatId, st); } catch (e) { console.warn('[Mind] 补便签回复失败', e); }
         if (st.level !== 'extreme' || st.updatedThisRound || !st.noteOwner) return;
         st.updatedThisRound = true;
-        const apiManager = window.VirtualPhone?.apiManager;
-        if (!apiManager?.callAI) return;
+        const ok = await this.generateNoteFor(chatId, st.noteOwner, { roundId: st.roundId });
+        if (!ok) console.warn('[Mind] 极高档位补发便签失败（模型没有返回可用内容）');
+    }
+
+    // 角色资料：酒馆角色卡（名字对得上时）+ 通讯录里的人设字段
+    _personaOf(owner) {
+        const parts = [];
         try {
-            const msgs = (this.app.wechatData.getMessages(chatId) || []).slice(-12)
-                .filter(m => m && m.type !== 'system')
-                .map(m => `${m.from === 'me' ? '用户' : (m.from || st.noteOwner)}: ${String(m.replyText || m.content || '').slice(0, 80)}`)
-                .join('\n');
-            const statusList = MIND_STATUS_GROUPS.flatMap(g => g.items.map(i => i[2])).join('、');
-            const own = this.getNoteOf(st.noteOwner);
-            const prompt = `你是「${st.noteOwner}」。根据下面最近的微信聊天，用你的口吻写一条新的 Mind 心情便签（像朋友圈签名状态，20 字以内，可带表情）${own ? `，不要和旧便签「${this._noteLine(own)}」重复` : ''}。\n只输出一行，格式：便签内容|状态（状态从这些里选一个，可留空：${statusList}）\n\n最近聊天：\n${msgs}`;
-            const res = await apiManager.callAI([
-                { role: 'system', content: '你是角色扮演助手，只按要求格式输出。', isPhoneMessage: true },
-                { role: 'user', content: prompt, isPhoneMessage: true }
-            ], { appId: 'wechat', max_tokens: 120 });
-            const raw = String(res?.summary || res?.content || res?.text || '').trim().split('\n').map(x => x.trim()).filter(Boolean)[0] || '';
-            const cleaned = raw.replace(/^\[?便签[:：]?/, '').replace(/\]$/, '').trim();
-            if (!cleaned) return;
-            const [textPart, statusPart] = cleaned.split(/[|｜]/);
-            this.setOtherNote(st.noteOwner, { text: String(textPart || '').trim(), status: findStatus(statusPart) }, { chatId, roundId: st.roundId });
-            this._refreshList();
+            const ctx = window.SillyTavern?.getContext?.();
+            const ch = ctx?.characters?.[ctx?.characterId];
+            const same = ch && (String(ch.name || '').trim() === owner || String(ctx?.name2 || '').trim() === owner);
+            if (same) {
+                [ch.description, ch.personality, ch.scenario].forEach(t => { const v = String(t || '').trim(); if (v) parts.push(v.slice(0, 1200)); });
+            }
+        } catch (e) { /* 忽略 */ }
+        try {
+            const c = this.app.wechatData.getContactByName?.(owner);
+            ['persona', 'personality', 'description', 'intro', 'setting', 'relation', 'honeyVisibleIntro'].forEach(k => {
+                const v = String(c?.[k] || '').trim();
+                if (v && !parts.some(p => p.includes(v.slice(0, 30)))) parts.push(`${k}: ${v.slice(0, 400)}`);
+            });
+        } catch (e) { /* 忽略 */ }
+        return parts.join('\n').slice(0, 2400);
+    }
+
+    // 酒馆正文里最近的剧情（去掉 HTML / 状态栏等标签，只留文字）
+    _recentStory() {
+        try {
+            const ctx = window.SillyTavern?.getContext?.();
+            const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+            return chat.filter(m => m && !m.is_system && String(m.mes || '').trim()).slice(-6).map(m => {
+                const text = String(m.mes || '')
+                    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, '')
+                    .replace(/<[^>]+>/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(-500);
+                return `${m.is_user ? (ctx.name1 || '用户') : (m.name || ctx.name2 || '角色')}: ${text}`;
+            }).join('\n');
         } catch (e) {
-            console.warn('[Mind] 补发便签失败', e);
+            return '';
+        }
+    }
+
+    _findChatIdFor(owner) {
+        const chats = this.app.wechatData.getChatList?.() || [];
+        const hit = chats.find(c => c && c.type !== 'group' && this._contactKeyForChat(c) === owner);
+        return hit ? String(hit.id) : '';
+    }
+
+    /**
+     * 按当前剧情 + 微信聊天，让 AI 给某个联系人写一条新的心情便签
+     * @returns {Promise<boolean>} 是否成功写入
+     */
+    async generateNoteFor(chatId, owner, { roundId = '', manual = false } = {}) {
+        const name = String(owner || '').trim();
+        if (!name) return false;
+        const apiManager = window.VirtualPhone?.apiManager;
+        if (!apiManager?.callAI) return false;
+        const cid = String(chatId || this._findChatIdFor(name) || '');
+        const userName = this.app.wechatData.getUserInfo?.()?.name || '用户';
+        const msgs = (cid ? (this.app.wechatData.getMessages(cid) || []) : []).slice(-20)
+            .filter(m => m && m.type !== 'system')
+            .map(m => `${m.from === 'me' ? userName : (m.from || name)}: ${String(m.replyText || m.content || '').replace(/\s+/g, ' ').slice(0, 120)}`)
+            .join('\n');
+        const story = this._recentStory();
+        const persona = this._personaOf(name);
+        const statusList = MIND_STATUS_GROUPS.flatMap(g => g.items.map(i => i[2])).join('、');
+        const own = this.getNoteOf(name);
+        const myNote = this.getMyNote();
+        const prompt = [
+            `你是「${name}」。请根据你的人设、当前剧情和最近的微信聊天，用你自己的口吻写一条新的 Mind 心情便签（像状态签名，20 字以内，可带 emoji，要能看出你此刻的心情/在做什么/在想谁）。`,
+            own ? `不要和你上一条便签「${this._noteLine(own)}」重复。` : '',
+            myNote && this.canSee(name, myNote) ? `${userName} 现在的便签是「${this._noteLine(myNote)}」，可以有呼应但不要照抄。` : '',
+            persona ? `\n【你的人设】\n${persona}` : '',
+            story ? `\n【当前剧情（最近）】\n${story}` : '',
+            msgs ? `\n【最近的微信聊天】\n${msgs}` : '',
+            `\n只输出一行，格式：便签内容|状态\n状态从这些里选一个（也可以留空）：${statusList}\n不要输出解释、引号或其它内容。`
+        ].filter(Boolean).join('\n');
+        let raw = '';
+        try {
+            const res = await apiManager.callAI([
+                { role: 'system', content: '你是角色扮演助手，只按要求的格式输出一行。', isPhoneMessage: true },
+                { role: 'user', content: prompt, isPhoneMessage: true }
+            ], { appId: 'wechat', max_tokens: 400 });
+            if (res && res.success === false) { console.warn('[Mind] 生成便签失败:', res.error); return false; }
+            raw = String(res?.summary || res?.content || res?.text || '');
+        } catch (e) {
+            console.warn('[Mind] 生成便签失败', e);
+            return false;
+        }
+        const parsed = parseNoteLine(raw, name);
+        if (!parsed) return false;
+        this.setOtherNote(name, { text: parsed.text, status: findStatus(parsed.status) }, { chatId: cid, roundId: manual ? '' : roundId });
+        this._refreshList();
+        return true;
+    }
+
+    // 🎲 生成便签弹窗：选条数（几个人）+ 必定出现的人 / 只让选中的人发（和生成朋友圈一样）
+    showGenerateNotesSheet() {
+        if (this._genBusy) { this.app.phoneShell?.showNotification?.('Mind', '正在生成中，请稍等', '⏳'); return; }
+        const contacts = (this.app.wechatData.getContacts?.() || []).filter(c => String(c?.name || '').trim());
+        if (!contacts.length) { this.app.phoneShell?.showNotification?.('提示', '请先添加联系人', '⚠️'); return; }
+        let count = Math.min(3, contacts.length);
+        const picked = new Set();
+        let onlySelected = false;
+        const counts = [1, 2, 3, 4, 5, 6, 8, 10].filter(n => n <= Math.max(1, contacts.length));
+        const host = document.querySelector('.phone-view-current .wechat-app') || document.querySelector('.wechat-app') || document.body;
+        const mask = document.createElement('div');
+        mask.className = 'moment-sheet-mask';
+        mask.innerHTML = `
+            <div class="moment-dialog moment-gen-dialog" role="dialog">
+                <div class="moment-dialog-title">生成心情便签</div>
+                <div class="moment-gen-label">生成几个人 <small>每人只保留一条，新生成的会顶替旧的</small></div>
+                <div class="moment-gen-count">${counts.map(n => `<button type="button" data-count="${n}">${n}</button>`).join('')}</div>
+                <div class="moment-gen-label">必定出现的人 <small>不选 = 随机</small></div>
+                <div class="moment-gen-people">
+                    ${contacts.map(c => `<button type="button" class="moment-gen-person" data-name="${this._esc(c.name)}"><span class="moment-gen-av">${this.app.renderAvatar(this._avatarOf(c.name) || c.avatar, '👤', c.name)}</span><span class="moment-gen-name">${this._esc(this._displayName(c.name))}</span></button>`).join('')}
+                </div>
+                <label class="moment-gen-only"><input type="checkbox" data-only> 只让选中的人发</label>
+                <div class="moment-gen-summary"></div>
+                <div class="moment-dialog-actions">
+                    <button type="button" data-sheet-close>取消</button>
+                    <button type="button" class="is-primary" data-ok>生成</button>
+                </div>
+            </div>`;
+        host.appendChild(mask);
+        mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+        mask.querySelectorAll('[data-sheet-close]').forEach(b => b.addEventListener('click', () => mask.remove()));
+        const summary = mask.querySelector('.moment-gen-summary');
+        const paint = () => {
+            const n = onlySelected && picked.size ? picked.size : count;
+            mask.querySelectorAll('[data-count]').forEach(b => b.classList.toggle('is-on', Number(b.dataset.count) === count));
+            mask.querySelector('.moment-gen-count').classList.toggle('is-disabled', onlySelected && picked.size > 0);
+            mask.querySelectorAll('.moment-gen-person').forEach(b => b.classList.toggle('is-on', picked.has(b.dataset.name)));
+            mask.querySelector('.moment-gen-only').classList.toggle('is-disabled', picked.size === 0);
+            summary.textContent = picked.size
+                ? `${n} 个人，${onlySelected ? '只由' : '必定包含'}：${[...picked].map(x => this._displayName(x)).join('、')}`
+                : `${n} 个人，随机挑人发`;
+        };
+        mask.querySelectorAll('[data-count]').forEach(b => b.addEventListener('click', () => { count = Number(b.dataset.count); paint(); }));
+        mask.querySelectorAll('.moment-gen-person').forEach(b => b.addEventListener('click', () => {
+            const n = b.dataset.name;
+            if (picked.has(n)) picked.delete(n); else picked.add(n);
+            if (picked.size > count) count = Math.min(Math.max(...counts), picked.size);
+            paint();
+        }));
+        mask.querySelector('[data-only]')?.addEventListener('change', (e) => { onlySelected = !!e.target.checked; paint(); });
+        mask.querySelector('[data-ok]')?.addEventListener('click', () => {
+            mask.remove();
+            const names = this._pickNoteOwners(contacts.map(c => c.name), { count, mustInclude: [...picked], onlySelected });
+            this.generateNotesFor(names);
+        });
+        paint();
+    }
+
+    // 挑人：必选的先放进去，不够再从其他人里随机补（有聊天记录的人优先）
+    _pickNoteOwners(all = [], { count = 3, mustInclude = [], onlySelected = false } = {}) {
+        const must = mustInclude.filter(n => all.includes(n));
+        if (onlySelected && must.length) return must;
+        const out = [...must];
+        const rest = all.filter(n => !out.includes(n));
+        const chatted = rest.filter(n => this._findChatIdFor(n));
+        const shuffle = arr => arr.map(v => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+        const pool = [...shuffle(chatted), ...shuffle(rest.filter(n => !chatted.includes(n)))];
+        while (out.length < count && pool.length) out.push(pool.shift());
+        return out;
+    }
+
+    /**
+     * 一次给多个人生成便签（一个请求），没写到的人再单独补
+     * @returns {Promise<string[]>} 成功的人
+     */
+    async generateNotesFor(names = []) {
+        const list = [...new Set(names.map(n => String(n || '').trim()).filter(Boolean))];
+        if (!list.length) return [];
+        if (list.length === 1) {
+            this._genBusy = true;
+            this.app.phoneShell?.showNotification?.('Mind', `正在按剧情生成 ${this._displayName(list[0])} 的便签…`, '🎲');
+            try {
+                const ok = await this.generateNoteFor('', list[0], { manual: true });
+                this.app.phoneShell?.showNotification?.('Mind', ok ? `${this._displayName(list[0])}：${this._noteLine(this.getNoteOf(list[0]))}` : '生成失败，请检查 API 设置后再试', ok ? '💭' : '⚠️');
+                return ok ? list : [];
+            } finally { this._genBusy = false; }
+        }
+        const apiManager = window.VirtualPhone?.apiManager;
+        if (!apiManager?.callAI) { this.app.phoneShell?.showNotification?.('Mind', '没有可用的 API', '⚠️'); return []; }
+        this._genBusy = true;
+        this.app.phoneShell?.showNotification?.('Mind', `正在按剧情生成 ${list.length} 条便签…`, '🎲');
+        const done = [];
+        try {
+            const userName = this.app.wechatData.getUserInfo?.()?.name || '用户';
+            const statusList = MIND_STATUS_GROUPS.flatMap(g => g.items.map(i => i[2])).join('、');
+            const blocks = list.map(name => {
+                const cid = this._findChatIdFor(name);
+                const msgs = (cid ? (this.app.wechatData.getMessages(cid) || []) : []).slice(-8)
+                    .filter(m => m && m.type !== 'system')
+                    .map(m => `  ${m.from === 'me' ? userName : name}: ${String(m.replyText || m.content || '').replace(/\s+/g, ' ').slice(0, 80)}`).join('\n');
+                const own = this.getNoteOf(name);
+                const persona = this._personaOf(name).slice(0, 500);
+                return [`【${name}】`, persona ? `人设：${persona}` : '', own ? `旧便签（不要重复）：${this._noteLine(own)}` : '', msgs ? `和${userName}最近的聊天：\n${msgs}` : ''].filter(Boolean).join('\n');
+            }).join('\n\n');
+            const story = this._recentStory();
+            const prompt = [
+                `请分别以下面每个人的口吻，按各自的人设、当前剧情和最近的聊天，给每人写一条新的 Mind 心情便签（像状态签名，20 字以内，可带 emoji，要能看出此刻的心情/在做什么/在想谁），每人一条，风格要有区别。`,
+                story ? `\n【当前剧情（最近）】\n${story}` : '',
+                `\n${blocks}`,
+                `\n每人输出一行，共 ${list.length} 行，格式：名字|便签内容|状态\n名字必须是：${list.join('、')}\n状态从这些里选一个（可留空）：${statusList}\n不要输出解释或其它内容。`
+            ].filter(Boolean).join('\n');
+            let raw = '';
+            try {
+                const res = await apiManager.callAI([
+                    { role: 'system', content: '你是角色扮演助手，只按要求的格式输出。', isPhoneMessage: true },
+                    { role: 'user', content: prompt, isPhoneMessage: true }
+                ], { appId: 'wechat', max_tokens: 200 + list.length * 120 });
+                if (!(res && res.success === false)) raw = String(res?.summary || res?.content || res?.text || '');
+            } catch (e) { console.warn('[Mind] 批量生成便签失败', e); }
+            const cleaned = raw.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+            cleaned.split(/\r?\n/).forEach(line => {
+                const parts = line.replace(/^[-*•\d.、\s]+/, '').replace(/^【|】/g, '').split(/[|｜]/).map(x => x.trim());
+                if (parts.length < 2) return;
+                const who = list.find(n => parts[0] === n || parts[0].replace(/[\[\]【】「」:：\s]/g, '') === n || this._displayName(n) === parts[0]);
+                if (!who || done.includes(who)) return;
+                const text = String(parts[1] || '').replace(/^["“「『]|["”」』]$/g, '').trim().slice(0, 40);
+                if (!text) return;
+                this.setOtherNote(who, { text, status: findStatus(parts[2] || '') }, { chatId: this._findChatIdFor(who), roundId: '' });
+                done.push(who);
+            });
+            // 模型漏掉的人：单独补
+            for (const name of list.filter(n => !done.includes(n))) {
+                if (await this.generateNoteFor('', name, { manual: true })) done.push(name);
+            }
+            this._refreshList();
+            this.app.phoneShell?.showNotification?.('Mind', done.length ? `已生成 ${done.length} 条便签：${done.map(n => this._displayName(n)).join('、')}` : '生成失败，请检查 API 设置后再试', done.length ? '💭' : '⚠️');
+            return done;
+        } finally {
+            this._genBusy = false;
         }
     }
 
@@ -706,6 +946,8 @@ export class MindNotes {
         if (senderIsMe) {
             return { text: out.replace(/\[回复便签\]/g, '').replace(/\[便签[:：][^\]]*\]/g, ''), acted };
         }
+        // 模型偶尔会写成全角括号：【便签：…】/【回复便签】
+        out = out.replace(/【\s*回复便签\s*】/g, '[回复便签]').replace(/【\s*便签\s*[:：]([^】]*)】/g, '[便签:$1]');
         const st = this._round[String(chatId || '')] || {};
         const data = this.app.wechatData;
         const senderKey = isGroup ? (this.app.chatView?._resolveGroupMemberKey?.(chat, sender) || sender) : (this._contactKeyForChat(chat) || sender);
@@ -720,7 +962,7 @@ export class MindNotes {
         });
 
         const hadTag = /\[回复便签\]/.test(out) || st.attachNext === true;
-        if (/[\[【]便签[:：]/.test(text)) st.updatedThisRound = true;
+        if (/[\[【]\s*便签\s*[:：]/.test(text) && st.updateAllowed === true) st.updatedThisRound = true;
         out = out.replace(/\[回复便签\]/g, '');
         // 必定回复：本轮角色的第一条消息就算没写标签，也当作对便签的回复
         if (hadTag) {
@@ -752,4 +994,28 @@ export class MindNotes {
         }
         return { text: out, acted };
     }
+}
+
+// 从模型输出里取出「便签内容|状态」：容忍思考段落、前缀、引号、代码块
+function parseNoteLine(raw = '', owner = '') {
+    const text = String(raw || '')
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/```[a-z]*|```/gi, '');
+    const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    // 模型照着聊天格式写成「名字: [便签:内容|状态]」时，直接取标签里面
+    const tagged = text.match(/[\[【]\s*(?:新)?便签\s*[:：]\s*([^\]】]+)[\]】]/);
+    const own = String(owner || '').trim();
+    const ownLine = own ? lines.find(l => l.replace(/^[-*•\d.、\s【\[]+/, '').startsWith(own)) : null;
+    const pick = tagged ? tagged[1] : (ownLine || lines.find(l => /[|｜]/.test(l) && !/^(状态|格式)[:：]/.test(l)) || lines.find(l => /便签/.test(l)) || lines[lines.length - 1]);
+    let line = pick.replace(/^[-*•\d.、\s]+/, '').replace(/^\[?\s*(?:新)?便签\s*[:：]?/, '').replace(/\]\s*$/, '').trim();
+    if (!tagged) line = line.replace(/^[^:：|｜\s]{1,12}\s*[:：]\s*(?=\S)/, '');
+    line = line.replace(/^["“「『]|["”」』]$/g, '').trim();
+    let segs = line.split(/[|｜]/).map(x => x.trim());
+    // 「名字|内容|状态」：去掉开头的名字
+    if (segs.length >= 3 || (own && segs.length >= 2 && segs[0].replace(/[【】\[\]:：\s]/g, '') === own)) segs = segs.slice(1);
+    const [t, st] = segs;
+    const body = String(t || '').replace(/^["“「『]|["”」』]$/g, '').trim().slice(0, 40);
+    if (!body && !st) return null;
+    return { text: body, status: String(st || '').trim() };
 }

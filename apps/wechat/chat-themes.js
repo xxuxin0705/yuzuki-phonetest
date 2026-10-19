@@ -4,7 +4,7 @@
 // · 导入的主题可以只给某个聊天用，也可以设成所有聊天的默认
 // · 导入后：原来的气泡样式、风格配色都不再作用于这个聊天，完全按主题显示；按钮一个都不会被藏起来
 
-import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261104-im1';
+import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261105-im2';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
 import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
 import { openAvatarFrameSheet, readFrames } from './avatar-frames.js?v=20261023-f1';
@@ -592,6 +592,15 @@ export const YZT_CARD_CSS = `
 .yzt-tile em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
 .yzt-tile .yzt-badge { position: absolute; right: 4px; top: 4px; font-size: 9px; font-style: normal; line-height: 1; padding: 2px 4px; border-radius: 6px; background: rgba(0,0,0,.45); color: #fff; }
 .yzt-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.wsk-card .wsk-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+.wsk-card .wsk-tile { min-width: 0; }
+.wsk-card .wsk-tile em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
+.yzt-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.yzt-dots { flex: 0 0 auto; display: inline-flex; gap: 3px; }
+.yzt-dots i { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+.yzt-select { flex: 1; min-width: 0; width: 100%; height: 34px; border: 0; border-radius: 9px; padding: 0 28px 0 10px; font-size: 12.5px; background: #f2f3f5 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center / 10px 7px; color: #222; -webkit-appearance: none; appearance: none; text-overflow: ellipsis; }
+.yzt-import-btn { flex: 0 0 auto; height: 34px; border: 0; border-radius: 9px; padding: 0 10px; background: #f2f3f5; color: #333; font-size: 12px; cursor: pointer; white-space: nowrap; }
+html[data-wx-mode="night"] .yzt-select, html[data-wx-mode="night"] .yzt-import-btn { background-color: var(--wx-ctl-bg, #2a2a2a); color: var(--wx-card-fg, #eee); }
 .yzt-row > span { flex: 0 0 auto; font-size: 12.5px; color: #444; }
 .yzt-row .wsk-modes { flex: 1; margin-top: 0; }
 .yzt-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -639,25 +648,25 @@ function renderTiles(app, chatId) {
             <em>${sk.name}</em>
         </button>`;
     }).join('');
-    const custom = store.themes.map(t => {
-        const p = compileTheme(t)?.preview || {};
-        const bd = p.border ? `;box-shadow:inset 0 0 0 1px ${p.border}` : '';
+    return builtin;
+}
+
+// 导入的主题：下拉选择（主题多了也不会把设置页撑出去）
+function renderThemeSelect(app, chatId) {
+    const store = readThemeStore(app.storage);
+    const active = resolveChatTheme(store, chatId);
+    const opts = store.themes.map(t => {
         const isDefault = store.defaultId === t.id;
-        return `<button type="button" class="wsk-tile yzt-tile${active?.id === t.id ? ' active' : ''}" data-yzt-pick="${esc(t.id)}" style="position:relative">
-            <span class="wsk-mock" style="background:${esc(p.page || '#f2f2f2')}">
-                <i class="wsk-h" style="background:${esc(p.head || '#fafafa')}"></i>
-                <i class="wsk-in" style="background:${esc(p.inBg || '#efefef')};border-radius:3px${bd}"></i>
-                <i class="wsk-out" style="background:${esc(p.outBg || '#0095f6')};border-radius:3px${bd}"></i>
-                <i class="wsk-f" style="background:${esc(p.bar || '#fafafa')}"></i>
-                ${isDefault ? '<em class="yzt-badge">默认</em>' : ''}
-            </span>
-            <em>${esc(t.name || '未命名主题')}</em>
-        </button>`;
+        return `<option value="${esc(t.id)}"${active?.id === t.id ? ' selected' : ''}>${esc(t.name || '未命名主题')}${isDefault ? '（默认）' : ''}</option>`;
     }).join('');
-    const importTile = `<button type="button" class="wsk-tile yzt-tile-import" data-yzt-import="1">
-        <span class="wsk-mock"><b>＋</b></span><em>导入 CSS</em>
-    </button>`;
-    return builtin + custom + importTile;
+    const p = active ? (compileTheme(active)?.preview || {}) : null;
+    const mock = p ? `<span class="yzt-dots" title="当前主题配色"><i style="background:${esc(p.inBg || '#efefef')}"></i><i style="background:${esc(p.outBg || '#0095f6')}"></i></span>` : '';
+    return `${mock}
+        <select class="yzt-select" data-yzt-select aria-label="导入的聊天主题">
+            <option value=""${active ? '' : ' selected'}>${store.themes.length ? '不使用（用上面的内置风格）' : '还没有导入主题'}</option>
+            ${opts}
+        </select>
+        <button type="button" class="yzt-import-btn" data-yzt-import="1">＋ 导入</button>`;
 }
 
 export function renderThemeCardHtml(app, chatId) {
@@ -669,6 +678,10 @@ export function renderThemeCardHtml(app, chatId) {
         <section class="wechat-detail-card wsk-card" data-collapse-key="skin" data-yzt-chat="${esc(chatId)}">
             <div class="wechat-detail-heading">界面风格</div>
             <div class="wsk-tiles">${renderTiles(app, chatId)}</div>
+            <div class="yzt-row yzt-pick-row">
+                <span>导入的主题</span>
+                <div class="yzt-pick" data-yzt-pick-box>${renderThemeSelect(app, chatId)}</div>
+            </div>
             <div class="yzt-row">
                 <span>应用到</span>
                 <div class="wsk-modes" data-yzt-scope-box>
@@ -724,6 +737,8 @@ export function bindThemeCard(chatView) {
         const state = app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
         const tiles = card.querySelector('.wsk-tiles');
         if (tiles) tiles.innerHTML = renderTiles(app, chatId);
+        const pickBox = card.querySelector('[data-yzt-pick-box]');
+        if (pickBox) pickBox.innerHTML = renderThemeSelect(app, chatId);
         card.querySelectorAll('[data-wx-mode-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxModePick === state.mode));
         card.querySelectorAll('[data-yzt-scope]').forEach(b => b.classList.toggle('active', b.dataset.yztScope === (store.scope === 'all' ? 'all' : 'chat')));
         const modeBox = card.querySelector('[data-yzt-mode-box]');
@@ -749,7 +764,15 @@ export function bindThemeCard(chatView) {
         saveThemeStore(app.storage, store);
     };
 
+    card.addEventListener('change', (e) => {
+        const sel = e.target.closest?.('[data-yzt-select]');
+        if (!sel) return;
+        pick(sel.value || '');
+        refresh();
+    });
+
     card.addEventListener('click', (e) => {
+        if (e.target.closest?.('[data-yzt-select]')) return;
         const skinTile = e.target.closest('[data-wx-skin-pick]');
         if (skinTile) {
             pick('');

@@ -193,13 +193,29 @@ ${MSG} .wechat-reaction-pill {
 }
 ${MSG} .wechat-reaction-pill .wechat-reaction-emoji { font-size: 16px !important; line-height: 1 !important; }
 ${MSG} .wechat-reaction-pill .wechat-reaction-by { display: none !important; }
-/* 引用：贴在气泡下方的小灰条 */
-${MSG} .wechat-quote-block {
-    margin-top: 5px !important; max-width: 100% !important; padding: 4px 10px !important; border-radius: 14px !important; border: 0 !important;
-    background: rgba(255,255,255,.55) !important; color: ${inkSoft} !important; font-size: 12px !important; box-shadow: none !important;
-    backdrop-filter: blur(6px) !important; -webkit-backdrop-filter: blur(6px) !important;
+/* 引用：像 iOS 一样，被引用的那句缩小显示在气泡上方，用一条弧线连到气泡 */
+${MSG}:has(> .message-content > .wechat-quote-block) { margin-top: 8px !important; }
+${MSG} > .message-content > .wechat-quote-block {
+    order: -1 !important; position: relative !important; display: block !important; box-sizing: border-box !important;
+    margin: 0 0 6px 0 !important; max-width: 100% !important; width: auto !important; padding: 6px 12px !important; border-radius: 16px !important; border: 0 !important;
+    background: ${themBg} !important; color: ${themFg} !important; opacity: .62 !important; font-size: 13px !important; line-height: 1.3 !important;
+    box-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
 }
-${MSG} .wechat-quote-block :is(.wechat-quote-sender, .wechat-quote-text) { color: inherit !important; font-size: inherit !important; }
+${MSG}.message-left > .message-content > .wechat-quote-block { margin-left: 22px !important; }
+${MSG}.message-right > .message-content > .wechat-quote-block { margin-right: 22px !important; }
+${MSG} > .message-content > .wechat-quote-block::before {
+    content: "" !important; position: absolute !important; top: 50% !important; width: 14px !important; height: calc(50% + 8px) !important;
+    border: 2px solid ${inkSoft} !important; pointer-events: none !important; opacity: .7 !important; background: none !important;
+}
+${MSG}.message-left > .message-content > .wechat-quote-block::before { left: -16px !important; border-right: 0 !important; border-bottom: 0 !important; border-top-left-radius: 12px !important; }
+${MSG}.message-right > .message-content > .wechat-quote-block::before { right: -16px !important; border-left: 0 !important; border-bottom: 0 !important; border-top-right-radius: 12px !important; }
+${MSG} > .message-content > .wechat-quote-block .wechat-quote-inner {
+    display: block !important; background: none !important; border: 0 !important; padding: 0 !important; margin: 0 !important;
+    white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important;
+}
+${MSG} > .message-content > .wechat-quote-block :is(.wechat-quote-sender, .wechat-quote-text) { color: inherit !important; font-size: inherit !important; display: inline !important; }
+${MSG} > .message-content > .wechat-quote-block .wechat-quote-sender { font-weight: 600 !important; }
+${MSG} > .message-content > .wechat-quote-block .wechat-quote-sender::after { content: "：" !important; }
 /* 图片 / 表情包 */
 ${MSG} .message-image-box { border-radius: 18px !important; overflow: hidden !important; box-shadow: 0 0 0 1px rgba(0,0,0,.08) !important; }
 ${MSG} .message-image-box :is(img, .message-image) { border-radius: 18px !important; }

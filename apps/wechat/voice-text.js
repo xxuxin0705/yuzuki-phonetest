@@ -52,7 +52,11 @@ export function parseWechatTranslationContent(value = '') {
     return {
         displayText,
         speechText: normalizeRemovedSegmentSpacing(speechText),
-        translationText: translations.join('\n')
+        // 模型会照着聊天记录的格式把「引用 某人: …」也翻进译文里：引用在气泡外已经显示了，译文里去掉
+        translationText: translations
+            .map(t => String(t || '').replace(/^\s*[「『]\s*引用\s*[^」』]*[」』]\s*/, '').trim())
+            .filter(Boolean)
+            .join('\n')
     };
 }
 

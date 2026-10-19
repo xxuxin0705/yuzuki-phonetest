@@ -11,11 +11,11 @@
  * ======================================================== */
 // 微信APP主程序
 import { ChatView } from './chat-view.js?v=20261102-lang';
-import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261104-t3';
+import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261105-t4';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261102-lang';
-import { MindNotes } from './mind-notes.js?v=20261016-fix15';
+import { MindNotes } from './mind-notes.js?v=20261105-m2';
 import { WechatData } from './wechat-data.js?v=20261029-dedupe';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
 import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
@@ -3974,6 +3974,9 @@ export class WechatApp {
 .moment-gen-name { max-width: 100%; font-size: 10.5px; color: #444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .moment-gen-only { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: #555; }
 .moment-gen-only.is-disabled { opacity: .45; pointer-events: none; }
+.moment-gen-count.is-disabled { opacity: .45; pointer-events: none; }
+.mind-cell.is-gen .mind-gen-av { background: linear-gradient(135deg, #f3e8ff, #e0f0ff); box-shadow: inset 0 0 0 1.5px rgba(150,120,210,.35); font-size: 20px; }
+.mind-cell.is-gen .mind-bubble { opacity: .8; }
 .moment-gen-summary { margin-top: 8px; font-size: 11.5px; color: #576b95; }
 #moments-generate-btn.is-busy i { animation: momentWandSpin 1s linear infinite; }
 @keyframes momentWandSpin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
