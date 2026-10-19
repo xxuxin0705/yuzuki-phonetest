@@ -3825,6 +3825,82 @@ ${memoryLines.slice(0, 10).join('\n')}
         return messages;
     }
 
+    // 📏 只在日志里记一笔输入构成（角色卡 / 世界书 / 人设 / 正文各多少字），内容一字不改，和原版完全一样
+    _fitMomentsContextBudget(messages = [], prompt = '') {
+        const list = Array.isArray(messages) ? messages.slice() : [];
+        const len = m => (typeof m?.content === 'string' ? m.content.length : 0);
+        const isHistory = m => m && (m.role === 'user' || m.role === 'assistant');
+        const cut = (text, n) => {
+            const chars = Array.from(String(text || ''));
+            return chars.length > n ? `${chars.slice(0, n).join('')}…` : String(text || '');
+        };
+        const before = list.reduce((a, m) => a + len(m), 0) + String(prompt || '').length;
+        const PER_MSG = 1500;
+        const HISTORY_TOTAL = 24000;
+        const TRIGGER = 45000;
+        let out = list;
+        void PER_MSG; void HISTORY_TOTAL; void TRIGGER; void cut;
+        if (false) {
+            const head = list.filter(m => !isHistory(m));
+            let history = list.filter(isHistory).map(m => ({ ...m, content: cut(m.content, PER_MSG) }));
+            let total = history.reduce((a, m) => a + len(m), 0);
+            while (history.length > 4 && total > HISTORY_TOTAL) {
+                total -= len(history[0]);
+                history = history.slice(1); // 丢掉最早的
+            }
+            out = [...head, ...history];
+        }
+        try {
+            const sum = (arr) => arr.reduce((a, m) => a + len(m), 0);
+            const card = out.filter(m => /角色卡/.test(m?.name || ''));
+            const persona = out.filter(m => /Persona/.test(m?.name || ''));
+            const history = out.filter(isHistory);
+            const wb = out.filter(m => !isHistory(m) && !card.includes(m) && !persona.includes(m));
+            const after = sum(out) + String(prompt || '').length;
+            this._momentStep(`输入构成：角色卡 ${sum(card)} 字，世界书 ${wb.length} 条 ${sum(wb)} 字，人设 ${sum(persona)} 字，正文 ${history.length} 条 ${sum(history)} 字，朋友圈提示词 ${String(prompt || '').length} 字；合计 ${after} 字${after < before ? `（原本 ${before} 字，正文已压缩）` : ''}`);
+        } catch (e) { /* 忽略 */ }
+        return out;
+    }
+
+    // 发请求并盯着“首个流分片”：超过 stallMs 还没收到任何内容，就中止这次请求（真正断开连接）
+    async _callAiWithStallGuard(apiManager, messages, baseOptions = {}, stallMs = 45000) {
+        const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        const options = { ...baseOptions };
+        if (ctrl) options.signal = ctrl.signal;
+        const startedAt = Date.now();
+        let stalled = false;
+        const log = window.__yzPhoneApiLog;
+        // 日志模块会在调用的同一刻同步记一条「AI 调用」，拿到的就是这一次请求自己的记录
+        const promise = apiManager.callAI(messages, options);
+        const head = log?.entries?.[0];
+        const myEntry = head && head.kind === 'ai' && head.ts >= startedAt - 50 ? head : null;
+        const traceHas = re => Array.isArray(myEntry?.trace) && myEntry.trace.some(t => re.test(t));
+        const watcher = ctrl ? setInterval(() => {
+            const waited = Date.now() - startedAt;
+            if (waited < stallMs) return;
+            let stuck;
+            if (myEntry) {
+                const streaming = traceHas(/流式: 开/);
+                const progressed = !myEntry.pending || myEntry.firstChunkMs || traceHas(/首个流分片|\[DONE\]/);
+                // 流式请求：首字没到就算卡住；非流式请求看不到首字，放宽到 3 倍时间
+                stuck = !progressed && (streaming || waited > stallMs * 3);
+            } else {
+                stuck = waited > stallMs * 3;
+            }
+            if (stuck) {
+                stalled = true;
+                clearInterval(watcher);
+                try { ctrl.abort(); } catch (e) { /* 忽略 */ }
+            }
+        }, 1000) : null;
+        try {
+            const result = await promise;
+            return { stalled, result };
+        } finally {
+            if (watcher) clearInterval(watcher);
+        }
+    }
+
     // 调用AI（静默调用，不显示在酒馆聊天界面）
     async callAI(prompt) {
         const context = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext)
@@ -3849,7 +3925,10 @@ ${memoryLines.slice(0, 10).join('\n')}
                 callAiOptions.max_tokens = resolvedMaxTokens;
             }
 
-            const contextMessages = await this._buildWechatMomentsContextMessages(context);
+            const contextMessages = this._fitMomentsContextBudget(
+                await this._buildWechatMomentsContextMessages(context),
+                prompt
+            );
 
             // ⚠️ 只多做一件事：把被截断的半个 emoji（孤立代理字符）去掉。
             //    这种字符在 JSON 里是非法的 Unicode，TauriTavern 的后端解析请求体时会卡住、请求到不了中转站。
@@ -3859,7 +3938,16 @@ ${memoryLines.slice(0, 10).join('\n')}
                 { role: 'user', content: prompt, isPhoneMessage: true }
             ]);
             this._momentStep(`上下文 ${contextMessages.length} 条，已发送 AI 请求`);
-            const result = await apiManager.callAI(requestMessages, callAiOptions);
+            // 卡死保护：正常时首字几秒就到（日志里 8 秒左右）。
+            // 如果 45 秒还一个字都没收到，说明这次请求卡在了半路（只回了响应头、没有内容），
+            // 就把它真正取消掉（释放连接，否则卡住的连接会让后面的请求也一起卡），再自动重发一次。
+            let result = null;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                const outcome = await this._callAiWithStallGuard(apiManager, requestMessages, callAiOptions, 45000);
+                if (!outcome.stalled) { result = outcome.result; break; }
+                this._momentStep(`第 ${attempt} 次请求 45 秒没有任何内容返回，已取消${attempt < 2 ? '，自动重发一次' : ''}`, false);
+                if (attempt === 2) throw new Error('中转站连续两次都没有返回内容，已取消请求。请稍后再试，或换个模型');
+            }
             if (!result.success) throw new Error(result.error || 'AI调用失败');
             const response = result.summary || '';
 
