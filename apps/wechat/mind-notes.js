@@ -639,7 +639,7 @@ export class MindNotes {
             const updateChance = { low: 0.15, medium: 0.4, high: 0.7, extreme: 1 }[level] ?? 0.4;
             if (Math.random() < updateChance) {
                 state.updateAllowed = true;
-                if (level === 'extreme') lines.push('【你的心情便签·本轮必须更新】本轮请务必按剧情发一条新的 Mind 便签。');
+                if (level === 'extreme') lines.push('【你的心情便签·本轮必须更新】本轮请务必按剧情发一条新的 Mind 便签：在本轮所有聊天消息写完之后，最后单独一行写 [便签:便签内容|状态]，不能省略。');
                 lines.push(`【你的心情便签】你可以按剧情和聊天记录更新自己的 Mind 便签（${own ? `当前是「${this._noteLine(own)}」` : '目前没有'}）：单独一行写 [便签:便签内容|状态]，内容 20 字以内，状态从这些里选一个或留空：${MIND_STATUS_GROUPS.flatMap(g => g.items.map(i => i[2])).join('、')}。这一行不会作为消息显示。`);
             }
         } else if (isGroupChat && targetChat && !isProactive) {
@@ -655,21 +655,21 @@ export class MindNotes {
     reminderLine(chatId) {
         const st = this._round[String(chatId || '')];
         let out = st?.replyAllowed ? '\n- 【回复便签】本轮必须在聊天窗口发出一条明确回应用户 Mind 便签内容的消息，不得用新便签代替，在那条消息上一行单独写 [回复便签]。' : '';
-        if (st?.updateAllowed && st.level === 'extreme') out += '\n- 【心情便签】本轮必须单独一行写 [便签:便签内容|状态] 发一条新便签（不显示为消息）。';
+        if (st?.updateAllowed && st.level === 'extreme') out += '\n- 【心情便签·必写】本轮回复的最后一行必须单独写 [便签:便签内容|状态] 发一条新便签（不显示为消息、不占回复条数），漏写视为回复不完整。';
         else if (st?.updateAllowed) out += '\n- 【心情便签】本轮可以单独一行写 [便签:便签内容|状态] 更新你的便签。';
         return out;
     }
 
-    // 一轮结束：极高档位但模型没写 [便签:]（或这一行被回复条数上限截掉了），单独让 AI 按剧情补一条便签
+    // 一轮结束：只补「回复便签」的卡片（不调 API）
     async afterRound(chatId) {
         const st = this._round[String(chatId || '')];
         if (!st) return;
         // 模型这一轮忘了写 [回复便签]：挑一条最贴近便签内容的消息（没有就用最后一条）补上便签引用
         try { this._ensureReplyCard(chatId, st); } catch (e) { console.warn('[Mind] 补便签回复失败', e); }
-        if (st.level !== 'extreme' || st.updatedThisRound || !st.noteOwner) return;
-        st.updatedThisRound = true;
-        const ok = await this.generateNoteFor(chatId, st.noteOwner, { roundId: st.roundId });
-        if (!ok) console.warn('[Mind] 极高档位补发便签失败（模型没有返回可用内容）');
+        // 便签只跟着聊天回复一起生成（同一次请求），这里不再额外调用 API 补发
+        if (st.level === 'extreme' && !st.updatedThisRound && st.noteOwner) {
+            console.info('[Mind] 本轮模型没有写 [便签:]，按设置不额外请求，下一轮会继续要求');
+        }
     }
 
     // 角色资料：酒馆角色卡（名字对得上时）+ 通讯录里的人设字段
