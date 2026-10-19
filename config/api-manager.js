@@ -64,6 +64,32 @@ export class ApiManager {
         }
     }
 
+    _isOfficialGeminiApiUrl(apiUrl = '') {
+        try {
+            return new URL(String(apiUrl || '').trim()).hostname.toLowerCase() === 'generativelanguage.googleapis.com';
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    _buildOfficialGeminiModelsUrl(apiUrl = '') {
+        const url = new URL(String(apiUrl || '').trim());
+        let path = url.pathname.replace(/\/+$/, '');
+        path = path.replace(/\/models(?:\/[^/:]+(?::(?:stream)?generateContent)?)?$/i, '');
+        if (!/\/v1(?:beta)?$/i.test(path)) path = `${path}/v1beta`;
+        url.pathname = `${path}/models`.replace(/\/{2,}/g, '/');
+        return url.toString();
+    }
+
+    _buildOfficialGeminiGenerateUrl(apiUrl = '', model = '', stream = false) {
+        const url = new URL(this._buildOfficialGeminiModelsUrl(apiUrl));
+        const normalizedModel = String(model || '').trim().replace(/^models\//i, '');
+        const method = stream ? 'streamGenerateContent' : 'generateContent';
+        url.pathname = `${url.pathname.replace(/\/+$/, '')}/${encodeURIComponent(normalizedModel)}:${method}`;
+        if (stream) url.searchParams.set('alt', 'sse');
+        return url.toString();
+    }
+
     _stripChatCompletionsPath(apiUrl = '') {
         return String(apiUrl || '').trim().replace(/\/chat\/completions\/?$/i, '').replace(/\/+$/, '');
     }
@@ -313,7 +339,7 @@ export class ApiManager {
 
         const apiUrl = String(config.apiUrl || config.baseUrl || config.reverseProxy || '').trim();
         const usesOpenAiCompatibility = /\/openai(?:\/|$|[?#])/i.test(apiUrl);
-        let usesGeminiNativeApi = provider === 'makersuite';
+        let usesGeminiNativeApi = provider === 'makersuite' || provider === 'vertexai';
         if (provider === 'gemini' && !usesOpenAiCompatibility) {
             try {
                 usesGeminiNativeApi = new URL(apiUrl).hostname.toLowerCase() === 'generativelanguage.googleapis.com';
@@ -683,9 +709,8 @@ export class ApiManager {
             model: apiConfig?.model || 'Unknown'
         });
 
-        // TauriTavern（手机/桌面 App 版酒馆）：非流式请求在它的后端上会一直挂住，请求到不了中转站。
-        // 业务代码里写死 stream:false 的地方（朋友圈、相册、翻译等）在 Tauri 下统一改走流式；
-        // 流式读取器同样能解析非 SSE 的整段 JSON，所以结果不受影响。
+        // TauriTavern（手机/桌面 App 版酒馆）：业务代码里写死 stream:false 的地方在 Tauri 下统一改走流式，
+        // 和聊天保持同一条链路；流式读取器同样能解析非 SSE 的整段 JSON，结果不受影响。
         if (options.stream === false && options.forceNonStream !== true && this._isTauriHost()) {
             options = { ...options, stream: true };
         }
@@ -802,7 +827,20 @@ export class ApiManager {
             }
             
             // 兼容不同版本的酒馆设置结构
-            const oai = parsedSettings.oai_settings || parsedSettings;
+            let oai = parsedSettings.oai_settings || parsedSettings;
+            // 酒馆设置有保存防抖，本地缓存也可能滞后；优先使用当前页面的实时设置。
+            try {
+                const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext?.() : null;
+                if (context?.chatCompletionSettings) {
+                    oai = { ...oai, ...context.chatCompletionSettings };
+                }
+            } catch (_error) {
+                // 旧版酒馆未暴露实时设置时继续使用已保存配置和 DOM。
+            }
+            const readSetting = (key, elementId = key, fallback = '') =>
+                document.getElementById(elementId)?.value ?? oai[key] ?? fallback;
+            const readCheckbox = (key, elementId = key) =>
+                document.getElementById(elementId)?.checked ?? oai[key] ?? false;
 
             // 🌟 2. 提取最真实的 Secret ID 和 URL（无视 DOM 掩码）
             const chatSource = document.getElementById('chat_completion_source')?.value || oai.chat_completion_source || 'custom';
@@ -823,6 +861,11 @@ export class ApiManager {
                 model = oai.claude_model || document.getElementById('model_claude')?.value;
                 reverseProxy = oai.claude_reverse_proxy || document.getElementById('claude_reverse_proxy')?.value;
                 apiKey = oai.claude_key;
+            } else if (chatSource === 'vertexai') {
+                model = readSetting('vertexai_model', 'model_vertexai_select');
+                reverseProxy = readSetting('reverse_proxy', 'openai_reverse_proxy');
+                // 服务账号/API Key 由酒馆后端读取；反代只接收专用代理密码。
+                apiKey = reverseProxy ? readSetting('proxy_password', 'openai_proxy_access_key') : '';
             } else {
                 model = oai.openai_model || document.getElementById('model_openai')?.value;
                 reverseProxy = oai.reverse_proxy || document.getElementById('openai_reverse_proxy')?.value;
@@ -837,7 +880,7 @@ export class ApiManager {
             cleanMessages = this._removeUnsupportedAssistantPrefill(cleanMessages, assistantPrefillConfig);
 
             // 跟随酒馆时只使用酒馆当前响应长度，不接受业务调用覆盖。
-            const maxTokens = this._resolveResponseLength(parsedSettings);
+            const maxTokens = this._resolveResponseLength({ ...parsedSettings, oai_settings: oai });
             // 🌟 修复：精准读取 OpenAI/Custom 专属的高级参数滑块和后台数据
             const tempCandidates = [document.getElementById('temp_openai')?.value, oai.temp_openai, document.getElementById('temp')?.value, parsedSettings.temp];
             const temperature = tempCandidates.map(v => Number.parseFloat(v)).find(v => Number.isFinite(v)) ?? 1.0;
@@ -865,6 +908,21 @@ export class ApiManager {
             if (frequency_penalty !== undefined) payload.frequency_penalty = frequency_penalty;
             if (presence_penalty !== undefined) payload.presence_penalty = presence_penalty;
             if (top_p !== undefined) payload.top_p = top_p;
+
+            if (chatSource === 'vertexai') {
+                // 缺少 auth_mode 时酒馆默认 express，会把 Service Account 误判为缺少 API Key。
+                payload.vertexai_auth_mode = readSetting('vertexai_auth_mode', 'vertexai_auth_mode', 'express');
+                payload.vertexai_region = readSetting('vertexai_region', 'vertexai_region', 'us-central1');
+                payload.vertexai_express_project_id = readSetting('vertexai_express_project_id');
+                payload.use_sysprompt = Boolean(readCheckbox('use_sysprompt'));
+                payload.custom_prompt_post_processing = readSetting('custom_prompt_post_processing');
+                payload.reasoning_effort = readSetting('reasoning_effort', 'openai_reasoning_effort', 'auto');
+                payload.include_reasoning = Boolean(readCheckbox('show_thoughts', 'openai_show_thoughts'));
+                const topK = Number.parseFloat(readSetting('top_k_openai'));
+                if (Number.isFinite(topK)) payload.top_k = topK;
+                const seed = Number.parseInt(readSetting('seed', 'seed_openai'), 10);
+                if (Number.isFinite(seed) && seed >= 0) payload.seed = seed;
+            }
 
             if (model) payload.model = model;
             
@@ -1037,6 +1095,7 @@ export class ApiManager {
             ? optionTemperature
             : (Number.isFinite(configTemperature) ? configTemperature : 1.0);
         const enableStream = options.stream !== false && apiConfig.useStream !== false;
+        const isOfficialGemini = provider === 'gemini' && this._isOfficialGeminiApiUrl(apiUrl);
 
         if (provider === OPENCODE_GO_PROVIDER) {
             if (!this._isOfficialOpenCodeGoUrl(apiUrl)) {
@@ -1081,11 +1140,8 @@ export class ApiManager {
         if (apiKey) {
             authHeader = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
         }
-        if (provider === 'gemini' && apiUrl.includes('googleapis.com') && !apiUrl.toLowerCase().includes('/v1')) {
+        if (isOfficialGemini) {
             authHeader = undefined;
-            if (apiKey && !apiUrl.includes('key=')) {
-                apiUrl += (apiUrl.includes('?') ? '&' : '?') + `key=${apiKey}`;
-            }
         }
 
         const parseProxyResponse = async (response, requestStream, label) => {
@@ -1161,7 +1217,10 @@ export class ApiManager {
         ]);
 
         let proxyError = null;
-        const useProxy = ['local', 'openai', 'claude', 'proxy_only', 'deepseek', 'siliconflow', 'compatible', 'gemini', OPENCODE_GO_PROVIDER].includes(provider);
+        // Google 官方 Gemini 直接使用其原生 REST 接口。酒馆的 makersuite
+        // 代理会改写鉴权与路径，无法可靠兼容新版 authorization API key。
+        const useProxy = ['local', 'openai', 'claude', 'proxy_only', 'deepseek', 'siliconflow', 'compatible', 'gemini', OPENCODE_GO_PROVIDER].includes(provider)
+            && !isOfficialGemini;
         if (useProxy) {
             try {
                 const apiUrlLower = apiUrl.toLowerCase();
@@ -1329,27 +1388,30 @@ export class ApiManager {
         }
 
         const attemptDirectRequest = async (streamEnabled) => {
-            let directUrl = apiUrl;
-            const isGeminiOfficial = provider === 'gemini' && !apiUrl.toLowerCase().includes('/v1');
+            const isGeminiOfficial = isOfficialGemini;
+            let directUrl = isGeminiOfficial
+                ? this._buildOfficialGeminiGenerateUrl(apiUrl, model, streamEnabled)
+                : apiUrl;
 
-            if (isGeminiOfficial) {
-                if (!directUrl.includes(':generateContent')) {
-                    if (directUrl.includes('/models/')) directUrl += ':generateContent';
-                    else directUrl += `/models/${model}:generateContent`;
-                }
-            } else if (!directUrl.includes('/chat/completions')) {
+            if (!isGeminiOfficial && !directUrl.includes('/chat/completions')) {
                 directUrl += '/chat/completions';
             }
 
             const headers = this._buildIndependentUpstreamHeaders(provider, authHeader);
+            if (isGeminiOfficial && apiKey) headers['x-goog-api-key'] = apiKey;
 
             let requestBody;
             if (isGeminiOfficial) {
+                const systemText = cleanMessages
+                    .filter((message) => message.role === 'system')
+                    .map((message) => this._normalizeMessageContentForText(message.content))
+                    .filter(Boolean)
+                    .join('\n\n');
                 requestBody = {
-                    contents: cleanMessages.map((m, idx) => ({
+                    ...(systemText ? { system_instruction: { parts: [{ text: systemText }] } } : {}),
+                    contents: cleanMessages.filter((message) => message.role !== 'system').map((m) => ({
                         role: m.role === 'user' ? 'user' : 'model',
-                        parts: this._contentToGeminiParts(m.content),
-                        ...(idx === cleanMessages.length - 1 && phoneSignal ? { gaigaiPhoneSignal: phoneSignal } : {})
+                        parts: this._contentToGeminiParts(m.content)
                     })),
                     generationConfig: {
                         temperature,
@@ -1371,11 +1433,8 @@ export class ApiManager {
                     requestBody.safetySettings = buildSafetyConfig();
                 }
             }
-            this._attachPhoneSignalToPayload(requestBody, phoneSignal);
-
-            if (isGeminiOfficial && !authHeader && apiKey && !directUrl.includes('key=')) {
-                directUrl += (directUrl.includes('?') ? '&' : '?') + `key=${apiKey}`;
-            }
+            // Google 会拒绝未声明的顶层/contents 字段；手机权限信号只用于酒馆代理请求。
+            if (!isGeminiOfficial) this._attachPhoneSignalToPayload(requestBody, phoneSignal);
 
             const directResponse = await fetch(directUrl, {
                 method: 'POST',

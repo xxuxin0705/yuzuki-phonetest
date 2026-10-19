@@ -3875,31 +3875,12 @@ ${memoryLines.slice(0, 10).join('\n')}
             const resolvedMaxTokens = Number.parseInt(context?.max_response_length, 10)
                 || Number.parseInt(context?.max_length, 10)
                 || Number.parseInt(context?.amount_gen, 10);
-            // 朋友圈和聊天走同一套流式设置（跟随 API 预设里的「流式」开关）。
-            // 以前这里强制 stream:false，TauriTavern 等客户端的后端在非流式请求上会一直挂住、
-            // 请求根本到不了中转站（中转站无记录、日志里也抓不到），聊天却正常——就是因为聊天走的是流式。
-            // 流式读取在收到 [DONE] / 结束事件时就会主动收尾，不会再出现“流一直不结束”的问题。
-            const abortCtrl = new AbortController();
-            this._momentsAbort = abortCtrl;
-            // AI 最多等 3 分钟没动静：每收到一段流式内容就重新计时，长回复不会被误杀
-            const AI_TIMEOUT = 180000;
-            let aiTimer = null;
-            let timedOut = false;
-            let rejectTimeout = null;
-            let settled = false;
-            const armAiTimer = () => {
-                if (settled) return;
-                clearTimeout(aiTimer);
-                aiTimer = setTimeout(() => {
-                    timedOut = true;
-                    try { abortCtrl.abort(new Error('timeout')); } catch (e) { abortCtrl.abort(); }
-                    rejectTimeout?.(new Error('AI 3 分钟没有返回，已取消这次请求。可能是中转站卡住了，换个模型 / 线路再试；在「设置 → API → API 调用日志」能看到请求情况'));
-                }, AI_TIMEOUT);
-            };
+            // ⚠️ 这里的请求参数必须和原版（能正常生成的版本）保持完全一致：只传 appId + max_tokens。
+            // 不再传 stream / signal / onResponseChunk —— 这些都是测试版额外加的，原版没有；
+            // 在 TauriTavern 上，测试版的朋友圈请求会挂在酒馆后端、到不了中转站，而原版同样的提示词十几秒就能出结果，
+            // 所以请求链路上和原版不一样的东西一律去掉。
             const callAiOptions = {
-                appId: 'wechat',
-                signal: abortCtrl.signal,
-                onResponseChunk: () => { if (!timedOut) armAiTimer(); }
+                appId: 'wechat'
             };
             if (Number.isFinite(resolvedMaxTokens) && resolvedMaxTokens > 0) {
                 callAiOptions.max_tokens = resolvedMaxTokens;
@@ -3913,21 +3894,21 @@ ${memoryLines.slice(0, 10).join('\n')}
                 ...contextMessages,
                 { role: 'user', content: prompt, isPhoneMessage: true }
             ], callAiOptions);
-            // 超时就真正取消这次请求（不只是不等了），按钮恢复，可以马上重试
-            const result = await Promise.race([
-                callPromise,
-                new Promise((_, reject) => {
-                    rejectTimeout = reject;
-                    armAiTimer();
-                }),
-                new Promise((_, reject) => {
-                    abortCtrl.signal.addEventListener('abort', () => { if (!timedOut) reject(new Error('已停止生成')); }, { once: true });
-                })
-            ]).finally(() => {
-                settled = true;
-                clearTimeout(aiTimer);
-                if (this._momentsAbort === abortCtrl) this._momentsAbort = null;
-            });
+
+            // 「停止生成」只让界面不再等待（按钮恢复），不去中断网络请求，保持和原版完全相同的请求方式
+            const stopCtrl = new AbortController();
+            this._momentsAbort = stopCtrl;
+            let result;
+            try {
+                result = await Promise.race([
+                    callPromise,
+                    new Promise((_, reject) => {
+                        stopCtrl.signal.addEventListener('abort', () => reject(new Error('已停止生成')), { once: true });
+                    })
+                ]);
+            } finally {
+                if (this._momentsAbort === stopCtrl) this._momentsAbort = null;
+            }
             if (!result || typeof result !== 'object') throw new Error('AI 没有返回内容');
             if (result.aborted) throw new Error('已停止生成');
             if (!result.success) throw new Error(result.error || 'AI调用失败');

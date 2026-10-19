@@ -40,9 +40,9 @@ import {
 const ST_PHONE_BASE_URL = new URL('./', import.meta.url).href;
 const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261024-phone-prewarm';
-const ST_PHONE_APP_SWIPE_REVISION = '20261024-api-log-tauri';
+const ST_PHONE_APP_SWIPE_REVISION = '20261025-api-log-noclone';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261024-m19';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261025-m21';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -1471,7 +1471,7 @@ if (window.GGP_Loaded) {
         ] = await Promise.all([
             import('./config/apps.js?v=20261020-sv1'),
             import('./config/storage.js?v=20261006-story-upload-console-cleanup'),
-            import('./config/api-manager.js?v=20261024-tauri-stream'),
+            import('./config/api-manager.js?v=20261025-live-settings'),
             import('./config/time-manager.js'),    // 👈 取消懒加载
         import('./config/prompt-manager.js?v=20261002-x-follower-sync'),  // 👈 取消懒加载
             import('./config/tts-manager.js?v=20261021-tts-chan'),

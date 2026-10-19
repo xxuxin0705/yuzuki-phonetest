@@ -242,6 +242,16 @@ class PhoneApiLog {
                     self._finish(entry, { ok: resp.ok, output: `[${type}${len ? `，${Math.round(len / 1024)} KB` : ''}]` });
                     return;
                 }
+                // ⚠️ 不复制（clone）流式 / 酒馆后端的响应体：clone 会把响应流一分为二（tee），
+                // 在 TauriTavern 这类自己接管 fetch 的环境里可能拖住原本的读取，导致请求一直挂着。
+                // 这类请求的输出由上层「AI 调用」记录（apiManager 返回的正文），这里只记状态码。
+                const isStream = /event-stream/i.test(type);
+                let sameOriginBackend = false;
+                try { sameOriginBackend = new URL(url, location.href).origin === location.origin; } catch (e) { /* 忽略 */ }
+                if (isStream || sameOriginBackend) {
+                    self._finish(entry, { ok: resp.ok, output: resp.ok ? '（流式 / 酒馆后端响应，正文见上层 AI 调用记录）' : '', error: resp.ok ? '' : `HTTP ${resp.status}` });
+                    return;
+                }
                 let clone;
                 try { clone = resp.clone(); } catch (e) { self._finish(entry, { ok: resp.ok }); return; }
                 clone.text().then(text => {

@@ -55,7 +55,7 @@ test('app swipe-back handlers never disable the whole phone screen', () => {
 test('controller imports share one cache revision after swipe routing changes', () => {
     const indexSource = readSource('../index.js');
     assert.match(indexSource, /ST_PHONE_CSS_REVISION = '20261009-payment-store-right-shift'/);
-    assert.match(indexSource, /ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return'/);
+    assert.match(indexSource, /ST_PHONE_APP_SWIPE_REVISION = '20261025-api-log-noclone'/);
     assert.doesNotMatch(indexSource, /20261002-swipe-back-routing|20261002-x-compose-safe-area/);
 });
 
