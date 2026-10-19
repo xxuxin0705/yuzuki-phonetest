@@ -13939,6 +13939,16 @@ ${titleLines || '-（暂无其他成员）'}
             const apiManager = window.VirtualPhone?.apiManager;
             if (!apiManager) throw new Error('API Manager 未初始化');
 
+            // 去掉被截断的半个 emoji（孤立代理字符）：JSON 里是非法 Unicode，TauriTavern 后端解析请求体时会卡住
+            const strip = v => (typeof v === 'string'
+                ? v.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+                : v);
+            (Array.isArray(messages) ? messages : []).forEach(m => {
+                if (!m || typeof m !== 'object') return;
+                if (typeof m.content === 'string') m.content = strip(m.content);
+                else if (Array.isArray(m.content)) m.content.forEach(p => { if (p && typeof p.text === 'string') p.text = strip(p.text); });
+            });
+
             const result = await apiManager.callAI(messages, {
                 signal: signal,
                 max_tokens: context.max_response_length,

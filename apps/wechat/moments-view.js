@@ -3542,6 +3542,7 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
     }
 
     // 从AI加载朋友圈
+    // 从AI加载朋友圈 —— 生成流程照搬原版（phone），只额外保留：生成弹窗里选的条数/必定出现的人、翻译语言规则
     async loadMomentsFromAI(options = {}) {
         // 上一次生成异常卡死超过 5 分钟：允许重新开始
         if (this.isLoading && this._loadingSince && Date.now() - this._loadingSince > 5 * 60 * 1000) {
@@ -3549,22 +3550,19 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
             this._setGenerateBusy(false);
         }
         if (this.isLoading) {
-            // 正在生成时再点：可以停掉（请求会被真正取消，不会一直挂着）
-            if (this._momentsAbort && confirm('朋友圈还在生成中，要停止这次生成吗？')) {
-                try { this._momentsAbort.abort(new Error('已手动停止')); } catch (e) { this._momentsAbort.abort(); }
-            }
+            this.app.phoneShell?.showNotification?.(this._momentsLabel(), '正在生成中，请稍等', '⏳');
             return;
         }
-        this._loadingSince = Date.now();
-        this._momentStep('开始生成动态');
+
         const genCount = Math.max(1, Math.min(10, Number.parseInt(options.count, 10) || 0)) || 0;
         const mustNames = Array.isArray(options.mustInclude) ? options.mustInclude.map(n => String(n || '').trim()).filter(Boolean) : [];
         const onlySelected = !!options.onlySelected && mustNames.length > 0;
 
         this.isLoading = true;
+        this._loadingSince = Date.now();
+        this._momentStep('开始生成动态');
         this.syncMomentsPullIndicator('loading');
         this._setGenerateBusy(true);
-        this.app.phoneShell.showNotification(this._momentsLabel(), `正在生成${this._momentsLabel()}…`, '✨');
 
         try {
             // 获取联系人列表
@@ -3607,17 +3605,11 @@ ${memoryLines.slice(0, 10).join('\n')}
                 }
             }
 
-            // 构建联系人信息（蜜语好友要读额外资料，单个最多等 6 秒，卡住就只用名字和关系）
-            const contactsInfo = (await Promise.all(contacts.map(c => this._withTimeout(
-                this._buildMomentContactInfo(c),
-                6000,
-                `${String(c?.name || '').trim()}(${String(c?.relation || '好友').trim() || '好友'})`,
-                `读取「${String(c?.name || '').trim()}」的资料`
-            ))))
+            // 构建联系人信息
+            const contactsInfo = (await Promise.all(contacts.map(c => this._buildMomentContactInfo(c))))
                 .filter(Boolean)
                 .join('、');
-            this._momentStep(`联系人资料准备好了（${contacts.length} 人）`);
-            const prompt = promptManager.renderPromptForFeature('wechat', 'moments', {
+            let prompt = promptManager.renderPromptForFeature('wechat', 'moments', {
                 currentStoryTime: `${currentTime.date} ${currentTime.time}`,
                 memoryInfo,
                 contactsInfo
@@ -3625,24 +3617,19 @@ ${memoryLines.slice(0, 10).join('\n')}
             if (!String(prompt || '').trim()) {
                 throw new Error('朋友圈提示词为空，请在微信设置中恢复默认提示词');
             }
-            let promptWithLang = String(prompt) + this._buildMomentLanguageRule(contacts.map(c => c?.name));
-            if (genCount) promptWithLang += `\n\n【本次数量】本次只生成 ${genCount} 条朋友圈动态，不多不少。`;
-            if (mustNames.length) {
-                promptWithLang += onlySelected
-                    ? `\n\n【指定发布者】本次的朋友圈只能由以下好友发布（每人至少一条，发布者不得出现名单外的人）：${mustNames.join('、')}`
-                    : `\n\n【必定出现】以下好友本次必须各发至少一条朋友圈：${mustNames.join('、')}；其余名额从通讯录里随机挑合适的人。`;
-            } else {
-                promptWithLang += '\n\n【发布者】从通讯录好友里随机挑选合适的人发布，不要总是同几个人。';
-            }
-            const recentExisting = (this.app.wechatData.getMoments() || []).slice(0, 12)
-                .map(m => `- ${m.name}：${this._momentTextForPrompt(m.text).slice(0, 40)}`).join('\n');
-            if (recentExisting) promptWithLang += `\n\n【已发布的动态（不要重复或高度相似）】\n${recentExisting}`;
-            promptWithLang += '\n\n【配图不是必须的】像真人一样：很多动态只发文字（这时 images 写空数组 []），只有确实拍了照片、适合配图的内容才配图；本次大约一半左右的动态是纯文字，按角色习惯决定，不要每条都配图。';
 
+            // 测试版保留的两项：翻译语言 + 生成弹窗里的条数 / 指定发布者
+            prompt = String(prompt) + this._buildMomentLanguageRule(contacts.map(c => c?.name));
+            if (genCount) prompt += `\n\n【本次数量】本次只生成 ${genCount} 条朋友圈动态。`;
+            if (mustNames.length) {
+                prompt += onlySelected
+                    ? `\n\n【指定发布者】本次的朋友圈只能由以下好友发布：${mustNames.join('、')}`
+                    : `\n\n【必定出现】以下好友本次必须各发至少一条朋友圈：${mustNames.join('、')}`;
+            }
+            this._momentStep('提示词已生成，准备发送请求');
 
             // 调用AI
-            this._momentStep('提示词已生成，准备发送请求');
-            const result = await this.callAI(promptWithLang);
+            const result = await this.callAI(prompt);
             this._momentStep('AI 已返回，正在解析');
 
             let normalizedMoments = this._normalizeAiMomentsPayload(result);
@@ -3652,17 +3639,9 @@ ${memoryLines.slice(0, 10).join('\n')}
             }
             if (genCount) normalizedMoments = normalizedMoments.slice(0, genCount);
             if (normalizedMoments.length > 0) {
-                const currentUserName = String(this.app.wechatData.getUserInfo()?.name || '').trim();
                 const existingMoments = Array.isArray(this.app.wechatData.data.moments)
                     ? this.app.wechatData.data.moments
                     : [];
-                const preservedMoments = existingMoments.filter(moment => {
-                    const authorName = String(moment?.name || '').trim();
-                    const likeList = Array.isArray(moment?.likeList) ? moment.likeList : [];
-                    const isOwnMoment = !!currentUserName && authorName === currentUserName;
-                    const isLikedByUser = !!currentUserName && likeList.includes(currentUserName);
-                    return isOwnMoment || isLikedByUser;
-                });
 
                 const newMoments = normalizedMoments.map(m => {
                     // 🔥 优先使用联系人的真实头像，如果没有才用AI返回的
@@ -3689,7 +3668,6 @@ ${memoryLines.slice(0, 10).join('\n')}
                 });
 
                 // 新生成的放在最前面，旧朋友圈全部保留（每个人的朋友圈都能看到历史动态）
-                void preservedMoments;
                 this.app.wechatData.data.moments = [...newMoments, ...existingMoments];
                 this.app.phoneShell.showNotification(this._momentsLabel(), `新增 ${newMoments.length} 条${this._momentsLabel()}`, '✅');
                 // 先等保存写进存储再刷新：刷新时会从存储重新读一遍数据，没写完就会把新动态“读丢”
@@ -3697,7 +3675,7 @@ ${memoryLines.slice(0, 10).join('\n')}
                 try { await this.app.wechatData.saveData(); } catch (e) { /* 忽略 */ }
                 this.syncMomentsPullIndicator('success');
                 this.app.render();
-                // 生成期间酒馆可能触发别的模块用旧数据回存，把新动态冲掉：稍后检查一遍，丢了就补回去
+                // 生成期间别的模块可能用旧数据回存，把新动态冲掉：稍后检查一遍，丢了就补回去
                 const newIds = new Set(newMoments.map(m => m.id));
                 const ensure = async () => {
                     const live = this.app.wechatData;
@@ -3707,7 +3685,6 @@ ${memoryLines.slice(0, 10).join('\n')}
                     const missing = newMoments.filter(m => !have.has(m.id));
                     if (!missing.length) return;
                     live.data.moments = [...missing, ...list.filter(m => !newIds.has(m?.id))];
-                    try { if (window.VirtualPhone) window.VirtualPhone.cachedWechatData = live; } catch (e) { /* 忽略 */ }
                     try { await live.saveData(); } catch (e) { /* 忽略 */ }
                     if (this.app.currentView === 'discover' && !this.app.currentChat) this.app.render();
                 };
@@ -3715,7 +3692,7 @@ ${memoryLines.slice(0, 10).join('\n')}
                 setTimeout(ensure, 2500);
             } else {
                 this.syncMomentsPullIndicator('error');
-                this.app.phoneShell.showNotification('朋友圈', '这次没有生成出内容，再试一次吧', '⚠️');
+                this.app.phoneShell.showNotification(this._momentsLabel(), '这次没有生成出内容，再试一次吧', '⚠️');
             }
 
         } catch (error) {
@@ -3811,17 +3788,7 @@ ${memoryLines.slice(0, 10).join('\n')}
             });
         }
 
-        // 世界书最多等 10 秒：读世界书卡住时跳过，不让整个生成一直转圈
-        {
-            const wbMessages = [];
-            const appended = await this._withTimeout(
-                Promise.resolve(window.VirtualPhone?.worldbookManager?.appendWorldbookMessages?.(wbMessages, 'wechat')).then(() => true),
-                10000,
-                false,
-                '读取世界书'
-            );
-            if (appended) messages.push(...wbMessages);
-        }
+        await window.VirtualPhone?.worldbookManager?.appendWorldbookMessages?.(messages, 'wechat');
 
         const personaTextarea = document.getElementById('persona_description');
         if (personaTextarea && personaTextarea.value && personaTextarea.value.trim()) {
@@ -3875,10 +3842,6 @@ ${memoryLines.slice(0, 10).join('\n')}
             const resolvedMaxTokens = Number.parseInt(context?.max_response_length, 10)
                 || Number.parseInt(context?.max_length, 10)
                 || Number.parseInt(context?.amount_gen, 10);
-            // ⚠️ 这里的请求参数必须和原版（能正常生成的版本）保持完全一致：只传 appId + max_tokens。
-            // 不再传 stream / signal / onResponseChunk —— 这些都是测试版额外加的，原版没有；
-            // 在 TauriTavern 上，测试版的朋友圈请求会挂在酒馆后端、到不了中转站，而原版同样的提示词十几秒就能出结果，
-            // 所以请求链路上和原版不一样的东西一律去掉。
             const callAiOptions = {
                 appId: 'wechat'
             };
@@ -3886,31 +3849,17 @@ ${memoryLines.slice(0, 10).join('\n')}
                 callAiOptions.max_tokens = resolvedMaxTokens;
             }
 
-            const contextMessages = await this._withTimeout(this._buildWechatMomentsContextMessages(context), 15000, [], '整理上下文');
-            this._momentStep(`上下文 ${contextMessages.length} 条，已发送 AI 请求`);
+            const contextMessages = await this._buildWechatMomentsContextMessages(context);
 
-            const callPromise = apiManager.callAI([
+            // ⚠️ 只多做一件事：把被截断的半个 emoji（孤立代理字符）去掉。
+            //    这种字符在 JSON 里是非法的 Unicode，TauriTavern 的后端解析请求体时会卡住、请求到不了中转站。
+            const requestMessages = this._sanitizePromptMessages([
                 { role: 'system', content: '你是一个朋友圈内容生成助手。严格遵守本次任务指定的输出格式，不要附加解释。', isPhoneMessage: true },
                 ...contextMessages,
                 { role: 'user', content: prompt, isPhoneMessage: true }
-            ], callAiOptions);
-
-            // 「停止生成」只让界面不再等待（按钮恢复），不去中断网络请求，保持和原版完全相同的请求方式
-            const stopCtrl = new AbortController();
-            this._momentsAbort = stopCtrl;
-            let result;
-            try {
-                result = await Promise.race([
-                    callPromise,
-                    new Promise((_, reject) => {
-                        stopCtrl.signal.addEventListener('abort', () => reject(new Error('已停止生成')), { once: true });
-                    })
-                ]);
-            } finally {
-                if (this._momentsAbort === stopCtrl) this._momentsAbort = null;
-            }
-            if (!result || typeof result !== 'object') throw new Error('AI 没有返回内容');
-            if (result.aborted) throw new Error('已停止生成');
+            ]);
+            this._momentStep(`上下文 ${contextMessages.length} 条，已发送 AI 请求`);
+            const result = await apiManager.callAI(requestMessages, callAiOptions);
             if (!result.success) throw new Error(result.error || 'AI调用失败');
             const response = result.summary || '';
 
@@ -3963,6 +3912,23 @@ ${memoryLines.slice(0, 10).join('\n')}
             console.error('❌ [朋友圈] AI调用失败:', e);
             throw e;
         }
+    }
+
+    // 去掉孤立的 UTF-16 代理字符（被 slice 切断的 emoji 半截），其余内容一字不改
+    _sanitizePromptText(value) {
+        if (typeof value !== 'string') return value;
+        return value.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+    }
+
+    _sanitizePromptMessages(messages = []) {
+        return (Array.isArray(messages) ? messages : []).map(m => {
+            if (!m || typeof m !== 'object') return m;
+            if (typeof m.content === 'string') return { ...m, content: this._sanitizePromptText(m.content) };
+            if (Array.isArray(m.content)) {
+                return { ...m, content: m.content.map(p => (p && typeof p.text === 'string') ? { ...p, text: this._sanitizePromptText(p.text) } : p) };
+            }
+            return m;
+        });
     }
 
     // 获取联系人头像（优先获取图片头像）
