@@ -10,11 +10,11 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261030-orig';
+import { ChatView } from './chat-view.js?v=20261102-lang';
 import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261023-t2';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261101-stall';
+import { MomentsView } from './moments-view.js?v=20261102-lang';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261029-dedupe';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
@@ -10266,11 +10266,11 @@ export class WechatApp {
                     const langs = transLangOptions.filter(o => o.value !== 'zh-CN');
                     return `
                 <div style="background: #fff; border-radius: 12px; margin: 15px; padding: 15px;">
-                    <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px;">朋友圈 · 我的评论翻译</div>
+                    <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 12px;">朋友圈 · 我的动态和评论翻译</div>
                     <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
                         <div style="min-width: 0;">
-                            <div style="font-size: 14px; color: #222;">翻译我发的评论 / 回复</div>
-                            <div style="font-size: 12px; color: #888; line-height: 1.45; margin-top: 4px;">开启后，评论发出去显示译文，后面的「查看翻译」能看回中文</div>
+                            <div style="font-size: 14px; color: #222;">翻译我发的动态 / 评论 / 回复</div>
+                            <div style="font-size: 12px; color: #888; line-height: 1.45; margin-top: 4px;">开启后，发出去就显示译文（机器翻译，不调用模型 API），「查看翻译」能看回中文。跟随对方时：评论看被回复的人，发动态看好友里开得最多的语言</div>
                         </div>
                         <label class="toggle-switch" style="flex: 0 0 auto;">
                             <input type="checkbox" id="wechat-moments-comment-trans" ${on ? 'checked' : ''}>

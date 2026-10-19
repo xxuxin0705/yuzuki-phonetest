@@ -2982,6 +2982,43 @@ export class MomentsView {
         } catch (e) { /* 忽略 */ }
     }
 
+    // 🌐 我发的朋友圈动态：按设置翻译（机器翻译，不调用模型 API）
+    //   固定语言 → 翻成该语言；「跟随对方私聊」→ 看好友私聊里「自动翻译我发出的消息」，取开得最多的那种语言；都没开就不翻
+    _translateMyPost(moment) {
+        try {
+            const pref = this._myCommentLangPref();
+            if (!pref || !moment) return;
+            let lang = '';
+            if (pref === 'auto') {
+                const count = new Map();
+                (this.app.wechatData.getContacts?.() || []).forEach(c => {
+                    const name = String(c?.name || '').trim();
+                    if (!name || this._isSelfName(name)) return;
+                    const t = this.app.wechatData.getMemberTranslationSettings?.(name) || {};
+                    const l = String(t.translateOutTo || '').trim();
+                    if (t.autoTranslateOut && l && l !== 'zh-CN') count.set(l, (count.get(l) || 0) + 1);
+                });
+                lang = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+            } else {
+                lang = pref;
+            }
+            if (!lang || lang === 'zh-CN') return;
+            const translator = this.app.chatView?._translateTextViaProvider?.bind(this.app.chatView);
+            if (!translator) return;
+            const original = String(moment.text || '').trim();
+            if (!original || /\[\s*翻译\s*[:：]/.test(original)) return;
+            translator(original, lang).then(out => {
+                const translated = String(out || '').trim();
+                if (!translated || translated === original) return;
+                const live = this.app.wechatData.getMoment(moment.id) || moment;
+                if (String(live.text || '').trim() !== original) return;
+                live.text = `${translated} [翻译:${original}]`;
+                this.app.wechatData.saveData();
+                this._rerender();
+            }).catch(err => console.warn('⚠️ 朋友圈动态翻译失败:', err));
+        } catch (e) { /* 忽略 */ }
+    }
+
     // 提交内嵌评论
     submitInlineComment(text, inputBox) {
         const comment = text?.trim();
@@ -3621,6 +3658,7 @@ ${memoryLines.slice(0, 10).join('\n')}
             // 测试版保留的两项：翻译语言 + 生成弹窗里的条数 / 指定发布者
             prompt = String(prompt) + this._buildMomentLanguageRule(contacts.map(c => c?.name));
             if (genCount) prompt += `\n\n【本次数量】本次只生成 ${genCount} 条朋友圈动态。`;
+            prompt += '\n\n【配图不是必须的】像真人一样：很多动态只发文字（images 写空数组 []），只有确实拍了照片、适合配图的内容才配图；上面格式示例里的图片只是示范写法，不代表每条都要配图。';
             if (mustNames.length) {
                 prompt += onlySelected
                     ? `\n\n【指定发布者】本次的朋友圈只能由以下好友发布：${mustNames.join('、')}`
@@ -4677,6 +4715,8 @@ ${memoryLines.slice(0, 10).join('\n')}
 
         // 添加到数据
         this.app.wechatData.addMoment(moment);
+        // 🌐 按设置把我的动态翻译成对应语言（机器翻译，不调用模型 API）
+        this._translateMyPost(moment);
 
         // 标记草稿已发布，避免离开页面时被误清理
         this._postMomentDraftCommitted = true;

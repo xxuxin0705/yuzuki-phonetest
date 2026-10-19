@@ -15007,6 +15007,7 @@ ${titleLines || '-（暂无其他成员）'}
             try {
                 const momentLang = this.app.momentsView?._buildMomentLanguageRule?.((this.app.wechatData.getContacts?.() || []).map(c => c?.name));
                 if (momentLang && momentLang.includes('先译文后中文')) finalUserContent += `\n- 朋友圈 JSON 的${momentLang.trim()}`;
+                finalUserContent += '\n- 朋友圈配图不是必须的：很多动态只发文字（images 写 []），确实适合配图时才配。';
             } catch (e) { /* 忽略 */ }
             if (isProactive) {
                 const elapsedMinutes = Math.max(0, Number.parseInt(proactiveMeta.elapsedMinutes, 10) || 0);
