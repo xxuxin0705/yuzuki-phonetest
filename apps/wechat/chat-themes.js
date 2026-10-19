@@ -6,6 +6,7 @@
 
 import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261022-t1';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
+import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
 
 export const YZT_STORE_KEY = 'wechat_chat_themes_v1';
 const R = YZT_ROOT;
@@ -34,14 +35,89 @@ export function resolveChatTheme(store, chatId) {
     return store.themes.find(t => t.id === pick) || null;
 }
 
+// ───────────────────────────── 主题图片：下载到柚月本地 ─────────────────────────────
+// 主题里的网络图片在导入时尽量下载到 user/images/yuzuki-phone/，以后直接读本地，不受图床限制
+
+const IMG_URL_RE = /url\(\s*(['"]?)(https?:\/\/[^'")\s]+)\1\s*\)/gi;
+
+export function listThemeImageUrls(source = '') {
+    const set = new Set();
+    String(source).replace(IMG_URL_RE, (m, q, url) => { set.add(url); return m; });
+    return [...set];
+}
+
+function absoluteLocal(path) {
+    const p = String(path || '');
+    if (!p || /^(data:|https?:)/i.test(p)) return p;
+    try { return new URL(p, window.location.href).href; } catch (e) { return p; }
+}
+
+function localizeImages(source, assets) {
+    let out = String(source || '');
+    Object.entries(assets || {}).forEach(([url, local]) => {
+        if (url && local) out = out.split(url).join(absoluteLocal(local));
+    });
+    return out;
+}
+
+// 单张图片最多等 8 秒，图床卡住也不会让保存按钮一直转
+function fetchWithTimeout(input, init = {}, ms = 8000) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => ctrl?.abort(), ms);
+    return Promise.race([
+        fetch(input, { ...init, signal: ctrl?.signal }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms + 500))
+    ]).finally(() => clearTimeout(timer));
+}
+
+async function fetchImageBlob(url) {
+    const tries = [
+        () => fetchWithTimeout(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'force-cache' }),
+        // 酒馆自带的跨域代理（config.yaml 里 enableCorsProxy: true 时可用）
+        () => fetchWithTimeout(`/proxy/${url}`, { credentials: 'same-origin' })
+    ];
+    for (const t of tries) {
+        try {
+            const resp = await t();
+            if (!resp.ok) continue;
+            const blob = await resp.blob();
+            if (blob && blob.size > 0 && /^image\//i.test(blob.type)) return blob;
+        } catch (e) { /* 换下一种方式 */ }
+    }
+    return null;
+}
+
+export async function downloadThemeImages(source, oldAssets = {}, onProgress = null) {
+    const urls = listThemeImageUrls(source);
+    const assets = {};
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        onProgress?.(i, urls.length);
+        if (oldAssets[url]) { assets[url] = oldAssets[url]; ok++; continue; }
+        const blob = await fetchImageBlob(url);
+        if (!blob) { fail++; continue; }
+        try {
+            const path = await uploadPhoneBlob(blob, 'chat_theme');
+            if (path) { assets[url] = path; ok++; } else fail++;
+        } catch (e) {
+            fail++;
+        }
+    }
+    onProgress?.(urls.length, urls.length);
+    return { assets, ok, fail, total: urls.length };
+}
+
 const compiledCache = new Map();
 export function compileTheme(theme) {
     if (!theme) return null;
-    const key = `${theme.id}:${theme.updatedAt || 0}:${theme.source.length}`;
+    const assets = theme.assets && typeof theme.assets === 'object' ? theme.assets : {};
+    const key = `${theme.id}:${theme.updatedAt || 0}:${theme.source.length}:${Object.keys(assets).length}`;
     if (compiledCache.has(key)) return compiledCache.get(key);
     let result;
     try {
-        result = convertNuojiChatCss(theme.source);
+        result = convertNuojiChatCss(localizeImages(theme.source, assets));
     } catch (e) {
         console.warn('⚠️ 聊天主题转换失败:', e);
         result = { css: '', report: { rules: 0, kept: 0, dropped: 0, error: String(e?.message || e) }, preview: null };
@@ -84,6 +160,7 @@ ${R} > .wechat-header .wx-head-sub { display: block !important; grid-column: 2; 
 ${R} > .wechat-header .wx-head-sub::before { content: none !important; }
 ${R} > .wechat-header .status-dot { display: none !important; }
 ${R} > .wechat-header :is(.wechat-back-btn, .wechat-header-btn) {
+    position: relative; z-index: 3;
     color: #262626 !important; background: none !important; text-shadow: none !important; border: 0 !important;
     min-width: 32px; min-height: 32px; display: inline-flex !important; align-items: center; justify-content: center;
     visibility: visible !important; opacity: 1 !important; font-size: 18px !important;
@@ -126,6 +203,17 @@ ${R} .chat-message:not(.message-system).message-right .yzt-trans-detached { alig
 html[data-yzt-theme]:not([data-yzt-trans-always]) :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):has(.chat-room) .chat-message:not(.message-system) > .message-content:has(.wechat-trans-fold:not(.expanded)) > .yzt-trans-detached.yzt-trans-detached.yzt-trans-detached { display: none !important; }
 ${R} .time-divider-text { color: #8e8e8e !important; background: transparent !important; font-size: 11px !important; padding: 2px 8px !important; border-radius: 10px !important; text-shadow: none !important; }
 ${R} .system-message-bubble { background: transparent !important; color: #8e8e8e !important; }
+/* 群聊名字行：不被气泡宽度截断 */
+${R} .chat-message:not(.message-system) .message-sender { width: max-content !important; min-width: 0 !important; max-width: calc(100 * var(--yzt-vw) - 100px); overflow: visible !important; }
+/* 气泡外的翻译：宽度跟着气泡走，不会伸出去 */
+${R} .chat-message:not(.message-system) > .message-content > .yzt-trans-detached { width: 0 !important; min-width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
+/* 主题换的图标没显示出来时，按钮自动换回原图标 */
+html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):has(.chat-room) :is(.wechat-back-btn, .wechat-header-btn, .input-btn).yzt-show-icon > :is(svg, i:not(.wx-bars-icon)) {
+    display: inline-block !important; opacity: 1 !important; visibility: visible !important; width: auto; height: auto;
+}
+html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):has(.chat-room) #chat-info.yzt-show-icon > .fa-ellipsis { display: none !important; }
+html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):has(.chat-room) :is(.wechat-back-btn, .wechat-header-btn, .input-btn).yzt-show-icon { background-image: none !important; color: #262626; }
+html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):has(.chat-room) :is(.wechat-back-btn, .wechat-header-btn).yzt-reset-pos { transform: none !important; }
 /* 输入栏 */
 ${R} .chat-input-area { position: relative !important; overflow: visible !important; contain: none !important; transform: none !important; background: rgba(255,255,255,.94) !important; border-top: .5px solid #efefef !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; box-shadow: none !important; }
 ${R} .chat-input-area .chat-input-bar { display: flex !important; align-items: center !important; gap: 4px !important; padding: 8px 10px !important; background: transparent !important; border: 0 !important; position: relative; }
@@ -156,10 +244,51 @@ function ensureStyleTag(id) {
     if (!tag) {
         tag = document.createElement('style');
         tag.id = id;
+        document.head.appendChild(tag);
     }
-    // 每次都挪到最后，保证排在风格样式、气泡样式后面
-    document.head.appendChild(tag);
     return tag;
+}
+
+// 主题 CSS 用 blob 链接加载：里面的网络图片请求不会带上酒馆的网址（不少图床会拦带外站来源的请求）
+let themeBlobUrl = '';
+function setThemeCss(cssText) {
+    const old = document.getElementById('wechat-yzt-theme');
+    if (!cssText) {
+        if (old) old.remove();
+        if (themeBlobUrl) { URL.revokeObjectURL(themeBlobUrl); themeBlobUrl = ''; }
+        return;
+    }
+    let link = null;
+    try {
+        const url = URL.createObjectURL(new Blob([cssText], { type: 'text/css' }));
+        link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.id = 'wechat-yzt-theme';
+        link.referrerPolicy = 'no-referrer';
+        link.href = url;
+        const prevUrl = themeBlobUrl;
+        themeBlobUrl = url;
+        // 新样式加载好再撤掉旧的，避免闪一下
+        link.addEventListener('load', () => {
+            if (old && old !== link) old.remove();
+            if (prevUrl) URL.revokeObjectURL(prevUrl);
+            setTimeout(() => window.dispatchEvent(new Event('yzt:theme-ready')), 30);
+        }, { once: true });
+        link.addEventListener('error', () => {
+            const style = document.createElement('style');
+            style.id = 'wechat-yzt-theme';
+            style.textContent = cssText;
+            link.replaceWith(style);
+            if (old && old !== link) old.remove();
+        }, { once: true });
+        if (old) { old.id = 'wechat-yzt-theme-old'; old.after(link); } else document.head.appendChild(link);
+    } catch (e) {
+        if (old) old.remove();
+        const style = document.createElement('style');
+        style.id = 'wechat-yzt-theme';
+        style.textContent = cssText;
+        document.head.appendChild(style);
+    }
 }
 
 let appliedKey = '';
@@ -169,18 +298,16 @@ export function applyChatTheme(theme) {
     if (!theme) {
         if (root.hasAttribute('data-yzt-theme')) root.removeAttribute('data-yzt-theme');
         root.removeAttribute('data-yzt-trans-always');
-        const tag = document.getElementById('wechat-yzt-theme');
-        if (tag && tag.textContent) tag.textContent = '';
+        if (appliedKey) setThemeCss('');
         appliedKey = '';
         return;
     }
     const compiled = compileTheme(theme);
     const base = ensureStyleTag('wechat-yzt-base');
     if (base.textContent !== YZT_BASE_CSS) base.textContent = YZT_BASE_CSS;
-    const tag = ensureStyleTag('wechat-yzt-theme');
-    const key = `${theme.id}:${theme.updatedAt || 0}`;
-    if (appliedKey !== key || !tag.textContent) {
-        tag.textContent = compiled?.css || '';
+    const key = `${theme.id}:${theme.updatedAt || 0}:${Object.keys(theme.assets || {}).length}`;
+    if (appliedKey !== key || !document.getElementById('wechat-yzt-theme')) {
+        setThemeCss(compiled?.css || '/* empty */');
         appliedKey = key;
     }
     root.setAttribute('data-yzt-theme', theme.id);
@@ -286,10 +413,85 @@ export function syncThemeMarkers(box, app) {
                     setVar(el, '--char-name', name ? cssString(name) : '');
                 }
             }
+            const content = el.querySelector(':scope > .message-content');
+            if (content) cleanTemplateWhitespace(content);
             syncDetachedTranslation(el, isMe);
         });
     });
     if (appEl && userAvatar) setVar(appEl, '--user-avatar', cssUrl(userAvatar));
+    guardButtons(appEl);
+}
+
+// 模板里的换行缩进：主题给消息写了 white-space: pre-wrap 时会变成一大片空白，这里清掉
+const WS_NEWLINE = /^\s*\n\s*$/;
+function cleanTemplateWhitespace(root) {
+    if (!root || root.dataset.yztWs === String(root.childElementCount)) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const kill = [];
+    while (walker.nextNode()) {
+        const n = walker.currentNode;
+        if (WS_NEWLINE.test(n.nodeValue) && !n.parentElement?.closest('pre, textarea, code')) kill.push(n);
+    }
+    kill.forEach(n => n.remove());
+    root.dataset.yztWs = String(root.childElementCount);
+}
+
+// 按钮保护：主题给按钮换的图标 / 文字如果没显示出来（图片加载失败等），自动换回原图标
+const imgState = new Map(); // url -> 'ok' | 'fail' | 'loading'
+if (typeof window !== 'undefined' && !window.__yztGuardBound) {
+    window.__yztGuardBound = true;
+    window.addEventListener('yzt:theme-ready', () => {
+        const appEl = document.querySelector('.phone-view-current .wechat-app') || document.querySelector('.wechat-app');
+        try { guardButtons(appEl); } catch (e) { /* 忽略 */ }
+    });
+}
+function cssUrlOf(value) {
+    const m = String(value || '').match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
+    return m ? m[1] : '';
+}
+function guardButtons(appEl) {
+    if (!appEl) return;
+    const header = appEl.querySelector(':scope > .wechat-header');
+    const btns = [
+        ...(header ? header.querySelectorAll('.wechat-back-btn, #chat-info') : []),
+        ...appEl.querySelectorAll('.chat-input-bar .input-btn')
+    ];
+    const hRect = header?.getBoundingClientRect();
+    btns.forEach(btn => {
+        let cs;
+        try { cs = getComputedStyle(btn); } catch (e) { return; }
+        const icon = btn.querySelector(':scope > svg:not(.wx-bars-icon), :scope > i, :scope > .wx-bars-icon');
+        const iconHidden = !icon || getComputedStyle(icon).display === 'none' || Number(getComputedStyle(icon).opacity) < 0.2 || getComputedStyle(icon).visibility === 'hidden';
+        if (!iconHidden) { btn.classList.remove('yzt-show-icon'); return; }
+        const pseudoText = ['::before', '::after'].some(pe => {
+            const c = getComputedStyle(btn, pe).content;
+            return c && !/^(none|normal|""|'')$/.test(c);
+        });
+        const bg = cssUrlOf(cs.backgroundImage);
+        let visible = pseudoText;
+        if (bg) {
+            const st = imgState.get(bg);
+            if (st === 'ok') visible = true;
+            else if (st === 'fail') visible = visible || false;
+            else {
+                visible = true; // 还在加载：先相信它，加载失败再回退
+                if (!st) {
+                    imgState.set(bg, 'loading');
+                    const img = new Image();
+                    img.referrerPolicy = 'no-referrer';
+                    img.onload = () => imgState.set(bg, 'ok');
+                    img.onerror = () => { imgState.set(bg, 'fail'); guardButtons(appEl); };
+                    img.src = bg;
+                }
+            }
+        }
+        btn.classList.toggle('yzt-show-icon', !visible);
+        // 按钮被主题挪到顶栏外面看不到了：位置复原
+        if (hRect && header.contains(btn)) {
+            const r = btn.getBoundingClientRect();
+            if (r.height && (r.bottom < hRect.top + 2 || r.top > hRect.bottom - 2)) btn.classList.add('yzt-reset-pos');
+        }
+    });
 }
 
 function syncDetachedTranslation(row, isMe) {
@@ -314,7 +516,7 @@ function syncDetachedTranslation(row, isMe) {
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export const YZT_CARD_CSS = `
-.wsk-card [hidden] { display: none !important; }
+.wsk-card [hidden], .yzt-panel [hidden] { display: none !important; }
 .yzt-tile-import .wsk-mock { display: flex; align-items: center; justify-content: center; background: transparent !important; box-shadow: inset 0 0 0 1.5px rgba(0,0,0,.14); border-radius: 10px; }
 .yzt-tile-import .wsk-mock b { font-size: 22px; font-weight: 300; color: #8a8a8a; }
 .yzt-tile .wsk-mock i.yzt-line { left: 7px; right: 7px; top: 22px; height: 0; border-top: 1px dashed rgba(0,0,0,.22); }
@@ -610,7 +812,8 @@ export function openThemeEditor(app, theme, onSaved) {
         try {
             const r = convertNuojiChatCss(text);
             out.value = r.css;
-            report.innerHTML = reportText(r.report);
+            const n = listThemeImageUrls(text).length;
+            report.innerHTML = reportText(r.report) + (n ? `<br>主题里有 ${n} 张网络图片，保存时会自动下载到柚月本地。` : '');
         } catch (e) {
             report.textContent = `转换出错：${e?.message || e}`;
         }
@@ -629,26 +832,46 @@ export function openThemeEditor(app, theme, onSaved) {
             return;
         }
         if (e.target.closest('[data-file]')) { q('[data-file-input]').click(); return; }
-        if (e.target.closest('[data-save]')) {
+        const saveBtn = e.target.closest('[data-save]');
+        if (saveBtn) {
+            if (saveBtn.disabled) return;
             const text = src.value.trim();
             if (!text) { app.phoneShell?.showNotification?.('还没有内容', '请先粘贴或选择 CSS 文件', '⚠️'); return; }
-            const store = readThemeStore(app.storage);
             const name = String(nameInput.value || '').trim().slice(0, 30) || '导入主题';
-            let saved;
-            if (isNew) {
-                saved = { id: newThemeId(store), name, source: text, createdAt: Date.now(), updatedAt: Date.now() };
-                store.themes.push(saved);
-            } else {
-                saved = store.themes.find(t => t.id === theme.id);
-                if (!saved) { saved = { ...theme }; store.themes.push(saved); }
-                saved.name = name;
-                saved.source = text;
-                saved.updatedAt = Date.now();
-            }
-            saveThemeStore(app.storage, store);
-            modal.remove();
-            app.phoneShell?.showNotification?.('已保存', `聊天主题「${name}」已转换为柚月样式`, '🎨');
-            onSaved?.(saved);
+            saveBtn.disabled = true;
+            const oldLabel = saveBtn.textContent;
+            (async () => {
+                // 先把主题里的网络图片下载到柚月本地
+                const prevAssets = (!isNew && theme?.assets) || {};
+                let dl = { assets: {}, ok: 0, fail: 0, total: 0 };
+                try {
+                    dl = await downloadThemeImages(text, prevAssets, (i, n) => {
+                        if (n) saveBtn.textContent = `下载图片 ${Math.min(i + 1, n)}/${n}…`;
+                    });
+                } catch (err) {
+                    console.warn('⚠️ 主题图片下载失败:', err);
+                }
+                const store = readThemeStore(app.storage);
+                let saved;
+                if (isNew) {
+                    saved = { id: newThemeId(store), name, source: text, assets: dl.assets, createdAt: Date.now(), updatedAt: Date.now() };
+                    store.themes.push(saved);
+                } else {
+                    saved = store.themes.find(t => t.id === theme.id);
+                    if (!saved) { saved = { ...theme }; store.themes.push(saved); }
+                    saved.name = name;
+                    saved.source = text;
+                    saved.assets = dl.assets;
+                    saved.updatedAt = Date.now();
+                }
+                saveThemeStore(app.storage, store);
+                modal.remove();
+                const imgNote = dl.total
+                    ? (dl.fail ? `，图片 ${dl.ok}/${dl.total} 张已存到本地，${dl.fail} 张图床不让下载，会直接从原地址加载` : `，${dl.total} 张图片已存到本地`)
+                    : '';
+                app.phoneShell?.showNotification?.('已保存', `聊天主题「${name}」已转换为柚月样式${imgNote}`, '🎨');
+                onSaved?.(saved);
+            })().finally(() => { saveBtn.disabled = false; saveBtn.textContent = oldLabel; });
         }
     });
     q('[data-file-input]').addEventListener('change', async (e) => {

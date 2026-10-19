@@ -50,7 +50,9 @@ export class WechatApp {
                 const json = JSON.stringify(wd?.data || {});
                 let emojis = '';
                 try { emojis = String(this.storage?.get?.(wd?._getCustomEmojiGlobalKey?.(), '') || ''); } catch (e) { }
-                return json.includes(name) || emojis.includes(name);
+                let themes = '';
+                try { const t = this.storage?.get?.('wechat_chat_themes_v1', ''); themes = typeof t === 'string' ? t : JSON.stringify(t || ''); } catch (e) { }
+                return json.includes(name) || emojis.includes(name) || themes.includes(name);
             };
         } catch (e) {
             console.warn('⚠️ [柚月图片] 独立图片仓库初始化失败:', e);

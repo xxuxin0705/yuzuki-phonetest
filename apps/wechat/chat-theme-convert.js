@@ -301,7 +301,8 @@ const MAP = {
     'glass-header': { lvl: 'root', path: [HEADER], role: 'header' },
     'header-profile-section': { lvl: 'root', path: [HEADER, '.wechat-header-title'], role: 'hpart' },
     'header-avatar-container': { lvl: 'root', path: [HEADER, '.wx-head-avatar'], role: 'hpart' },
-    'chat-header-avatar': { lvl: 'root', path: [HEADER, '.wx-head-avatar', ':is(img, span, div)'], role: 'hpart' },
+    // 只对头像图片本身生效：柚月的头像里还叠着“首字”占位层，不能被一起拉成 100%
+    'chat-header-avatar': { lvl: 'root', path: [HEADER, '.wx-head-avatar', 'img'], role: 'hpart', noPos: true },
     'chat-header-title': { lvl: 'root', path: [HEADER, '.wechat-header-title-text'], role: 'hpart' },
     'chat-header-subtitle': { lvl: 'root', path: [HEADER, '.wx-head-sub'], role: 'hpart' },
     'chat-header-icon': { lvl: 'root', path: [HEADER, ':is(.wechat-back-btn, .wechat-header-btn)'], role: 'btn', btn: 'icons' },
@@ -339,16 +340,16 @@ const MAP = {
     'msg-avatar-them-container': { lvl: 'msg', side: 'L', path: ['> .message-avatar'], role: 'avatar' },
     'msg-avatar-container': { lvl: 'msg', side: 'L', path: ['> .message-avatar'], role: 'avatar' },
     'msg-avatar-me-container': { lvl: 'msg', side: 'R', path: ['> .message-avatar'], role: 'avatar' },
-    'msg-avatar-them-inner': { lvl: 'msg', side: 'L', path: ['> .message-avatar', '> *'], role: 'avatar' },
-    'msg-avatar-me-inner': { lvl: 'msg', side: 'R', path: ['> .message-avatar', '> *'], role: 'avatar' },
-    'msg-avatar-custom': { lvl: 'msg', path: ['> .message-avatar', 'img'], role: 'avatar' },
+    'msg-avatar-them-inner': { lvl: 'msg', side: 'L', path: ['> .message-avatar', '> *'], role: 'avatar', noPos: true },
+    'msg-avatar-me-inner': { lvl: 'msg', side: 'R', path: ['> .message-avatar', '> *'], role: 'avatar', noPos: true },
+    'msg-avatar-custom': { lvl: 'msg', path: ['> .message-avatar', 'img'], role: 'avatar', noPos: true },
     // 翻译
     'msg-translation-wrapper': { lvl: 'msg', path: ['.wechat-trans-fold'], role: 'msg' },
     'msg-translation-content': { lvl: 'msg', path: ['.wechat-trans-fold-body'], role: 'msg' },
     'msg-translation-btn': { lvl: 'msg', path: ['.wechat-trans-fold-btn'], role: 'msg' },
-    'msg-translation-detached': { lvl: 'msg', path: ['.yzt-trans-detached'], role: 'msg' },
-    'msg-translation-detached-them': { lvl: 'msg', side: 'L', path: ['.yzt-trans-detached'], role: 'msg' },
-    'msg-translation-detached-me': { lvl: 'msg', side: 'R', path: ['.yzt-trans-detached'], role: 'msg' },
+    'msg-translation-detached': { lvl: 'msg', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
+    'msg-translation-detached-them': { lvl: 'msg', side: 'L', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
+    'msg-translation-detached-me': { lvl: 'msg', side: 'R', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
     'msg-translation-detached-content': { lvl: 'msg', path: ['.yzt-trans-detached', '.yzt-trans-detached-content'], role: 'msg' },
     // 引用（具体对哪一个，取决于主题用的是气泡内还是气泡外，见 buildQuoteMap）
     // 转账 / 红包 / 图片 / 定位 / 音乐 / 语音
@@ -501,7 +502,7 @@ function resolveCompound(comp, ctx) {
         if (comp.tag && comp.tag !== '*') desc.kind = 'tag';
         else if (comp.tag === '*') desc.kind = 'tag';
         else if (comp.pseudos.some(p => p.name === 'root')) desc.kind = 'root';
-        else if (comp.pseudos.length) desc.kind = 'bare';
+        else if (comp.pseudos.length || desc.selfMods.length) desc.kind = 'bare';
         else NEVER();
     }
     if (comp.pseudos.some(p => p.name === 'root')) desc.kind = desc.kind === 'tag' || !desc.kind ? 'root' : desc.kind;
@@ -825,6 +826,12 @@ function filterDecls(decls, item, ctx) {
             if (['header', 'hpart', 'btn', 'messages', 'inputArea', 'inputBar', 'input', 'actionBar', 'btnGroup', 'root'].includes(role)) continue;
             d.value = 'absolute';
         }
+        // 头像图片：柚月的头像是“首字底 + 图片”叠在一起的，定位不能动
+        if (item.entry?.noPos && !item.pseudoEl && (prop === 'position' || OFFSETS.has(prop))) continue;
+        // 群头衔里的小字层在柚月里就是头衔本身，“继承父级字体”会把它变成名字那么大
+        if (item.entry?.collapse && /^inherit$/i.test(String(d.value).trim())) continue;
+        // 气泡外翻译：宽度跟着气泡走（底座里已经处理），主题的宽度设置不要
+        if (item.entry?.trans && !item.pseudoEl && /^(width|min-width|max-width)$/.test(prop)) continue;
         // 翻译块往上拽得太狠会压住正文，最多只往上收 2px
         if (prop === 'margin-top' && item.entry?.path?.[0] === '.wechat-trans-fold' && /^-/.test(String(d.value).trim())) d.value = '-2px';
         if (role === 'root') {
