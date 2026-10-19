@@ -156,7 +156,9 @@ class PhoneApiLog {
     install() {
         if (this._installed) return this;
         this._installed = true;
-        this._wrapFetch();
+        // ⚠️ 不再包裹全局 window.fetch：酒馆正文和小手机的所有请求都会经过它，
+        //    在 TauriTavern 等环境里会拖住请求（一直“进行中”）。原版没有这层，请求链路要和原版保持一致。
+        //    现在只记录小手机自己的 AI 调用（apiManager.callAI），应用 / 输入 / 输出 / 耗时照样能看。
         this._wrapManagers();
         this._mgrTimer = setInterval(() => this._wrapManagers(), 2000);
         return this;

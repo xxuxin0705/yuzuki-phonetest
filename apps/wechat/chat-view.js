@@ -4645,20 +4645,102 @@ renderChatRoom(chat) {
         return this._translateTextViaProvider(source, targetLang);
     }
 
-    // 🚫 不再请求任何翻译接口（不走模型 API、也不走 MyMemory 机翻）。
-    // 翻译只来自角色回复里 AI 同一次请求顺带写出的 [翻译: 中文]，和原版一致。
+    // 🌐 机器翻译：只给「我自己写的文字」用（我发出的微信消息、我的朋友圈评论）。
+    //    ⚠️ 角色的消息绝对不走这里：角色的译文只来自回复时同一次请求顺带写出的 [翻译: 中文]，不机翻、不额外调用模型 API。
+    //    不调用对话模型，只用免费翻译：酒馆自带翻译接口（谷歌 / 必应）+ MyMemory + 谷歌网页接口，同时发、谁先回来用谁，最多等 8 秒。
     async _translateTextViaProvider(text, targetLang) {
-        void text; void targetLang;
-        return '';
+        const source = String(text || '').trim();
+        const target = String(targetLang || '').trim();
+        if (!source || !target) return '';
+        const srcLang = this._detectTranslateSourceLang(source);
+        if (srcLang === target) return '';
+
+        const rawFetch = (typeof window.VirtualPhoneRawFetch === 'function')
+            ? window.VirtualPhoneRawFetch
+            : window.fetch.bind(window);
+        let stHeaders = { 'Content-Type': 'application/json' };
+        try {
+            const ctx = window.SillyTavern?.getContext?.();
+            stHeaders = { ...stHeaders, ...(ctx?.getRequestHeaders?.() || {}) };
+        } catch (e) { /* 忽略 */ }
+
+        const controllers = [];
+        const run = (fn, ms = 8000) => {
+            const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            if (ctrl) controllers.push(ctrl);
+            let timer = null;
+            const timeout = new Promise((_, reject) => {
+                timer = setTimeout(() => { try { ctrl?.abort(); } catch (e) { /* 忽略 */ } reject(new Error('timeout')); }, ms);
+            });
+            return Promise.race([fn(ctrl?.signal), timeout]).finally(() => clearTimeout(timer));
+        };
+        const accept = (value) => {
+            const out = String(value ?? '').trim();
+            if (!out) throw new Error('empty');
+            if (/^\s*</.test(out) || /<!doctype|<html/i.test(out)) throw new Error('html');
+            if (/MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID LANGUAGE PAIR/i.test(out)) throw new Error('quota');
+            if (out === source) throw new Error('same');
+            return out;
+        };
+        const bingLang = (code) => ({ 'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant' }[code] || code);
+        const stPost = (path, body) => async (signal) => {
+            const resp = await rawFetch(path, { method: 'POST', headers: stHeaders, body: JSON.stringify(body), signal, cache: 'no-store' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return accept(await resp.text());
+        };
+
+        const tasks = [
+            // 酒馆自带翻译扩展的后端接口（不需要密钥，走酒馆服务器）
+            run(stPost('/api/translate/google', { text: source, lang: target })),
+            run(stPost('/api/translate/bing', { text: source, lang: bingLang(target) })),
+            // MyMemory 免费接口（国内一般也能直连）
+            run(async (signal) => {
+                const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(source.slice(0, 480))}&langpair=${encodeURIComponent(`${srcLang}|${target}`)}`;
+                const resp = await rawFetch(url, { signal, cache: 'no-store' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const json = await resp.json();
+                if (Number(json?.responseStatus) && Number(json.responseStatus) !== 200) throw new Error(String(json?.responseDetails || 'mymemory'));
+                return accept(json?.responseData?.translatedText);
+            }),
+            // 谷歌网页翻译接口（浏览器直连）
+            run(async (signal) => {
+                const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(target)}&dt=t&q=${encodeURIComponent(source)}`;
+                const resp = await rawFetch(url, { signal, cache: 'no-store' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const json = await resp.json();
+                const out = Array.isArray(json?.[0]) ? json[0].map(seg => (Array.isArray(seg) ? seg[0] : '')).join('') : '';
+                return accept(out);
+            })
+        ];
+
+        try {
+            return await new Promise((resolve) => {
+                let pending = tasks.length;
+                tasks.forEach(task => {
+                    task.then(resolve, () => {
+                        pending -= 1;
+                        if (pending === 0) resolve('');
+                    });
+                });
+            });
+        } finally {
+            // 第一个成功后，把其余还在跑的请求取消掉
+            controllers.forEach(ctrl => { try { ctrl.abort(); } catch (e) { /* 忽略 */ } });
+        }
     }
 
     // 🌐 译出：我的消息发送后异步翻译，完成后更新气泡（角色收到译文）
+    //    我一点发送就开始翻（机器翻译，不调用对话模型），不用等角色回复。
     _queueTranslateOut(chatId, messageId, rawText) {
-        // 不再单独发请求翻译我的消息（会额外调用接口、而且是机翻），消息按原文发送
-        void chatId; void messageId; void rawText;
-        return;
-        // eslint-disable-next-line no-unreachable
-        const settings = this.app.wechatData.getTranslationSettings?.() || {};
+        const data = this.app.wechatData;
+        const previousChatId = data.currentChatId;
+        let settings;
+        try {
+            data.currentChatId = String(chatId || '');
+            settings = data.getTranslationSettings?.() || {};
+        } finally {
+            data.currentChatId = previousChatId;
+        }
         if (!settings.autoTranslateOut || !messageId || !rawText) return;
         const targetLang = String(settings.translateOutTo || '').trim();
         if (!targetLang) return;
@@ -4675,7 +4757,8 @@ renderChatRoom(chat) {
             try {
                 const translated = await this._translateTextImmersive(rawText, targetLang, chatId, '用户');
                 if (!translated) {
-                    this.app.wechatData.updateMessageById(chatId, messageId, { translateOutStatus: 'failed' });
+                    this.app.wechatData.updateMessageById(chatId, messageId, { translateOutStatus: 'failed', originalText: '' });
+                    this.app.phoneShell?.showNotification?.('翻译失败', '翻译服务暂时连不上，这条消息按原文发送', '⚠️');
                     return;
                 }
                 this.app.wechatData.updateMessageById(chatId, messageId, {
@@ -4686,7 +4769,7 @@ renderChatRoom(chat) {
                 });
             } catch (e) {
                 console.warn('⚠️ 译出失败:', e);
-                this.app.wechatData.updateMessageById(chatId, messageId, { translateOutStatus: 'failed' });
+                this.app.wechatData.updateMessageById(chatId, messageId, { translateOutStatus: 'failed', originalText: '' });
                 this.app.phoneShell?.showNotification?.('翻译失败', '消息将按原文发送', '⚠️');
             } finally {
                 this._refreshVisibleChatMessages(chatId);
@@ -4702,9 +4785,16 @@ renderChatRoom(chat) {
     async _flushTranslateOutForChat(chatId) {
         const list = this._translateOutTasks?.get(chatId);
         if (!Array.isArray(list) || list.length === 0) return;
+        // 最多等 10 秒：翻译服务卡住也不会拖住角色回复
+        let timer = null;
         try {
-            await Promise.allSettled(list);
-        } catch (e) { /* 忽略 */ }
+            await Promise.race([
+                Promise.allSettled(list),
+                new Promise(resolve => { timer = setTimeout(resolve, 10000); })
+            ]);
+        } catch (e) { /* 忽略 */ } finally {
+            clearTimeout(timer);
+        }
         this._translateOutTasks.delete(chatId);
     }
 
@@ -4824,10 +4914,12 @@ renderChatRoom(chat) {
             return;
         }
 
-        // 不再单独请求翻译接口：译文只来自 AI 回复时顺带写出的 [翻译: …]
-        this.app.phoneShell?.showNotification?.('提示', '翻译只来自角色回复里自带的译文，不会另外调用接口', 'ℹ️');
-        return;
-        // eslint-disable-next-line no-unreachable
+        // 角色消息：绝不机翻、不额外调用接口，译文只来自 AI 回复时顺带写出的 [翻译: …]
+        if (!isMine) {
+            this.app.phoneShell?.showNotification?.('提示', '角色消息的译文只来自回复里自带的翻译，不会另外机翻', 'ℹ️');
+            return;
+        }
+        // 我的消息：可以机器翻译
         this.app.phoneShell?.showNotification?.('翻译中', `正在翻译为${this.app.wechatData.getTranslationLanguageLabel?.(targetLang) || targetLang}...`, '⏳');
         try {
             const translated = await this._translateTextImmersive(sourceText, targetLang, chatId, isMine ? '用户' : message.from);
@@ -5610,6 +5702,33 @@ ${ownSource}`;
         return match ? match[0] : (value.length <= 2 ? value : '');
     }
 
+    // 🌐 群聊触发私聊：---私聊:成员名--- 块进的是该成员和用户的私聊窗口，
+    //    语言要跟那个私聊窗口自己的翻译设置走（和群里“成员跟随翻译”开没开无关）
+    _getPrivateWindowLanguagePlan(chat = null) {
+        const data = this.app.wechatData;
+        const withLang = [];
+        const plain = [];
+        (Array.isArray(chat?.members) ? chat.members : []).forEach(m => {
+            const name = String(m || '').trim();
+            if (!name || name === 'me' || data._isSelfMemberName?.(name) || this._isCurrentWechatUserName?.(name)) return;
+            const t = data.getMemberTranslationSettings?.(name) || {};
+            if (t.autoTranslate && t.translateTo && t.translateTo !== 'zh-CN') {
+                withLang.push({ name, label: data.getTranslationLanguageLabel?.(t.translateTo) || t.translateTo });
+            } else {
+                plain.push(name);
+            }
+        });
+        return { withLang, plain };
+    }
+
+    _buildPrivateWindowLanguageRule(chat = null) {
+        const { withLang, plain } = this._getPrivateWindowLanguagePlan(chat);
+        if (!withLang.length) return '';
+        return `【私聊窗口语言·跟随各自私聊窗口的翻译设置·优先于群聊语言规则】---私聊:成员名--- 块里的内容会直接进入该成员和用户的私聊窗口，语言只看那个私聊窗口的翻译设置，和群里怎么说话无关（就算群里要求这个成员说中文，私聊块里也要按下面写）：
+${withLang.map(x => `- ---私聊:${x.name}--- 块：每条文字消息和语音条都直接用「${x.label}」书写，并在同一行末尾附 [翻译:简体中文译文]；语音条写成 [语音条]（${x.label}内容 [翻译:中文]）；不要先写中文`).join('\n')}${plain.length ? `\n- 其他成员（${plain.join('、')}）的私聊块照常用中文，不加 [翻译:]` : ''}
+中文译文要自然、贴合说话人的口吻，只翻原文意思；表情包、图片等方括号标签保持原样，不要翻译。`;
+    }
+
     // 🔥 构建功能扩展规则提示词（翻译设定 / 群管理标签 / 表情回应 / 私聊触发）
     _buildFeatureExtensionRules({ isGroupChat = false, targetChat = null, reactionRound = null, privateTriggerRound = null, patRound = false } = {}) {
         const data = this.app.wechatData;
@@ -5716,11 +5835,15 @@ ${titleLines || '-（暂无其他成员）'}
 ---私聊:成员名---
 成员名:私聊消息内容
 私聊内容 1–3 条，口吻符合人设。该内容会直接进入该成员与用户的私聊窗口（不存在时系统会自动创建）。`);
+                const privateLangRule = this._buildPrivateWindowLanguageRule(chat);
+                if (privateLangRule) rules.push(privateLangRule);
             } else if (privateTriggerRound === true) {
                 rules.push(`【私聊触发·本轮必须触发】本轮除了群聊回复之外，必须挑一位最有动机的成员（想吐槽、吃醋、关心、八卦、偷偷解释或求助等）根据群里正在聊的内容单独私聊用户，输出跨窗口块（写在群聊回复之后）：
 ---私聊:成员名---
 成员名:私聊消息内容
 私聊内容要和群聊里刚发生的事有关，口吻自然，可以 1–3 条。该内容会直接进入该成员与用户的私聊窗口（不存在时系统会自动创建）。`);
+                const privateLangRule = this._buildPrivateWindowLanguageRule(chat);
+                if (privateLangRule) rules.push(privateLangRule);
             } else {
                 rules.push('【私聊触发·本轮不触发】本轮不要输出 ---私聊:成员名--- 跨窗口块，只回复本群消息。');
             }
@@ -5744,7 +5867,7 @@ ${titleLines || '-（暂无其他成员）'}
                     return `- ${m}：用「${langLabel(t.translateTo)}」`;
                 }).filter(Boolean);
                 if (transLines.length > 0) {
-                    rules.push(`【成员输出语言·先译文后中文】以下成员的文字消息和语音条内容必须直接用指定语言书写，并在同一行末尾附上简体中文译文标签 [翻译:中文译文]（语音条的标签写在括号里：[语音条]（外语 [翻译:中文]））；中文译文必须按照【角色沉浸式翻译】处理：结合发言成员的角色卡、性格、彼此关系与最近对话，译成自然的中文聊天表达，保留说话人的特有语气；不可机械直译，不可擅自增加动作、心理、事实或改动原意；其他成员照常用中文；表情包、图片等方括号标签保持原样（表情包单独一行），不要翻译也不要加 [翻译:]：
+                    rules.push(`【成员输出语言·先译文后中文】以下成员的文字消息和语音条内容必须直接用指定语言书写，并在同一行末尾附上简体中文译文标签 [翻译:中文译文]（语音条的标签写在括号里：[语音条]（外语 [翻译:中文]））；中文译文必须按照【角色沉浸式翻译】处理：结合发言成员的角色卡、性格、彼此关系与最近对话，译成自然的中文聊天表达，保留说话人的特有语气；不可机械直译，不可擅自增加动作、心理、事实或改动原意；其他成员在群里照常用中文（这条只管群聊里的发言，---私聊--- 块的语言另见【私聊窗口语言】）；表情包、图片等方括号标签保持原样（表情包单独一行），不要翻译也不要加 [翻译:]：
 ${transLines.join('\n')}`);
                 }
             }
@@ -14956,7 +15079,7 @@ ${transLines.join('\n')}`);
                 }
             });
             if (withLang.length) {
-                lines.push(`\n- 【成员语言】${withLang.join('、')}书写正文，并在同一行末尾附 [翻译:简体中文译文]（语音条也一样）${plain.length ? `；${plain.join('、')}直接说中文，不要加 [翻译:] 标签` : ''}。`);
+                lines.push(`\n- 【成员语言·群聊发言】${withLang.join('、')}书写正文，并在同一行末尾附 [翻译:简体中文译文]（语音条也一样）${plain.length ? `；${plain.join('、')}在群里直接说中文，不要加 [翻译:] 标签` : ''}。`);
             }
         }
         if (targetChat?.type !== 'group' && trans.autoTranslate && trans.translateTo && trans.translateTo !== 'zh-CN') {
@@ -14969,6 +15092,10 @@ ${transLines.join('\n')}`);
         if (targetChat?.type === 'group' && !isProactive) {
             if (this._privateTriggerRoundState?.[chatId]?.allowed) {
                 lines.push('\n- 【私聊】本轮必须有一位成员根据群聊内容私聊用户：在群聊回复之后输出 ---私聊:成员名--- 块，再写该成员的私聊消息。');
+                const { withLang: pvLang, plain: pvPlain } = this._getPrivateWindowLanguagePlan(data.getChat?.(chatId) || targetChat);
+                if (pvLang.length) {
+                    lines.push(`\n- 【私聊块语言】私聊块跟随该成员私聊窗口的翻译设置：${pvLang.map(x => `私聊:${x.name} 用${x.label}书写并在同一行末尾附 [翻译:简体中文译文]`).join('；')}${pvPlain.length ? `；${pvPlain.join('、')}的私聊块用中文` : ''}（不受群聊语言影响）。`);
+                }
             }
             if (this._patRoundState?.[chatId]?.allowed) {
                 lines.push('\n- 【拍一拍】本轮要有一位成员单独一行输出 [拍一拍:动作]（这一行只有这个标签）。');

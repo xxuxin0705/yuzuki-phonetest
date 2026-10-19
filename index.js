@@ -42,7 +42,7 @@ const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261024-phone-prewarm';
 const ST_PHONE_APP_SWIPE_REVISION = '20261026-api-log-fold';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261026-m24';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261028-tr1';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -1498,10 +1498,23 @@ if (window.GGP_Loaded) {
         timeManager = new TimeManager(storage);
         promptManager = new PromptManager(storage);
         ttsManager = new TtsManager(storage);
-        // 🔊 正文朗读：酒馆正文里对白符号中的台词挂上播放按钮（用小手机的 TTS 配置）
-        import('./apps/story-voice/story-voice.js?v=20261021-sv38')
-            .then(module => module.installStoryVoice({ storage, ttsManager, phoneShell }))
-            .catch(error => console.warn('⚠️ 正文朗读模块加载失败:', error));
+        // 🔊 正文朗读：只有在朗读设置里明确开启过，启动时才加载；关着就完全不加载（不挂监听、不预生成）
+        let storyVoiceEnabled = false;
+        try {
+            let svObj = null;
+            const svRaw = storage.get?.('phone-story-voice', null);
+            if (svRaw) svObj = typeof svRaw === 'string' ? JSON.parse(svRaw) : svRaw;
+            try {
+                const svBak = JSON.parse(localStorage.getItem('yzsv-settings-local') || 'null');
+                if (svBak && typeof svBak === 'object' && Number(svBak._at || 0) > Number(svObj?._at || 0)) svObj = svBak;
+            } catch (e) { /* 忽略 */ }
+            storyVoiceEnabled = svObj?.enabled === true;
+        } catch (e) { storyVoiceEnabled = false; }
+        if (storyVoiceEnabled) {
+            import('./apps/story-voice/story-voice.js?v=20261021-sv38')
+                .then(module => module.installStoryVoice({ storage, ttsManager, phoneShell }))
+                .catch(error => console.warn('⚠️ 正文朗读模块加载失败:', error));
+        }
         imageGenerationManager = new ImageGenerationManager(storage);
         worldbookManager = new WorldbookManager(storage);
         promptManager.ensureLoaded(); // 强制把所有提示词立即读入内存待命
