@@ -7,11 +7,54 @@
 import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261022-t1';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
 import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
+import { openAvatarFrameSheet, readFrames } from './avatar-frames.js?v=20261023-f1';
 
 export const YZT_STORE_KEY = 'wechat_chat_themes_v1';
 const R = YZT_ROOT;
 
 // ───────────────────────────── 存储 ─────────────────────────────
+
+// 之前另一版「糯叽机美化」里导入过的聊天主题：第一次打开时搬过来，不用重新导入
+const NJ_MIGRATED_KEY = 'wechat_chat_themes_nj_migrated';
+function readJson(storage, key) {
+    try {
+        const raw = storage?.get?.(key, false);
+        if (raw === undefined || raw === null || raw === '') return undefined;
+        return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (e) { return undefined; }
+}
+function migrateNuojiThemes(storage, store) {
+    try {
+        if (readJson(storage, NJ_MIGRATED_KEY)) return false;
+        const profiles = readJson(storage, 'nj_chat_css_profiles_v1');
+        let changed = false;
+        if (Array.isArray(profiles)) {
+            profiles.forEach(p => {
+                const css = String(p?.css || '').trim();
+                if (!p?.id || !css) return;
+                const id = `nj_${p.id}`;
+                if (store.themes.some(t => t.id === id)) return;
+                store.themes.push({ id, name: String(p.name || '导入主题').slice(0, 30), source: css, assets: {}, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt || Date.now() });
+                changed = true;
+            });
+            const has = id => store.themes.some(t => t.id === id);
+            const def = String(readJson(storage, 'nj_chat_css_active_v1') || '');
+            if (def && !store.defaultId && has(`nj_${def}`)) { store.defaultId = `nj_${def}`; changed = true; }
+            const map = readJson(storage, 'nj_chat_css_map_v1');
+            if (map && typeof map === 'object') {
+                Object.entries(map).forEach(([chatId, pid]) => {
+                    if (Object.prototype.hasOwnProperty.call(store.chats, chatId)) return;
+                    if (!pid) { store.chats[chatId] = 'none'; changed = true; }
+                    else if (has(`nj_${pid}`)) { store.chats[chatId] = `nj_${pid}`; changed = true; }
+                });
+            }
+        }
+        try { storage?.set?.(NJ_MIGRATED_KEY, '1'); } catch (e) { /* 忽略 */ }
+        return changed;
+    } catch (e) {
+        return false;
+    }
+}
 
 export function readThemeStore(storage) {
     let raw = null;
@@ -21,7 +64,18 @@ export function readThemeStore(storage) {
     const themes = Array.isArray(obj?.themes) ? obj.themes.filter(t => t && t.id && typeof t.source === 'string') : [];
     const chats = obj?.chats && typeof obj.chats === 'object' ? { ...obj.chats } : {};
     const defaultId = themes.some(t => t.id === obj?.defaultId) ? obj.defaultId : '';
-    return { themes, chats, defaultId, scope: obj?.scope === 'all' ? 'all' : 'chat' };
+    const store = { themes, chats, defaultId, scope: obj?.scope === 'all' ? 'all' : 'chat' };
+    if (migrateNuojiThemes(storage, store)) saveThemeStore(storage, store);
+    return store;
+}
+
+// 「重置美化」：这个聊天不用导入的主题
+export function resetChatTheme(storage, chatId) {
+    const id = String(chatId || '');
+    if (!id) return;
+    const store = readThemeStore(storage);
+    if (store.defaultId) store.chats[id] = 'none'; else delete store.chats[id];
+    saveThemeStore(storage, store);
 }
 
 export function saveThemeStore(storage, store) {
@@ -611,6 +665,13 @@ export function renderThemeCardHtml(app, chatId) {
                 <button type="button" data-wx-mode-pick="day" class="${state.mode !== 'night' ? 'active' : ''}"><i class="fa-solid fa-sun"></i> 日间</button>
                 <button type="button" data-wx-mode-pick="night" class="${state.mode === 'night' ? 'active' : ''}"><i class="fa-solid fa-moon"></i> 夜间</button>
             </div>
+            <div class="yzt-row">
+                <span>头像框</span>
+                <div class="wsk-modes" data-yzt-frame-box>
+                    <button type="button" data-yzt-frame="them">${frameLabel(app, chatId, 'them')}</button>
+                    <button type="button" data-yzt-frame="me">${frameLabel(app, chatId, 'me')}</button>
+                </div>
+            </div>
             <div class="yzt-acts" data-yzt-acts ${active ? '' : 'hidden'}>
                 <button type="button" data-yzt-act="edit"><i class="fa-solid fa-pen"></i> 编辑 CSS</button>
                 <button type="button" data-yzt-act="rename">重命名</button>
@@ -619,6 +680,12 @@ export function renderThemeCardHtml(app, chatId) {
             </div>
             <div class="wsk-note" data-yzt-note>${noteText(store, chatId, active)}</div>
         </section>`;
+}
+
+function frameLabel(app, chatId, side) {
+    const f = readFrames(app.storage);
+    const on = !!(f.chats?.[chatId]?.[side] || f[side]);
+    return `${side === 'me' ? '我的' : '对方'}${on ? ' ✓' : ''}`;
 }
 
 function noteText(store, chatId, active) {
@@ -697,6 +764,19 @@ export function bindThemeCard(chatView) {
             }
             saveThemeStore(app.storage, store);
             refresh();
+            return;
+        }
+        const fr = e.target.closest('[data-yzt-frame]');
+        if (fr) {
+            const side = fr.dataset.yztFrame;
+            openAvatarFrameSheet(app, { chatId, side });
+            // 面板关掉后刷新按钮上的 ✓
+            const mo = new MutationObserver(() => {
+                if (document.querySelector('.yzf-mask')) return;
+                mo.disconnect();
+                card.querySelectorAll('[data-yzt-frame]').forEach(b => { b.textContent = frameLabel(app, chatId, b.dataset.yztFrame); });
+            });
+            mo.observe(document.querySelector('.phone-view-current') || document.body, { childList: true });
             return;
         }
         const mode = e.target.closest('[data-wx-mode-pick]');

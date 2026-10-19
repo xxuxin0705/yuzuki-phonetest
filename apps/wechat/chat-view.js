@@ -1,7 +1,9 @@
 import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup.js';
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
-import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261018-nj1';
+import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
+import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261023-t2';
+import { syncAvatarFrames, openAvatarFrameSheet } from './avatar-frames.js?v=20261023-f1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
  *  作者 (Author): yuzuki
@@ -3018,7 +3020,7 @@ renderChatRoom(chat) {
 
                     <!-- 输入行 -->
                     <div class="chat-input-bar" style="display: flex; align-items: center; justify-content: space-between; ${inputBarStyle}">
-                        <div style="display: flex; align-items: center; gap: 0px;">
+                        <div class="yzt-btns-left" style="display: flex; align-items: center; gap: 0px;">
                             <button class="input-btn" id="quick-reply-btn" title="快捷回复">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
                                     <rect x="4" y="4" width="5.4" height="5.4" rx="1.15"/>
@@ -3031,11 +3033,12 @@ renderChatRoom(chat) {
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
                             </button>
                         </div>
+                        <div class="yzt-action-bar" style="display: contents;">
                         <div class="chat-input-wrapper" style="flex: 1; margin: 0;">
                             <input type="text" class="chat-input" id="chat-input"
                                    placeholder="${this._escapeAttr(this._getQuickReplyInputPlaceholder())}" value="${this._escapeAttr(this.inputText)}">
                         </div>
-                        <div style="display: flex; align-items: center; gap: 0px;">
+                        <div class="yzt-btns-right" style="display: flex; align-items: center; gap: 0px;">
                             <button class="input-btn" id="emoji-btn" title="表情">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
                             </button>
@@ -3045,6 +3048,7 @@ renderChatRoom(chat) {
                             <button class="input-btn wx-send-now" id="send-now-btn" data-mode="${isCurrentChatSending ? 'stop' : 'send'}" title="${isCurrentChatSending ? '停止' : '发送'}">
                                 ${this._renderChatSendButtonIcon(isCurrentChatSending ? 'stop' : 'send')}<span class="wx-send-label">${isCurrentChatSending ? '停止' : '发送'}</span>
                             </button>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -5296,25 +5300,6 @@ renderChatRoom(chat) {
     }
 
     // 编译并注册样式，返回要加在 .chat-message 上的类名（前面带空格）
-    // 从聊天里点头像打开朋友圈，返回时回到这个聊天
-    _openMomentsFromChat(name = '', isMe = false) {
-        const mv = this.app.momentsView;
-        const chatId = String(this.app.currentChat?.id || '');
-        if (!mv?.openMomentsProfile || !chatId) return;
-        try {
-            this.app.currentChat = null;
-            this.app.currentView = 'discover';
-            mv._externalBack = () => {
-                this.app.currentView = 'chats';
-                this.app.openChat(chatId);
-            };
-            mv.openMomentsProfile(isMe ? '' : name);
-        } catch (e) {
-            console.warn('打开朋友圈失败', e);
-            this.app.openChat(chatId);
-        }
-    }
-
     _ensureBubbleStyleClass(cfg = null, { bare = false } = {}) {
         const ownSource = this._getBubbleSource(cfg);
         if (!ownSource) return '';
@@ -9331,6 +9316,10 @@ ${transLines.join('\n')}`);
             prev = el;
         });
         try { this._applyLineReadMeta(box); } catch (e) { /* 忽略 */ }
+        // 🎨 导入的聊天主题：连发位置 / 头像名字变量 / 气泡外翻译
+        try { syncThemeMarkers(box, this.app); } catch (e) { console.warn('⚠️ 聊天主题标记失败:', e); }
+        // 🖼️ 头像框
+        try { syncAvatarFrames(box, this.app); } catch (e) { console.warn('⚠️ 头像框失败:', e); }
     }
 
     // ✓✓ LINE 风格：每条消息下面显示自己的时间（我的消息被回复后加已读勾，同一行不占新高度）
@@ -11819,15 +11808,21 @@ ${transLines.join('\n')}`);
 
                 const message = avatar.closest('.chat-message');
                 if (!message) return;
-                // 👤 点自己的头像：打开我的朋友圈
+                e.stopImmediatePropagation();
+                const currentChat = this.app.currentChat;
+                const chatId = String(currentChat?.id || '');
+                const imgs = avatar.querySelectorAll('img');
+                const avatarSrc = imgs.length ? (imgs[imgs.length - 1].getAttribute('src') || '') : '';
+
+                // 👤 点自己的头像：我的头像框（还能去我的朋友圈）
                 if (message.classList.contains('message-right')) {
-                    e.stopImmediatePropagation();
-                    this._openMomentsFromChat('', true);
+                    openAvatarFrameSheet(this.app, {
+                        chatId, side: 'me', avatarSrc, title: '我的头像框',
+                        links: [{ label: '我的朋友圈', onClick: () => this._openMomentsFromChat('', true) }]
+                    });
                     return;
                 }
 
-                e.stopImmediatePropagation();
-                const currentChat = this.app.currentChat;
                 // 🔥 优先读取 .message-sender-name（不含群头衔/管理员徽章），避免徽章文字污染成员名
                 let senderName = currentChat?.type === 'group'
                     ? String(message.querySelector('.message-sender-name')?.textContent
@@ -11841,22 +11836,31 @@ ${transLines.join('\n')}`);
                     ? (this.app.wechatData.getContactByName?.(senderName)
                         || this.app.wechatData.findContactByNameLoose?.(senderName, { includeChats: false }))
                     : null;
-
-                // 👤 点对方头像：跳到 TA 的朋友圈（头像设置仍在「聊天设置」里）
                 let momentsName = senderContact?.name || senderName || '';
                 if (!momentsName && currentChat?.type !== 'group') {
                     const c = currentChat?.contactId ? this.app.wechatData.getContact?.(currentChat.contactId) : null;
                     momentsName = c?.name || currentChat?.name || '';
                 }
-                if (momentsName) {
-                    this._openMomentsFromChat(momentsName, false);
-                    return;
-                }
-                if (!senderContact?.id && currentChat?.type === 'group' && senderName) {
-                    this.app.contactsView?.showEditGroupMemberPage?.(currentChat.id, senderName);
-                    return;
-                }
-                this.showAvatarSettings(currentChat);
+                const openProfile = () => {
+                    if (!senderContact?.id && currentChat?.type === 'group' && senderName) {
+                        this.app.contactsView?.showEditGroupMemberPage?.(currentChat.id, senderName);
+                        return;
+                    }
+                    const targetChat = senderContact?.id
+                        ? { ...currentChat, contactId: senderContact.id, name: senderContact.name }
+                        : currentChat;
+                    this.showAvatarSettings(targetChat);
+                };
+
+                // 👤 点对方头像：对方头像框（还能去 TA 的朋友圈 / 改资料头像）
+                const links = [];
+                if (momentsName) links.push({ label: 'TA 的朋友圈', onClick: () => this._openMomentsFromChat(momentsName, false) });
+                links.push({ label: '资料 / 换头像', onClick: openProfile });
+                openAvatarFrameSheet(this.app, {
+                    chatId, side: 'them', avatarSrc,
+                    title: currentChat?.type === 'group' ? '群成员头像框' : '对方头像框',
+                    links
+                });
             });
         }
 
@@ -15467,6 +15471,25 @@ ${transLines.join('\n')}`);
         input.click();
     }
 
+    // 从聊天里点头像打开朋友圈，返回时回到这个聊天
+    _openMomentsFromChat(name = '', isMe = false) {
+        const mv = this.app.momentsView;
+        const chatId = String(this.app.currentChat?.id || '');
+        if (!mv?.openMomentsProfile || !chatId) return;
+        try {
+            this.app.currentChat = null;
+            this.app.currentView = 'discover';
+            mv._externalBack = () => {
+                this.app.currentView = 'chats';
+                this.app.openChat(chatId);
+            };
+            mv.openMomentsProfile(isMe ? '' : name);
+        } catch (e) {
+            console.warn('打开朋友圈失败', e);
+            this.app.openChat(chatId);
+        }
+    }
+
     showAvatarSettings(chat) {
         const contact = (chat?.contactId ? this.app.wechatData.getContact(chat.contactId) : null)
             || this.app.wechatData.getContactByName?.(chat?.name)
@@ -15612,6 +15635,7 @@ ${transLines.join('\n')}`);
                         .wechat-chat-settings-content .wechat-detail-card { background: rgba(255,255,255,.82) !important; backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
                     </style>
                     ${isGroupChat ? this._renderGroupInfoCardHtml(currentChat.id) : ''}
+                    ${isGroupChat ? this._renderSkinCardHtml() : ''}
                     ${isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id, { sides: ['me'], title: '我的气泡样式' }) : ''}
                     ${!isGroupChat ? `<section class="wechat-detail-card" data-collapse-key="profile">
                         <div class="wechat-detail-profile is-compact">
@@ -15632,6 +15656,7 @@ ${transLines.join('\n')}`);
                         </div>
                     </section>` : ''}
                     ${!isGroupChat && contact ? this._renderContactExtraCardsHtml(contact) : ''}
+                    ${!isGroupChat ? this._renderSkinCardHtml() : ''}
                     ${!isGroupChat ? this._renderBubbleStyleCardHtml(currentChat.id) : ''}
                     ${isGroupChat ? `<section class="wechat-detail-card">
                         <div class="wechat-detail-heading">翻译</div>
@@ -15676,9 +15701,6 @@ ${transLines.join('\n')}`);
                         <label class="wechat-detail-setting-row"><span>注入正文聊天记录<small>关闭后，当前会话的微信聊天记录不会注入酒馆正文，不影响本窗口内保存和查看</small></span><input type="checkbox" id="wechat-offline-history-toggle" ${offlineHistoryInjectEnabled ? 'checked' : ''}></label>
                         ${!isGroupChat ? `<label class="wechat-detail-setting-row"><span>注入蜜语聊天记录<small>开启后，此好友在蜜语直播间互动时会带上当前微信聊天记录</small></span><input type="checkbox" id="wechat-honey-history-toggle" ${honeyInjectEnabled ? 'checked' : ''}></label>` : ''}
                     </section>
-
-                    <!-- 🎨 界面风格（导入的糯叽机美化 + 柚月内置 微信/QQ/LINE + 列表美化 / 头像框），放在后面 -->
-                    ${this._renderSkinCardHtml()}
 
                     <!-- 危险操作 -->
                     <section class="wechat-detail-card">
@@ -20645,11 +20667,9 @@ ${callTranscript}`;
 
     // 🎨 界面风格卡片：微信 / QQ / LINE + 日间 / 夜间（所有聊天通用）
     _renderSkinTilesHtml(state) {
-        // 用了导入的糯叽机聊天美化时，内置风格方块都不算选中
-        const nuojiOn = !!this.app.nuoji?.isActive?.('chat', String(this.app.currentChat?.id || ''));
         return WECHAT_SKINS.map(sk => {
             const p = WECHAT_SKIN_PALETTE[sk.id]?.[state.mode] || WECHAT_SKIN_PALETTE[sk.id].day;
-            return `<button type="button" class="wsk-tile${state.skin === sk.id && !nuojiOn ? ' active' : ''}" data-wx-skin-pick="${sk.id}">
+            return `<button type="button" class="wsk-tile${state.skin === sk.id ? ' active' : ''}" data-wx-skin-pick="${sk.id}">
                 <span class="wsk-mock" style="background:${p.page}">
                     <i class="wsk-h" style="background:${p.head}"></i>
                     ${sk.id === 'line' ? '<i class="wsk-av"></i>' : ''}
@@ -20662,68 +20682,13 @@ ${callTranscript}`;
         }).join('');
     }
 
+    // 🎨 界面风格卡片：内置 微信 / QQ / LINE + 导入的聊天主题（私聊、群聊都在这里设置）
     _renderSkinCardHtml() {
-        const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
-        const chatId = String(this.app.currentChat?.id || '');
-        const nj = this.app.nuoji;
-        return `
-            <section class="wechat-detail-card wsk-card" data-collapse-key="appearance">
-                <div class="wechat-detail-heading">界面风格</div>
-                ${nj?.renderChatPartHtml?.({ chatId }) || ''}
-                <div class="wsk-builtin">
-                    <div class="njc-sec-title">柚月内置风格<small>选这里，这个聊天就不用上面导入的美化</small></div>
-                    <div class="wsk-tiles">${this._renderSkinTilesHtml(state)}</div>
-                    <div class="wsk-modes">
-                        <button type="button" data-wx-mode-pick="day" class="${state.mode !== 'night' ? 'active' : ''}"><i class="fa-solid fa-sun"></i> 日间</button>
-                        <button type="button" data-wx-mode-pick="night" class="${state.mode === 'night' ? 'active' : ''}"><i class="fa-solid fa-moon"></i> 夜间</button>
-                    </div>
-                    <div class="wsk-note">所有聊天通用，只改变样子，功能不变；聊天背景只铺在消息区域</div>
-                </div>
-                ${nj?.renderExtrasPartHtml?.({ chatId }) || ''}
-            </section>`;
+        return renderThemeCardHtml(this.app, String(this.app.currentChat?.id || ''));
     }
 
     _bindSkinCard() {
-        const view = document.querySelector('.phone-view-current') || document;
-        const card = view.querySelector('.wsk-card');
-        if (!card || card.dataset.bound === '1') return;
-        card.dataset.bound = '1';
-        try { this.app.nuoji?.bindCard?.(card); } catch (e) { console.warn('糯叽机美化绑定失败', e); }
-        const refresh = () => {
-            const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
-            const tiles = card.querySelector('.wsk-tiles');
-            if (tiles) tiles.innerHTML = this._renderSkinTilesHtml(state);
-            card.querySelectorAll('[data-wx-mode-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxModePick === state.mode));
-            card.querySelectorAll('[data-wx-moments-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxMomentsPick === (state.moments || 'auto')));
-        };
-        card.addEventListener('njc:changed', refresh);
-        card.addEventListener('click', (e) => {
-            const tile = e.target.closest('[data-wx-skin-pick]');
-            if (tile) {
-                // 选内置风格 = 不用导入的聊天美化
-                const curChatId = String(this.app.currentChat?.id || '');
-                if (this.app.nuoji?.isActive?.('chat', curChatId)) {
-                    this.app.nuoji.setActiveId('chat', '', curChatId);
-                    this.app.nuoji.applyStyles();
-                    card.querySelectorAll('.njc-part[data-njc-part="chat"]').forEach(p => this.app.nuoji._rerenderPart(p));
-                }
-                const res = this.app.setWechatSkin?.({ skin: tile.dataset.wxSkinPick });
-                refresh();
-                void res;
-                return;
-            }
-            const mm = e.target.closest('[data-wx-moments-pick]');
-            if (mm) {
-                this.app.setWechatSkin?.({ moments: mm.dataset.wxMomentsPick });
-                refresh();
-                return;
-            }
-            const mode = e.target.closest('[data-wx-mode-pick]');
-            if (mode) {
-                this.app.setWechatSkin?.({ mode: mode.dataset.wxModePick });
-                refresh();
-            }
-        });
+        bindThemeCard(this);
     }
 
     // ↕️ 聊天设置：除了最上面的资料卡，其余卡片长按可以拖动排序（私聊、群聊分开记）
@@ -20775,7 +20740,7 @@ ${callTranscript}`;
             try { this.app.wechatData.storage?.set?.('wechat_settings_order_v1', JSON.stringify(map), false); } catch (e) { /* 忽略 */ }
         };
 
-        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .yzrd, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
+        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .yzrd, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .yzt-row, .yzt-acts, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
         let timer = null, dragging = null, startX = 0, startY = 0, lastY = 0, moved = false, suppressClick = false, rafId = 0;
         const cancelTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
         const autoScroll = () => {

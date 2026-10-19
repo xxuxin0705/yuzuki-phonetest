@@ -3548,7 +3548,13 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
             this.isLoading = false;
             this._setGenerateBusy(false);
         }
-        if (this.isLoading) return;
+        if (this.isLoading) {
+            // 正在生成时再点：可以停掉（请求会被真正取消，不会一直挂着）
+            if (this._momentsAbort && confirm('朋友圈还在生成中，要停止这次生成吗？')) {
+                try { this._momentsAbort.abort(new Error('已手动停止')); } catch (e) { this._momentsAbort.abort(); }
+            }
+            return;
+        }
         this._loadingSince = Date.now();
         this._momentStep('开始生成动态');
         const genCount = Math.max(1, Math.min(10, Number.parseInt(options.count, 10) || 0)) || 0;
@@ -3869,8 +3875,14 @@ ${memoryLines.slice(0, 10).join('\n')}
             const resolvedMaxTokens = Number.parseInt(context?.max_response_length, 10)
                 || Number.parseInt(context?.max_length, 10)
                 || Number.parseInt(context?.amount_gen, 10);
+            // 朋友圈要的是一整段 JSON：不用流式。有些中转站流式会一直不结束（显示 HTTP 200 却一直进行中），
+            // 中转站后台也要等流结束才记账，所以看起来像“根本没调用”
+            const abortCtrl = new AbortController();
+            this._momentsAbort = abortCtrl;
             const callAiOptions = {
-                appId: 'wechat'
+                appId: 'wechat',
+                stream: false,
+                signal: abortCtrl.signal
             };
             if (Number.isFinite(resolvedMaxTokens) && resolvedMaxTokens > 0) {
                 callAiOptions.max_tokens = resolvedMaxTokens;
@@ -3884,13 +3896,28 @@ ${memoryLines.slice(0, 10).join('\n')}
                 ...contextMessages,
                 { role: 'user', content: prompt, isPhoneMessage: true }
             ], callAiOptions);
-            // AI 最多等 4 分钟；超时直接报错停止转圈（在「设置 → API → API 调用日志」能看到卡在哪）
+            // AI 最多等 3 分钟：超时就真正取消这次请求（不只是不等了），按钮恢复，可以马上重试
+            const AI_TIMEOUT = 180000;
             let aiTimer = null;
+            let timedOut = false;
             const result = await Promise.race([
                 callPromise,
-                new Promise((_, reject) => { aiTimer = setTimeout(() => reject(new Error('AI 4 分钟没有返回，已停止等待。可以在「设置 → API → API 调用日志」查看请求有没有发出去')), 240000); })
-            ]).finally(() => clearTimeout(aiTimer));
+                new Promise((_, reject) => {
+                    aiTimer = setTimeout(() => {
+                        timedOut = true;
+                        try { abortCtrl.abort(new Error('timeout')); } catch (e) { abortCtrl.abort(); }
+                        reject(new Error('AI 3 分钟没有返回，已取消这次请求。可能是中转站卡住了，换个模型 / 线路再试；在「设置 → API → API 调用日志」能看到请求情况'));
+                    }, AI_TIMEOUT);
+                }),
+                new Promise((_, reject) => {
+                    abortCtrl.signal.addEventListener('abort', () => { if (!timedOut) reject(new Error('已停止生成')); }, { once: true });
+                })
+            ]).finally(() => {
+                clearTimeout(aiTimer);
+                if (this._momentsAbort === abortCtrl) this._momentsAbort = null;
+            });
             if (!result || typeof result !== 'object') throw new Error('AI 没有返回内容');
+            if (result.aborted) throw new Error('已停止生成');
             if (!result.success) throw new Error(result.error || 'AI调用失败');
             const response = result.summary || '';
 

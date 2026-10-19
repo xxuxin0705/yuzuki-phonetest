@@ -166,6 +166,8 @@ class PhoneApiLog {
         let u;
         try { u = new URL(url, location.href); } catch (e) { return false; }
         if (u.protocol === 'data:' || u.protocol === 'blob:') return false;
+        // 酒馆 App（Tauri）自己的内部通信，不是 AI 请求
+        if (/^ipc\.localhost$|^tauri\.localhost$/i.test(u.hostname) || /^(ipc|tauri|asset):$/i.test(u.protocol) || /__TAURI/i.test(u.href)) return false;
         if (u.origin === location.origin) {
             if (method === 'GET') return false;
             if (!SAME_ORIGIN_AI.some(p => u.pathname.startsWith(p))) return false;
@@ -308,14 +310,15 @@ const fmtTime = ts => { const d = new Date(ts); const p = n => String(n).padStar
 const fmtMs = ms => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒` : `${ms} 毫秒`);
 
 const PANEL_CSS = `
-.yzlog-mask { position: absolute; inset: 0; z-index: 99995; background: #f2f2f7; display: flex; flex-direction: column; font-size: 13px; color: #1c1c1e; }
+.yzlog-mask { position: absolute; inset: 0; z-index: 99995; background: #f2f2f7; display: flex; flex-direction: column; font-size: 13px; color: #1c1c1e; overflow: hidden; height: 100%; max-height: 100%; box-sizing: border-box; }
+.yzlog-head, .yzlog-tools { flex: 0 0 auto; }
 .yzlog-head { display: flex; align-items: center; gap: 8px; padding: 40px 12px 10px; background: #fff; border-bottom: .5px solid #ddd; }
 .yzlog-head b { flex: 1; font-size: 16px; text-align: center; }
 .yzlog-head button, .yzlog-tools button { border: 0; background: #f0f1f3; border-radius: 8px; padding: 6px 10px; font-size: 12px; color: #333; cursor: pointer; }
 .yzlog-tools { display: flex; gap: 6px; padding: 8px 12px; flex-wrap: wrap; align-items: center; background: #fff; border-bottom: .5px solid #e5e5e5; }
 .yzlog-tools select { border: 1px solid #e3e5e8; border-radius: 8px; padding: 5px 8px; font-size: 12px; background: #fafafa; }
 .yzlog-tools .yzlog-sum { margin-left: auto; color: #888; font-size: 11.5px; }
-.yzlog-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 10px 30px; }
+.yzlog-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 8px 10px 30px; }
 .yzlog-item { background: #fff; border-radius: 10px; padding: 9px 11px; margin-bottom: 7px; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .yzlog-item.is-child { margin-left: 16px; background: #fbfbfd; }
 .yzlog-row1 { display: flex; align-items: center; gap: 6px; }
@@ -329,30 +332,32 @@ const PANEL_CSS = `
 .yzlog-time { margin-left: auto; color: #999; font-size: 11px; white-space: nowrap; }
 .yzlog-row2 { color: #666; font-size: 11.5px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yzlog-empty { text-align: center; color: #999; padding: 40px 10px; line-height: 1.7; }
-.yzlog-detail { flex: 1; overflow-y: auto; padding: 10px 12px 30px; }
+.yzlog-detail { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; padding: 10px 12px 30px; }
 .yzlog-kv { background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; line-height: 1.6; word-break: break-all; }
 .yzlog-kv span { color: #888; display: inline-block; min-width: 64px; }
 .yzlog-block { background: #fff; border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
 .yzlog-block h4 { margin: 0; padding: 8px 12px; font-size: 12.5px; background: #fafafa; border-bottom: .5px solid #eee; display: flex; align-items: center; }
 .yzlog-block h4 button { margin-left: auto; border: 0; background: #f0f1f3; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
-.yzlog-block pre { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #222; }
+.yzlog-block pre { margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #222; }
 `;
 
 export function openApiLogPanel(host = null) {
     const log = getPhoneApiLog();
     const root = host || document.querySelector('.phone-view-current .phone-screen') || document.querySelector('.phone-screen') || document.querySelector('.phone-view-current') || document.body;
-    if (!document.getElementById('yzlog-style')) {
-        const st = document.createElement('style');
+    let st = document.getElementById('yzlog-style');
+    if (!st) {
+        st = document.createElement('style');
         st.id = 'yzlog-style';
-        st.textContent = PANEL_CSS;
         document.head.appendChild(st);
     }
+    if (st.textContent !== PANEL_CSS) st.textContent = PANEL_CSS;
     root.querySelector(':scope > .yzlog-mask')?.remove();
     const mask = document.createElement('div');
     mask.className = 'yzlog-mask';
     if (root === document.body) Object.assign(mask.style, { position: 'fixed' });
     root.appendChild(mask);
-    ['click', 'touchstart', 'touchend', 'mousedown', 'pointerdown', 'wheel'].forEach(ev => mask.addEventListener(ev, e => e.stopPropagation(), { passive: ev === 'wheel' || ev.startsWith('touch') }));
+    // 手机外壳有左右滑动返回之类的手势，会吃掉滑动：日志面板里的触摸 / 滑动事件都不往外传
+    ['click', 'touchstart', 'touchmove', 'touchend', 'mousedown', 'pointerdown', 'pointermove', 'wheel'].forEach(ev => mask.addEventListener(ev, e => e.stopPropagation(), { passive: true }));
 
     let filter = 'all';
     let detailId = '';
