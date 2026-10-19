@@ -3670,7 +3670,19 @@ export class WechatData {
         return safe;
     }
 
-    setMessageReaction(chatId, messageId, emoji, by = 'me', on = true) {
+    // msg.reactionBatches = { "emoji\u0001贴的人": 角色那一轮回复的批次号 }：重新生成时按批次撤掉角色贴的表情
+    _reactionBatchKey(emoji, by) { return `${String(emoji || '').trim()}\u0001${String(by || '').trim()}`; }
+
+    _cleanReactionBatches(batches, reactions) {
+        const out = {};
+        Object.entries(batches && typeof batches === 'object' ? batches : {}).forEach(([key, batch]) => {
+            const [emoji, by] = String(key).split('\u0001');
+            if (batch && (reactions[emoji] || []).includes(by)) out[key] = batch;
+        });
+        return out;
+    }
+
+    setMessageReaction(chatId, messageId, emoji, by = 'me', on = true, meta = null) {
         const safeEmoji = String(emoji || '').trim();
         const safeBy = String(by || 'me').trim() || 'me';
         if (!safeEmoji) return null;
@@ -3681,17 +3693,93 @@ export class WechatData {
         const reactions = this.normalizeMessageReactions(target.reactions);
         const list = reactions[safeEmoji] || [];
         const exists = list.includes(safeBy);
+        const batches = { ...(target.reactionBatches || {}) };
         if (on && !exists) {
             list.push(safeBy);
+            if (meta?.batch && safeBy !== 'me') batches[this._reactionBatchKey(safeEmoji, safeBy)] = String(meta.batch);
         } else if (!on && exists) {
             reactions[safeEmoji] = list.filter(name => name !== safeBy);
             if (reactions[safeEmoji].length === 0) delete reactions[safeEmoji];
-            return this.updateMessageById(chatId, target.id, { reactions: this.normalizeMessageReactions(reactions) });
+            const clean = this.normalizeMessageReactions(reactions);
+            return this.updateMessageById(chatId, target.id, { reactions: clean, reactionBatches: this._cleanReactionBatches(batches, clean) });
         } else {
             return target;
         }
         reactions[safeEmoji] = list;
-        return this.updateMessageById(chatId, target.id, { reactions: this.normalizeMessageReactions(reactions) });
+        const clean = this.normalizeMessageReactions(reactions);
+        return this.updateMessageById(chatId, target.id, { reactions: clean, reactionBatches: this._cleanReactionBatches(batches, clean) });
+    }
+
+    // 删掉某条消息上的整个表情（谁贴的都删）
+    removeMessageReactionEmoji(chatId, messageId, emoji) {
+        const safeEmoji = String(emoji || '').trim();
+        const target = (this.getMessages(chatId) || []).find(msg => String(msg?.id || '').trim() === String(messageId || '').trim());
+        if (!target || !safeEmoji) return null;
+        const reactions = this.normalizeMessageReactions(target.reactions);
+        if (!reactions[safeEmoji]) return target;
+        delete reactions[safeEmoji];
+        return this.updateMessageById(chatId, target.id, { reactions, reactionBatches: this._cleanReactionBatches(target.reactionBatches, reactions) });
+    }
+
+    // 把某条消息上的一个表情换成另一个（贴的人不变）
+    replaceMessageReactionEmoji(chatId, messageId, oldEmoji, newEmoji) {
+        const from = String(oldEmoji || '').trim();
+        const to = String(newEmoji || '').trim();
+        const target = (this.getMessages(chatId) || []).find(msg => String(msg?.id || '').trim() === String(messageId || '').trim());
+        if (!target || !from || !to) return null;
+        if (from === to) return target;
+        const reactions = this.normalizeMessageReactions(target.reactions);
+        const movers = reactions[from] || [];
+        if (!movers.length) return target;
+        delete reactions[from];
+        reactions[to] = [...new Set([...(reactions[to] || []), ...movers])];
+        const batches = { ...(target.reactionBatches || {}) };
+        movers.forEach(by => {
+            const oldKey = this._reactionBatchKey(from, by);
+            if (batches[oldKey]) { batches[this._reactionBatchKey(to, by)] = batches[oldKey]; delete batches[oldKey]; }
+        });
+        const clean = this.normalizeMessageReactions(reactions);
+        return this.updateMessageById(chatId, target.id, { reactions: clean, reactionBatches: this._cleanReactionBatches(batches, clean) });
+    }
+
+    // 重新生成：撤掉这几轮回复里角色贴上的表情
+    removeReactionsByBatch(chatId, batchIds) {
+        const set = new Set([...(batchIds || [])].map(b => String(b || '').trim()).filter(Boolean));
+        if (!set.size) return 0;
+        let removed = 0;
+        (this.getMessages(chatId) || []).forEach(msg => {
+            const batches = msg?.reactionBatches;
+            if (!msg?.id || !batches || typeof batches !== 'object') return;
+            const reactions = this.normalizeMessageReactions(msg.reactions);
+            let changed = false;
+            Object.entries(batches).forEach(([key, batch]) => {
+                if (!set.has(String(batch))) return;
+                const [emoji, by] = String(key).split('\u0001');
+                if (!reactions[emoji]?.includes(by)) return;
+                reactions[emoji] = reactions[emoji].filter(x => x !== by);
+                if (!reactions[emoji].length) delete reactions[emoji];
+                changed = true;
+                removed++;
+            });
+            if (changed) {
+                const clean = this.normalizeMessageReactions(reactions);
+                this.updateMessageById(chatId, msg.id, { reactions: clean, reactionBatches: this._cleanReactionBatches(batches, clean) });
+            }
+        });
+        return removed;
+    }
+
+    // 最近一次角色贴表情所在的回复批次（只贴了表情、没发消息的那一轮也能找到）
+    getLatestReactionBatch(chatId) {
+        let best = '';
+        let bestTs = 0;
+        (this.getMessages(chatId) || []).forEach(msg => {
+            Object.values(msg?.reactionBatches || {}).forEach(batch => {
+                const ts = Number(String(batch).split('_')[2]) || 0;
+                if (ts >= bestTs) { bestTs = ts; best = String(batch); }
+            });
+        });
+        return { batch: best, ts: bestTs };
     }
 
     toggleMessageReaction(chatId, messageId, emoji, by = 'me') {

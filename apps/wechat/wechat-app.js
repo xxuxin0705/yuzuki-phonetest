@@ -11,7 +11,7 @@
  * ======================================================== */
 // 微信APP主程序
 import { ChatView } from './chat-view.js?v=20261102-lang';
-import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261023-t2';
+import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261104-t3';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261102-lang';

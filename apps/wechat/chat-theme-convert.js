@@ -1,3 +1,4 @@
+import { isIMessageTheme, buildIMessageCss } from './chat-theme-imessage.js?v=20261104-im1';
 // 🎨 聊天主题转换器：把「糯叽机」的聊天界面美化 CSS 自动转换成柚月小手机的聊天界面
 //
 // 思路（不靠一一对照硬改）：
@@ -350,7 +351,7 @@ const MAP = {
     'msg-translation-detached': { lvl: 'msg', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
     'msg-translation-detached-them': { lvl: 'msg', side: 'L', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
     'msg-translation-detached-me': { lvl: 'msg', side: 'R', path: ['.yzt-trans-detached'], role: 'msg', trans: true },
-    'msg-translation-detached-content': { lvl: 'msg', path: ['.yzt-trans-detached', '.yzt-trans-detached-content'], role: 'msg' },
+    'msg-translation-detached-content': { lvl: 'msg', path: ['.yzt-trans-detached', '.yzt-trans-detached-content'], role: 'msg', trans: true },
     // 引用（具体对哪一个，取决于主题用的是气泡内还是气泡外，见 buildQuoteMap）
     // 转账 / 红包 / 图片 / 定位 / 音乐 / 语音
     'msg-transfer-card': { lvl: 'msg', path: [':is(.message-transfer, .message-redpacket)'], role: 'card' },
@@ -831,7 +832,10 @@ function filterDecls(decls, item, ctx) {
         // 群头衔里的小字层在柚月里就是头衔本身，“继承父级字体”会把它变成名字那么大
         if (item.entry?.collapse && /^inherit$/i.test(String(d.value).trim())) continue;
         // 气泡外翻译：宽度跟着气泡走（底座里已经处理），主题的宽度设置不要
-        if (item.entry?.trans && !item.pseudoEl && /^(width|min-width|max-width)$/.test(prop)) continue;
+        if (item.entry?.trans && !item.pseudoEl && /^(width|min-width|max-width|flex-basis|overflow|overflow-x|overflow-y|white-space|text-overflow|-webkit-line-clamp|display)$/.test(prop)) {
+            // display 只拦“块级 / 隐藏”以外的写法，显示开关仍交给主题
+            if (prop !== 'display' || /contents|inline/i.test(d.value)) continue;
+        }
         // 翻译块往上拽得太狠会压住正文，最多只往上收 2px
         if (prop === 'margin-top' && item.entry?.path?.[0] === '.wechat-trans-fold' && /^-/.test(String(d.value).trim())) d.value = '-2px';
         if (role === 'root') {
@@ -1241,6 +1245,22 @@ export function convertNuojiChatCss(source = '') {
     const report = { rules: 0, kept: 0, dropped: 0, selectorsKept: 0, selectorsDropped: 0, quoteMode, themeStyle, imports: 0 };
     const ctx = { map, themeStyle, btnReplaced: {}, btnInk: {}, btnTextWidth: {}, vars: {}, droppedList: [] };
     ctx.vars = collectVars(nodes, ctx);
+
+    // 📱 iOS26 iMessage 类主题：糯叽机结构依赖太重，直接换成按柚月尺寸手写的同款样式（只读主题配色）
+    if (isIMessageTheme(raw)) {
+        const atTop = [];
+        nodes.forEach(n => { if (n.type === 'at-stmt' && /^@import/i.test(n.text)) atTop.push(`${n.text};`); });
+        const css = [...atTop, buildIMessageCss(ROOT, ctx.vars, rewriteValue)].join('\n');
+        report.native = 'imessage';
+        report.kept = report.rules = nodes.filter(n => n.type === 'rule').length;
+        const preview = {
+            head: '#f4f4f6', page: '#d9d9de', bar: '#f4f4f6',
+            inBg: (String(ctx.vars['--bubble-them-bg'] || '').match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)/i) || ['#e9e9eb'])[0],
+            outBg: (String(ctx.vars['--bubble-me-bg'] || '').match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)/i) || ['#2c63c8'])[0],
+            border: ''
+        };
+        return { css, report, preview, quoteMode };
+    }
 
     // 第一遍：翻译选择器，顺便看看主题给哪些按钮换了图标
     const translated = [];

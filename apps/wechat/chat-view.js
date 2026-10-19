@@ -2,7 +2,7 @@ import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
-import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261023-t2';
+import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261104-t3';
 import { syncAvatarFrames, openAvatarFrameSheet } from './avatar-frames.js?v=20261023-f1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
@@ -5034,8 +5034,10 @@ renderChatRoom(chat) {
             </div>`;
     }
 
-    _showReactionPickerForMessage(messageId, anchorEl) {
+    _showReactionPickerForMessage(messageId, anchorEl, opts = {}) {
         const safeId = String(messageId || '').trim();
+        const replaceEmoji = String(opts?.replaceEmoji || '').trim();
+        const replaceAttr = replaceEmoji ? ` data-replace="${this._escapeHtml(replaceEmoji)}"` : '';
         if (!safeId) return;
         document.querySelectorAll('.wechat-reaction-picker').forEach(el => el.remove());
         // 完整分类表情目录（表情/自然/美食/活动/旅行/物品/符号/旗帜），与参考视频一致
@@ -5053,7 +5055,7 @@ renderChatRoom(chat) {
         picker.setAttribute('aria-label','消息表情及操作');
         const escape = value => this._escapeHtml(String(value));
         picker.innerHTML = `
-            <div class="wechat-reaction-quick">${quick.map(e => `<button type="button" class="wechat-reaction-pick" data-message-id="${escape(safeId)}" data-emoji="${e}">${e}</button>`).join('')}<button type="button" class="wechat-reaction-collapse" aria-label="展开表情" aria-expanded="false">⌄</button></div>
+            ${replaceEmoji ? `<div class="wechat-reaction-recent-label" style="padding:2px 4px 6px;">把 ${escape(replaceEmoji)} 换成：</div>` : ''}<div class="wechat-reaction-quick">${quick.map(e => `<button type="button" class="wechat-reaction-pick" data-message-id="${escape(safeId)}" data-emoji="${e}"${replaceAttr}>${e}</button>`).join('')}<button type="button" class="wechat-reaction-collapse" aria-label="展开表情" aria-expanded="false">⌄</button></div>
             <div class="wechat-reaction-expanded">
                 <div class="wechat-reaction-recent-label">最近使用</div>
                 <div class="wechat-reaction-recent"></div>
@@ -5068,7 +5070,7 @@ renderChatRoom(chat) {
         host.appendChild(picker);
         const grid = picker.querySelector('.wechat-reaction-grid');
         const recent = picker.querySelector('.wechat-reaction-recent');
-        const makeButtons = values => values.map(e=>`<button type="button" class="wechat-reaction-pick" data-message-id="${escape(safeId)}" data-emoji="${e}">${e}</button>`).join('');
+        const makeButtons = values => values.map(e=>`<button type="button" class="wechat-reaction-pick" data-message-id="${escape(safeId)}" data-emoji="${e}"${replaceAttr}>${e}</button>`).join('');
         const loadRecent = () => { let values=[]; try { values=JSON.parse(localStorage.getItem('wechat_reaction_recent_v3')||'[]'); } catch {} recent.innerHTML=makeButtons(values.slice(0,8)); recent.previousElementSibling.style.display=values.length?'':'none'; recent.style.display=values.length?'':'none'; };
         loadRecent(); grid.innerHTML=makeButtons(categories['表情']);
         picker.querySelectorAll('.wechat-reaction-category').forEach(btn=>btn.addEventListener('click',e=>{
@@ -5080,18 +5082,19 @@ renderChatRoom(chat) {
         const message = messages[index];
         const userName = this.app.wechatData.getUserInfo()?.name;
         const isOwnMessage = message?.from === 'me' || message?.from === userName;
-        if (isOwnMessage) {
+        if (isOwnMessage && !replaceEmoji) {
             picker.querySelector('.wechat-reaction-quick').remove();
             picker.querySelector('.wechat-reaction-expanded').remove();
         }
-        const actions = [
+        const actions = replaceEmoji ? [['reaction-remove', '删除表情']] : [
             ...(message?.type==='text'||!message?.type ? [['edit','编辑'],['copy','复制']] : []),
             ['multi-select','多选'],['recall','撤回'],['quote','引用'],['forward','转发'],['delete','删除']
         ];
-        picker.querySelector('.wechat-reaction-actions').innerHTML=actions.map(([action,label])=>`<button type="button" class="wechat-reaction-action" data-action="${action}">${label}</button>`).join('');
+        picker.querySelector('.wechat-reaction-actions').innerHTML=actions.map(([action,label])=>`<button type="button" class="wechat-reaction-action" data-action="${action}"${action==='reaction-remove'?' style="grid-column:1/-1;width:100%;color:#ff3b30;white-space:nowrap;"':''}>${label}</button>`).join('');
         picker.querySelectorAll('.wechat-reaction-action').forEach(btn=>btn.addEventListener('click',e=>{
             e.preventDefault();e.stopPropagation();const action=btn.dataset.action;picker.remove();
             if(index<0)return;
+            if(action==='reaction-remove'){const cid=this.app.currentChat?.id;if(cid){this.app.wechatData.removeMessageReactionEmoji?.(cid,safeId,replaceEmoji);this._refreshVisibleChatMessages(cid);}return;}
             if(action==='copy'){const content=String(message?.content||message?.text||''); if(navigator.clipboard?.writeText)navigator.clipboard.writeText(content).catch(()=>{});else {const t=document.createElement('textarea');t.value=content;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();}return;}
             if(action==='forward'){this.app.phoneShell?.showNotification?.('转发','当前版本暂未提供消息转发入口','↗️');return;}
             if(action==='edit')this.editMessage(index,safeId);
@@ -5206,7 +5209,15 @@ renderChatRoom(chat) {
             if (pill) {
                 e.stopPropagation();
                 e.preventDefault();
-                this._toggleReactionAndRefresh(pill.dataset.messageId, pill.dataset.emoji);
+                // 只有我自己贴的：点一下取消；有别人（角色）贴的：弹出「换表情 / 删除」
+                const chatId = this.app.currentChat?.id;
+                const target = (this.app.wechatData.getMessages(chatId) || []).find(m => String(m?.id || '') === String(pill.dataset.messageId));
+                const byList = (this.app.wechatData.normalizeMessageReactions?.(target?.reactions) || {})[pill.dataset.emoji] || [];
+                const onlyMine = byList.length > 0 && byList.every(by => by === 'me');
+                const userName = this.app.wechatData.getUserInfo()?.name;
+                const isOwnMessage = target && (target.from === 'me' || target.from === userName);
+                if (onlyMine && !isOwnMessage) this._toggleReactionAndRefresh(pill.dataset.messageId, pill.dataset.emoji);
+                else this._showReactionPickerForMessage(pill.dataset.messageId, pill, { replaceEmoji: pill.dataset.emoji });
                 return;
             }
 
@@ -5221,6 +5232,18 @@ renderChatRoom(chat) {
 
             // 表情回应：选择器内点选
             const pick = e.target.closest?.('.wechat-reaction-pick');
+            if (pick && pick.dataset.replace) {
+                e.stopPropagation();
+                e.preventDefault();
+                const chatId = this.app.currentChat?.id;
+                if (chatId) {
+                    this.app.wechatData.replaceMessageReactionEmoji?.(chatId, pick.dataset.messageId, pick.dataset.replace, pick.dataset.emoji);
+                    this._refreshVisibleChatMessages(chatId);
+                    this._playReactionPop(pick.dataset.messageId, pick.dataset.emoji);
+                }
+                document.querySelectorAll('.wechat-reaction-picker').forEach(el => el.remove());
+                return;
+            }
             if (pick) {
                 e.stopPropagation();
                 e.preventDefault();
@@ -5451,7 +5474,7 @@ ${ownSource}`;
                 }
                 if (!target) return '';
                 const byName = senderIsMe ? 'me' : (isGroup ? (this._resolveGroupMemberKey(chat, sender) || sender) : String(sender || '').trim() || String(chat?.name || '').trim());
-                data.setMessageReaction(chatId, target.id, emoji, byName || sender, true);
+                data.setMessageReaction(chatId, target.id, emoji, byName || sender, true, senderIsMe ? null : { batch: this._aiReactionBatch?.[String(chatId || '')] });
                 appliedReactions.push({ messageId: target.id, emoji });
                 acted = true;
             } catch (e) {
@@ -5679,7 +5702,7 @@ ${ownSource}`;
             .filter(m => m && m.from !== 'me' && !this._isCurrentWechatUserName?.(m.from) && (!isGroupChat || m.from === by || m.from === byKey))
             .map(m => String(m.content || '')).join(' ');
         const emoji = this._pickFallbackReactionEmoji(target.content, replyText);
-        data.setMessageReaction(chatId, target.id, emoji, byKey, true);
+        data.setMessageReaction(chatId, target.id, emoji, byKey, true, { batch: this._aiReactionBatch?.[String(chatId || '')] });
         state.used += 1;
         if (isViewing) {
             this._refreshVisibleChatMessages(chatId);
@@ -12722,6 +12745,8 @@ ${titleLines || '-（暂无其他成员）'}
         const isProactive = !!options.proactive;
         const responseBatchId = `${isProactive ? 'wechat_proactive' : 'wechat_ai'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         this._currentResponseBatchId = responseBatchId;
+        if (!this._aiReactionBatch) this._aiReactionBatch = {};
+        this._aiReactionBatch[String(savedChatId)] = responseBatchId;
         this._resetAiReplyTimeCursor();
         this._aiReplyRequestStartedAt = Date.now();
         const useRealTimeTimeline = this._shouldUseRealTimeForOnlineChat(options);
@@ -17069,7 +17094,20 @@ ${titleLines || '-（暂无其他成员）'}
             }
         }
 
-        if (deletableIndexes.length === 0) {
+        // 😀 角色这一轮贴在你消息上的表情也一起撤掉，重新生成时按设置再贴
+        const rerollBatches = new Set(deletableIndexes.map(i => String(messages[i]?.replyBatchId || '').trim()).filter(Boolean));
+        let reactionOnlyRound = false;
+        try {
+            const latest = this.app.wechatData.getLatestReactionBatch?.(currentChatId);
+            if (latest?.batch && !rerollBatches.has(latest.batch)) {
+                // 上一轮角色只贴了表情没发消息 / 贴表情的那一轮比被删的消息更新
+                const lastAiTs = Math.max(0, ...messages.filter(m => !isMyMessage(m)).map(m => Number(String(m?.replyBatchId || '').split('_')[2]) || 0));
+                if (latest.ts > lastAiTs) { rerollBatches.add(latest.batch); reactionOnlyRound = deletableIndexes.length === 0; }
+            }
+            this.app.wechatData.removeReactionsByBatch?.(currentChatId, rerollBatches);
+        } catch (e) { console.warn('⚠️ 撤回表情回应失败:', e); }
+
+        if (deletableIndexes.length === 0 && !reactionOnlyRound) {
             this.app.phoneShell?.showNotification('提示', '上一轮没有可撤销的 AI 回复', '⚠️');
             return;
         }

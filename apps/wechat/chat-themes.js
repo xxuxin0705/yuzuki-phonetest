@@ -4,7 +4,7 @@
 // · 导入的主题可以只给某个聊天用，也可以设成所有聊天的默认
 // · 导入后：原来的气泡样式、风格配色都不再作用于这个聊天，完全按主题显示；按钮一个都不会被藏起来
 
-import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261022-t1';
+import { convertNuojiChatCss, YZT_ROOT } from './chat-theme-convert.js?v=20261104-im1';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE } from './skins.js?v=20261021-m16';
 import { uploadPhoneBlob } from './image-store.js?v=20261020-m2';
 import { openAvatarFrameSheet, readFrames } from './avatar-frames.js?v=20261023-f1';
@@ -259,8 +259,14 @@ ${R} .time-divider-text { color: #8e8e8e !important; background: transparent !im
 ${R} .system-message-bubble { background: transparent !important; color: #8e8e8e !important; }
 /* 群聊名字行：不被气泡宽度截断 */
 ${R} .chat-message:not(.message-system) .message-sender { width: max-content !important; min-width: 0 !important; max-width: calc(100 * var(--yzt-vw) - 100px); overflow: visible !important; }
-/* 气泡外的翻译：宽度跟着气泡走，不会伸出去 */
-${R} .chat-message:not(.message-system) > .message-content > .yzt-trans-detached { width: 0 !important; min-width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
+/* 气泡外的翻译：块本身不撑宽气泡；里面的文字按内容自适应，气泡很短时也能伸出去，最多到这一行能用的宽度 */
+${R} .chat-message:not(.message-system) > .message-content > .yzt-trans-detached { width: 0 !important; min-width: 100% !important; max-width: none !important; box-sizing: border-box !important; overflow: visible !important; white-space: normal !important; }
+${R} .chat-message:not(.message-system).message-right > .message-content > .yzt-trans-detached { direction: rtl !important; }
+${R} .chat-message:not(.message-system) > .message-content > .yzt-trans-detached > .yzt-trans-detached-content {
+    direction: ltr !important; display: block !important; box-sizing: border-box !important;
+    width: max-content !important; min-width: 100% !important; max-width: var(--yzt-trans-max, calc(100 * var(--yzt-vw) - 96px)) !important;
+    white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important;
+}
 /* 主题换的图标没显示出来时，按钮自动换回原图标 */
 html[data-yzt-theme] :is(#phone-panel-content, body) .wechat-app:not(#yzt-none):not(#yzt-none2):has(.chat-room) :is(.wechat-back-btn, .wechat-header-btn, .input-btn).yzt-show-icon > :is(svg, i:not(.wx-bars-icon)) {
     display: inline-block !important; opacity: 1 !important; visibility: visible !important; width: auto; height: auto;
@@ -435,6 +441,15 @@ export function syncThemeMarkers(box, app) {
         if (w) setVar(appEl, '--yzt-vw', `${(w / 100).toFixed(2)}px`);
         if (h) setVar(appEl, '--yzt-vh', `${(h / 100).toFixed(2)}px`);
     }
+
+    // 气泡外翻译最多能占多宽：消息区内容宽度 − 头像占位（主题隐藏头像时不扣）
+    try {
+        const cs = getComputedStyle(box);
+        const inner = box.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+        const av = box.querySelector('.chat-message:not(.message-system) > .message-avatar');
+        const avW = av && getComputedStyle(av).display !== 'none' ? av.getBoundingClientRect().width + 10 : 0;
+        if (inner > 80) setVar(box, '--yzt-trans-max', `${Math.max(120, Math.round(inner - avW - 12))}px`);
+    } catch (e) { /* 忽略 */ }
 
     // 连发分组
     const rows = [];
@@ -855,6 +870,7 @@ function extractCssFromFile(text) {
 function reportText(r) {
     if (!r) return '';
     if (r.error) return `转换出错：${esc(r.error)}`;
+    if (r.native === 'imessage') return '识别为 iOS26 iMessage 主题：已按柚月的界面尺寸套用同款原生适配（配色读取自主题，聊天背景沿用你自己设置的背景图）。';
     return `已转换：${r.kept} 条规则用上了，${r.dropped} 条在柚月里没有对应的元素（例如糯叽机独有的卡片、通话按钮），已跳过。界面按钮都会保留。`;
 }
 
