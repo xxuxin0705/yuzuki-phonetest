@@ -12,7 +12,7 @@
 // 微信数据管理
 import { GlobalSocialStore } from '../../config/global-social-store.js';
 import { parseImagePromptDescriptionPair, readBalancedImagePromptGroup } from '../../config/image-prompt-format.js';
-import { parseWechatVoiceContent } from './voice-text.js';
+import { parseWechatVoiceContent } from './voice-text.js?v=20261029-dedupe';
 import {
     createWalletCreditBillingState,
     getWalletCreditBillingStatus,

@@ -160,6 +160,7 @@ class PhoneApiLog {
         //    在 TauriTavern 等环境里会拖住请求（一直“进行中”）。原版没有这层，请求链路要和原版保持一致。
         //    现在只记录小手机自己的 AI 调用（apiManager.callAI），应用 / 输入 / 输出 / 耗时照样能看。
         this._wrapManagers();
+        this._hookApiManagerTrace();
         this._mgrTimer = setInterval(() => this._wrapManagers(), 2000);
         return this;
     }
@@ -269,6 +270,33 @@ class PhoneApiLog {
         window.fetch = wrapped;
     }
 
+    // ⏱️ 记录 ApiManager 自己打印的过程（走哪条路由、流式开没开、首个分片多久到、有没有降级重试）
+    //    只是旁听控制台输出，不碰网络请求本身
+    _hookApiManagerTrace() {
+        if (console.__yzApiTrace) return;
+        const self = this;
+        ['log', 'info', 'warn', 'error'].forEach(level => {
+            const orig = console[level];
+            if (typeof orig !== 'function') return;
+            console[level] = function (...args) {
+                try {
+                    const first = typeof args[0] === 'string' ? args[0] : '';
+                    if (self._activeAi.length && /\[ApiManager\]/.test(first)) {
+                        const line = first.replace(/\s+/g, ' ').slice(0, 220);
+                        self._activeAi.forEach(en => {
+                            if (!Array.isArray(en.trace)) en.trace = [];
+                            en.trace.push(`+${((Date.now() - en.ts) / 1000).toFixed(1)} 秒  ${line}`);
+                            if (en.trace.length > 40) en.trace.splice(0, en.trace.length - 40);
+                            if (/首个流分片/.test(line) && !en.firstChunkMs) en.firstChunkMs = Date.now() - en.ts;
+                        });
+                    }
+                } catch (e) { /* 忽略 */ }
+                return orig.apply(this, args);
+            };
+        });
+        console.__yzApiTrace = true;
+    }
+
     _wrapManagers() {
         const mgr = window.VirtualPhone?.apiManager;
         if (!mgr || mgr.__yzApiLogWrapped) return;
@@ -277,8 +305,17 @@ class PhoneApiLog {
         const self = this;
         mgr.callAI = async function (messages, options = {}) {
             const stackApp = appFromStack();
+            let inputLen = 0;
+            try {
+                (Array.isArray(messages) ? messages : []).forEach(m => {
+                    const c = m?.content;
+                    if (typeof c === 'string') inputLen += c.length;
+                    else if (Array.isArray(c)) c.forEach(p => { if (typeof p?.text === 'string') inputLen += p.text.length; });
+                });
+            } catch (e) { /* 忽略 */ }
             const entry = self._add({
                 kind: 'ai',
+                inputLen,
                 app: stackApp || APP_BY_ID[options?.appId] || options?.appId || '小手机',
                 label: 'AI 调用',
                 appId: options?.appId || '',
@@ -290,6 +327,7 @@ class PhoneApiLog {
                 const res = await orig.apply(this, arguments);
                 const out = res?.summary ?? res?.content ?? res?.text ?? res;
                 self._finish(entry, {
+                    outputLen: typeof out === 'string' ? out.length : 0,
                     ok: res?.success !== false,
                     output: clip(typeof out === 'string' ? out : out),
                     error: res?.success === false ? String(res?.error || '失败') : ''
@@ -448,10 +486,14 @@ export function openApiLogPanel(host = null) {
                     ${shownAppId ? `<div><span>应用 ID</span>${esc(shownAppId)}</div>` : ''}
                     ${shownUrl ? `<div><span>地址</span>${esc(shownMethod)} ${esc(shownUrl)}</div>` : ''}
                     ${e.kind === 'step' ? `<div><span>内容</span>${esc(e.label)}</div>` : ''}
-                    ${children.length ? `<div><span>网络请求</span>${children.length} 次（列表里缩进显示）</div>` : (e.kind === 'ai' && !e.pending ? '<div><span>网络请求</span>没有抓到（可能走了酒馆当前预设，或请求没发出去）</div>' : '')}
+                    ${children.length ? `<div><span>网络请求</span>${children.length} 次（列表里缩进显示）</div>` : ''}
+                    ${e.kind === 'ai' && e.inputLen ? `<div><span>输入实际</span>${e.inputLen} 字（日志里最多只保留 6 万字）</div>` : ''}
+                    ${e.kind === 'ai' && e.outputLen ? `<div><span>输出长度</span>${e.outputLen} 字</div>` : ''}
+                    ${e.kind === 'ai' ? `<div><span>首字返回</span>${e.firstChunkMs ? fmtMs(e.firstChunkMs) : (e.pending ? '还没收到' : '没有记录（可能没开流式）')}</div>` : ''}
                     ${e.restored ? '<div style="color:#999">这条是刷新前的记录，内容已截短</div>' : ''}
                 </div>
                 ${block('错误', e.error, 'error')}
+                ${Array.isArray(e.trace) && e.trace.length ? block('请求过程', e.trace.join('\n'), 'trace') : ''}
                 ${block('输入', e.input, 'input')}
                 ${block('输出', e.output, 'output')}
                 ${e.raw && e.raw !== e.output ? block('原始返回', e.raw, 'raw') : ''}
@@ -468,7 +510,8 @@ export function openApiLogPanel(host = null) {
         }));
         mask.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', (ev) => {
             ev.stopPropagation();
-            const text = String(e[b.dataset.copy] || '');
+            const v = e[b.dataset.copy];
+            const text = Array.isArray(v) ? v.join('\n') : String(v || '');
             try { navigator.clipboard?.writeText(text); b.textContent = '已复制'; } catch (err) { b.textContent = '复制失败'; }
         }));
     };

@@ -38,7 +38,9 @@ function extractTranslationTags(text = '') {
             body += ch;
         }
         const translation = body.trim();
-        if (translation) translations.push(translation);
+        // 模型偶尔把同一句译文写两遍：重复的只留一份
+        const norm = v => String(v || '').replace(/\s+/g, '');
+        if (translation && !translations.some(t => norm(t) === norm(translation))) translations.push(translation);
         i = j;
     }
     return { speechText: out, translations };
