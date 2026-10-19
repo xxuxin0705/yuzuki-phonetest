@@ -2201,6 +2201,10 @@ export class MomentsView {
         this._currentPage = null;
         this._currentParent = null;
         if (typeof parent === 'function') { parent(); return; }
+        // 从聊天里点头像进来的：返回聊天
+        const ext = this._externalBack;
+        this._externalBack = null;
+        if (typeof ext === 'function') { ext(); return; }
         this.app.currentView = 'discover';
         this.app.render();
     }
@@ -3514,9 +3518,39 @@ ${replyTo ? `- 回复对象：${replyTo}` : ''}
         return `${name}(${relation}${notes.length ? `；${notes.join('；')}` : ''})`;
     }
 
+    // ⏱️ 等某一步最多 ms 毫秒，超时就用兜底值继续（避免某一步卡住导致一直转圈、根本没发请求）
+    _momentStep(text, ok = true) {
+        try { window.__yzPhoneApiLog?.step?.('朋友圈', text, { ok }); } catch (e) { /* 忽略 */ }
+    }
+
+    async _withTimeout(promise, ms, fallback, label = '') {
+        let timer = null;
+        const timeout = new Promise(resolve => {
+            timer = setTimeout(() => {
+                if (label) this._momentStep(`${label}超过 ${Math.round(ms / 1000)} 秒没完成，已跳过`, false);
+                resolve(fallback);
+            }, ms);
+        });
+        try {
+            return await Promise.race([Promise.resolve(promise).catch(err => {
+                if (label) this._momentStep(`${label}出错：${err?.message || err}，已跳过`, false);
+                return fallback;
+            }), timeout]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     // 从AI加载朋友圈
     async loadMomentsFromAI(options = {}) {
+        // 上一次生成异常卡死超过 5 分钟：允许重新开始
+        if (this.isLoading && this._loadingSince && Date.now() - this._loadingSince > 5 * 60 * 1000) {
+            this.isLoading = false;
+            this._setGenerateBusy(false);
+        }
         if (this.isLoading) return;
+        this._loadingSince = Date.now();
+        this._momentStep('开始生成动态');
         const genCount = Math.max(1, Math.min(10, Number.parseInt(options.count, 10) || 0)) || 0;
         const mustNames = Array.isArray(options.mustInclude) ? options.mustInclude.map(n => String(n || '').trim()).filter(Boolean) : [];
         const onlySelected = !!options.onlySelected && mustNames.length > 0;
@@ -3567,10 +3601,16 @@ ${memoryLines.slice(0, 10).join('\n')}
                 }
             }
 
-            // 构建联系人信息
-            const contactsInfo = (await Promise.all(contacts.map(c => this._buildMomentContactInfo(c))))
+            // 构建联系人信息（蜜语好友要读额外资料，单个最多等 6 秒，卡住就只用名字和关系）
+            const contactsInfo = (await Promise.all(contacts.map(c => this._withTimeout(
+                this._buildMomentContactInfo(c),
+                6000,
+                `${String(c?.name || '').trim()}(${String(c?.relation || '好友').trim() || '好友'})`,
+                `读取「${String(c?.name || '').trim()}」的资料`
+            ))))
                 .filter(Boolean)
                 .join('、');
+            this._momentStep(`联系人资料准备好了（${contacts.length} 人）`);
             const prompt = promptManager.renderPromptForFeature('wechat', 'moments', {
                 currentStoryTime: `${currentTime.date} ${currentTime.time}`,
                 memoryInfo,
@@ -3595,7 +3635,9 @@ ${memoryLines.slice(0, 10).join('\n')}
 
 
             // 调用AI
+            this._momentStep('提示词已生成，准备发送请求');
             const result = await this.callAI(promptWithLang);
+            this._momentStep('AI 已返回，正在解析');
 
             let normalizedMoments = this._normalizeAiMomentsPayload(result);
             if (onlySelected) {
@@ -3672,10 +3714,12 @@ ${memoryLines.slice(0, 10).join('\n')}
 
         } catch (error) {
             console.error('❌ 加载朋友圈失败:', error);
+            this._momentStep(`生成失败：${error?.message || error}`, false);
             this.syncMomentsPullIndicator('error');
             this.app.phoneShell.showNotification('错误', error.message, '❌');
         } finally {
             this.isLoading = false;
+            this._loadingSince = 0;
             this._setGenerateBusy(false);
             setTimeout(() => this.syncMomentsPullIndicator(), 1300);
         }
@@ -3761,7 +3805,17 @@ ${memoryLines.slice(0, 10).join('\n')}
             });
         }
 
-        await window.VirtualPhone?.worldbookManager?.appendWorldbookMessages?.(messages, 'wechat');
+        // 世界书最多等 10 秒：读世界书卡住时跳过，不让整个生成一直转圈
+        {
+            const wbMessages = [];
+            const appended = await this._withTimeout(
+                Promise.resolve(window.VirtualPhone?.worldbookManager?.appendWorldbookMessages?.(wbMessages, 'wechat')).then(() => true),
+                10000,
+                false,
+                '读取世界书'
+            );
+            if (appended) messages.push(...wbMessages);
+        }
 
         const personaTextarea = document.getElementById('persona_description');
         if (personaTextarea && personaTextarea.value && personaTextarea.value.trim()) {
@@ -3822,13 +3876,21 @@ ${memoryLines.slice(0, 10).join('\n')}
                 callAiOptions.max_tokens = resolvedMaxTokens;
             }
 
-            const contextMessages = await this._buildWechatMomentsContextMessages(context);
+            const contextMessages = await this._withTimeout(this._buildWechatMomentsContextMessages(context), 15000, [], '整理上下文');
+            this._momentStep(`上下文 ${contextMessages.length} 条，已发送 AI 请求`);
 
-            const result = await apiManager.callAI([
+            const callPromise = apiManager.callAI([
                 { role: 'system', content: '你是一个朋友圈内容生成助手。严格遵守本次任务指定的输出格式，不要附加解释。', isPhoneMessage: true },
                 ...contextMessages,
                 { role: 'user', content: prompt, isPhoneMessage: true }
             ], callAiOptions);
+            // AI 最多等 4 分钟；超时直接报错停止转圈（在「设置 → API → API 调用日志」能看到卡在哪）
+            let aiTimer = null;
+            const result = await Promise.race([
+                callPromise,
+                new Promise((_, reject) => { aiTimer = setTimeout(() => reject(new Error('AI 4 分钟没有返回，已停止等待。可以在「设置 → API → API 调用日志」查看请求有没有发出去')), 240000); })
+            ]).finally(() => clearTimeout(aiTimer));
+            if (!result || typeof result !== 'object') throw new Error('AI 没有返回内容');
             if (!result.success) throw new Error(result.error || 'AI调用失败');
             const response = result.summary || '';
 

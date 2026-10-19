@@ -10,14 +10,15 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261022-t1';
-import { applyChatThemeForChat } from './chat-themes.js?v=20261022-t1';
+import { ChatView } from './chat-view.js?v=20261021-m18-nj2';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261021-m17';
+import { MomentsView } from './moments-view.js?v=20261021-m17-log1';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
-import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
+import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261018-nj1';
+import { NuojiCompat } from './nuoji-compat.js?v=20261019-nj2';
+import '../settings/api-log.js?v=20261019-log1';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';
@@ -50,9 +51,7 @@ export class WechatApp {
                 const json = JSON.stringify(wd?.data || {});
                 let emojis = '';
                 try { emojis = String(this.storage?.get?.(wd?._getCustomEmojiGlobalKey?.(), '') || ''); } catch (e) { }
-                let themes = '';
-                try { const t = this.storage?.get?.('wechat_chat_themes_v1', ''); themes = typeof t === 'string' ? t : JSON.stringify(t || ''); } catch (e) { }
-                return json.includes(name) || emojis.includes(name) || themes.includes(name);
+                return json.includes(name) || emojis.includes(name);
             };
         } catch (e) {
             console.warn('⚠️ [柚月图片] 独立图片仓库初始化失败:', e);
@@ -87,6 +86,8 @@ export class WechatApp {
         this._applyCustomChatStyle('');
         // 🎨 聊天界面风格（微信 / QQ / LINE · 日间 / 夜间）
         try { applyWechatSkinAttrs(this.getWechatSkin()); } catch (e) { console.warn('⚠️ 界面风格初始化失败:', e); }
+        // 🍡 糯叽机美化兼容（聊天界面 / 聊天列表 CSS 导入、头像框）
+        try { this.nuoji = new NuojiCompat(this); } catch (e) { console.warn('⚠️ 糯叽机美化初始化失败:', e); }
 
         // 🔥 监听滑动返回事件 (防止切换聊天导致重复绑定)
         if (!window._wechatSwipeBackBound) {
@@ -7135,6 +7136,8 @@ export class WechatApp {
 
     render() {
         try { installPhoneImageStore(); } catch (e) { }
+        // 从聊天点头像进朋友圈的「返回聊天」只用一次，回到正常页面就清掉
+        try { if (this.momentsView) this.momentsView._externalBack = null; } catch (e) { }
         try { if (!document.documentElement.hasAttribute('data-wx-skin')) applyWechatSkinAttrs(this.getWechatSkin()); } catch (e) { }
         // 🔥 终极修复：强制从存储重新加载数据，彻底解决前后台实例脱步（Desync）问题
         // 🔥🔥🔥 核心修复：loadData() 返回 messages:{} 空对象（懒加载机制），
@@ -7159,8 +7162,6 @@ export class WechatApp {
             this.chatView?.resetTransientInputPanels?.();
         }
         this._applyCustomChatStyle('');
-        // 🎨 导入的聊天主题（只作用于聊天界面；没有就用内置的微信 / QQ / LINE 风格）
-        try { applyChatThemeForChat(this); } catch (e) { console.warn('⚠️ 聊天主题应用失败:', e); }
         const chatList = this.wechatData.getChatList();
 
         // 🔥 强制消红点：只要用户看到了这个聊天，立即清空未读
@@ -8125,6 +8126,20 @@ export class WechatApp {
                     </div>
                 </div>
 
+                <!-- 🍡 聊天列表美化：导入糯叽机「消息 App」CSS -->
+                <div class="profile-function-item" id="wechat-nuoji-list-btn">
+                    <div class="function-icon-wrapper" style="background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3);">
+                        <i class="fa-solid fa-palette" style="color: #666;"></i>
+                    </div>
+                    <div class="function-content">
+                        <div class="function-title">聊天列表美化</div>
+                        <div class="function-desc">${this.nuoji?.listEntryDesc?.() || '导入糯叽机消息 App 美化 CSS'}</div>
+                    </div>
+                    <div class="function-arrow">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </div>
+                </div>
+
                 ${this._renderMyVoiceHtml()}
 
                 <div class="profile-function-item" id="wechat-settings-btn">
@@ -8245,6 +8260,7 @@ export class WechatApp {
         addClickListener('#smart-load-contacts', () => this.showLoadContactsConfirm());
         addClickListener('#edit-profile-btn', () => this.showEditProfile());
         addClickListener('#wechat-settings-btn', () => this.showSettings());
+        addClickListener('#wechat-nuoji-list-btn', () => this.nuoji?.openPanel?.(null));
         this._bindMyVoice(wechatRoot);
         wechatRoot?.querySelectorAll?.('[data-moments-style]').forEach(btn => btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -9220,8 +9236,25 @@ export class WechatApp {
                 this.render();
             });
 
+            // 🎨 重置美化：这个聊天不用导入的美化、清掉单聊气泡样式，界面风格回到 LINE
+            const resetBtn = document.createElement('button');
+            resetBtn.type = 'button';
+            resetBtn.textContent = '重置美化';
+            resetBtn.style.cssText = `${baseBtnStyle}border-right: 0.5px solid #e5e5e5;color:#06c755;`;
+            resetBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const target = this.wechatData.getChat(chatId);
+                if (!target) { closeDeleteMenu(); return; }
+                if (!confirm(`把「${target.name}」的聊天界面重置成 LINE 样式吗？\n\n会关掉这个聊天的导入美化、清掉它的气泡样式和单独头像框；聊天记录不受影响。`)) return;
+                this.resetChatAppearance(chatId);
+                this.phoneShell.showNotification('重置美化', `${target.name} 已恢复 LINE 样式`, '✅');
+                closeDeleteMenu();
+                this.render();
+            });
+
             menu.appendChild(pinBtn);
             void editBtn; // “编辑”已移到私聊的聊天设置里
+            menu.appendChild(resetBtn);
             menu.appendChild(deleteBtn);
             host.appendChild(menu);
 
@@ -9361,6 +9394,26 @@ export class WechatApp {
                 if (targetChatId) this.openChat(targetChatId);
             };
         });
+    }
+
+    // 🎨 把一个聊天的样子重置成默认（LINE）：关掉这个聊天的导入美化、单聊气泡样式、单独头像框
+    resetChatAppearance(chatId) {
+        const id = String(chatId || '');
+        if (!id) return;
+        try { this.nuoji?.setActiveId?.('chat', '', id); } catch (e) { /* 忽略 */ }
+        try {
+            const f = this.nuoji?.getFrames?.();
+            if (f?.chats?.[id]) { delete f.chats[id]; this.nuoji.saveFrames(f); }
+        } catch (e) { /* 忽略 */ }
+        try {
+            const chat = this.wechatData.getChat(id);
+            if (chat) {
+                delete chat.bubbleConfig;
+                this.wechatData.saveData?.();
+            }
+        } catch (e) { /* 忽略 */ }
+        try { this.setWechatSkin?.({ skin: 'line' }); } catch (e) { /* 忽略 */ }
+        try { this.nuoji?.applyStyles?.(); } catch (e) { /* 忽略 */ }
     }
 
     openChat(chatId) {
@@ -10284,6 +10337,9 @@ export class WechatApp {
                     </div>
                 </div>
 
+                <!-- 🍡 聊天列表美化（只影响外面的列表页；聊天窗口美化在各聊天的聊天设置里） -->
+                <div style="margin: 15px;">${this.nuoji?.renderCardHtml?.({}) || ''}</div>
+
                 <!-- 数据管理 -->
                 <div style="background: #fff3cd; border-radius: 12px; padding: 15px; margin: 15px; border: 1px solid #ffc107;">
                     <div style="font-size: 14px; font-weight: 600; color: #856404; margin-bottom: 12px;">
@@ -10308,6 +10364,7 @@ export class WechatApp {
 
         this.phoneShell.setContent(html);
         this.renderWechatWorldbookList();
+        try { this.nuoji?.bindCard?.(document.querySelector('.phone-view-current') || document); } catch (e) { console.warn('聊天列表美化绑定失败', e); }
 
         // 返回按钮
         const backBtn = document.getElementById('back-from-settings');

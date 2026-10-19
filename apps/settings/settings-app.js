@@ -12,6 +12,7 @@
 // 设置APP
 import { ImageUploadManager } from './image-upload.js?v=20261006-story-upload-console-cleanup';
 import { ImageCropper } from './image-cropper.js';
+import { getPhoneApiLog } from './api-log.js?v=20261019-log1';
 import { AlbumData } from '../album/album-data.js';
 import { AlbumImagePicker } from '../album/album-image-picker.js';
 import { DEFAULT_APP_ICONS, PHONE_CONFIG } from '../../config/apps.js';
@@ -3113,6 +3114,17 @@ export class SettingsApp {
                     </div>
 
                     <div class="phone-settings-tab-content ${this.currentTab === 'llm' ? 'is-active' : 'is-hidden'}" id="tab-llm" role="tabpanel" ${this.currentTab === 'llm' ? '' : 'hidden'}>
+                        <!-- 📜 API 调用日志 -->
+                        <div class="setting-section" style="margin-bottom: 10px;">
+                            <button type="button" data-yz-apilog-open style="width:100%; display:flex; align-items:center; gap:10px; border:none; background:#fff; border-radius:12px; padding:12px 14px; cursor:pointer; text-align:left; box-shadow:0 1px 3px rgba(0,0,0,.05);">
+                                <i class="fa-solid fa-list-check" style="color:#576b95; font-size:16px;"></i>
+                                <span style="flex:1; min-width:0;">
+                                    <span style="display:block; font-size:14px; font-weight:600; color:#222;">API 调用日志</span>
+                                    <span style="display:block; font-size:11.5px; color:#999; margin-top:2px;">每次聊天、动态、生图、语音调用的应用、输入、输出和耗时${(() => { try { const st = getPhoneApiLog().stats(); return st.total ? ` · 已记录 ${st.total} 次${st.fail ? `，失败 ${st.fail}` : ''}` : ''; } catch (e) { return ''; } })()}</span>
+                                </span>
+                                <i class="fa-solid fa-chevron-right" style="color:#c7c7cc;"></i>
+                            </button>
+                        </div>
                         <!-- 独立 API 配置 -->
                         <div class="setting-section phone-api-config-section">
                             <div class="phone-api-panel phone-api-switch-panel">
