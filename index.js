@@ -40,9 +40,9 @@ import {
 const ST_PHONE_BASE_URL = new URL('./', import.meta.url).href;
 const ST_PHONE_VERSION = '1.6.2';
 const ST_PHONE_CSS_REVISION = '20261024-phone-prewarm';
-const ST_PHONE_APP_SWIPE_REVISION = '20261025-api-log-noclone';
+const ST_PHONE_APP_SWIPE_REVISION = '20261026-api-log-fold';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261025-m21';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261026-m24';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -1471,7 +1471,7 @@ if (window.GGP_Loaded) {
         ] = await Promise.all([
             import('./config/apps.js?v=20261020-sv1'),
             import('./config/storage.js?v=20261006-story-upload-console-cleanup'),
-            import('./config/api-manager.js?v=20261025-live-settings'),
+            import('./config/api-manager.js?v=20261026-internal-trace'),
             import('./config/time-manager.js'),    // 👈 取消懒加载
         import('./config/prompt-manager.js?v=20261002-x-follower-sync'),  // 👈 取消懒加载
             import('./config/tts-manager.js?v=20261021-tts-chan'),
@@ -14349,6 +14349,26 @@ if (window.GGP_Loaded) {
                          url.includes('/v1/chat/completions') ||
                          (url.includes('/generate') && !url.includes('/api/sd/') && !url.includes('/api/tts/') && !url.includes('/api/images/')))
                     );
+
+                    // 小手机自己发的 AI 请求（朋友圈、微信等）：不是酒馆正文，不跑正文注入流程，
+                    // 只把残留的手机变量占位符清掉后直接放行（避免注入流程里的等待把请求卡住）
+                    if (isPhoneInternalApiRequest && options && typeof options.body === 'string' && PHONE_REQUEST_MACRO_PATTERN.test(options.body)) {
+                        try {
+                            const bodyObj = JSON.parse(options.body);
+                            const list = Array.isArray(bodyObj.messages) ? bodyObj.messages
+                                : (Array.isArray(bodyObj.prompt) ? bodyObj.prompt : (Array.isArray(bodyObj.contents) ? bodyObj.contents : null));
+                            if (list) {
+                                list.forEach((msg) => {
+                                    if (msg && typeof msg.content === 'string') msg.content = stripPhonePromptPlaceholders(msg.content).text;
+                                    if (msg && Array.isArray(msg.content)) msg.content.forEach(p => { if (p && typeof p.text === 'string') p.text = stripPhonePromptPlaceholders(p.text).text; });
+                                    if (msg && Array.isArray(msg.parts)) msg.parts.forEach(p => { if (p && typeof p.text === 'string') p.text = stripPhonePromptPlaceholders(p.text).text; });
+                                });
+                                options.body = JSON.stringify(bodyObj);
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ [手机插件] 清理内部请求变量失败:', e);
+                        }
+                    }
 
                     // 拦截正文生成请求
                     if (isTextGeneration && options && options.body && typeof options.body === 'string') {

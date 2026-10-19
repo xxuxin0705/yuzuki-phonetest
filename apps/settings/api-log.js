@@ -351,6 +351,10 @@ const PANEL_CSS = `
 .yzlog-kv span { color: #888; display: inline-block; min-width: 64px; }
 .yzlog-block { background: #fff; border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
 .yzlog-block h4 { margin: 0; padding: 8px 12px; font-size: 12.5px; background: #fafafa; border-bottom: .5px solid #eee; display: flex; align-items: center; }
+.yzlog-block.is-fold h4 { cursor: pointer; user-select: none; }
+.yzlog-block.is-fold:not(.is-open) h4 { border-bottom: 0; }
+.yzlog-fold-arrow { display: inline-block; width: 14px; color: #888; }
+.yzlog-block h4 em { font-style: normal; font-weight: 400; color: #999; font-size: 11px; margin-left: 8px; }
 .yzlog-block h4 button { margin-left: auto; border: 0; background: #f0f1f3; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
 .yzlog-block pre { margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #222; }
 `;
@@ -375,6 +379,7 @@ export function openApiLogPanel(host = null) {
 
     let filter = 'all';
     let detailId = '';
+    const openBlocks = new Set();
     const apps = () => Array.from(new Set(log.entries.map(e => e.app).filter(Boolean)));
 
     const itemHtml = (e) => {
@@ -411,7 +416,23 @@ export function openApiLogPanel(host = null) {
         const e = log.entries.find(x => x.id === id);
         if (!e) { detailId = ''; listView(); return; }
         const children = log.entries.filter(x => x.parent === e.id);
-        const block = (title, text, key) => text ? `<div class="yzlog-block"><h4>${title}<button data-copy="${key}">复制</button></h4><pre>${esc(text)}</pre></div>` : '';
+        // 「AI 调用」和它下面的「网络请求」是同一次请求的两层记录：字段互相补齐，看哪一条都一样
+        const parentEntry = e.parent ? log.entries.find(x => x.id === e.parent) : null;
+        const shownModel = e.model || children.find(c => c.model)?.model || parentEntry?.model || '';
+        const shownAppId = e.appId || parentEntry?.appId || '';
+        const shownUrl = e.url || children[0]?.url || '';
+        const shownMethod = e.method || children[0]?.method || '';
+        // 输入 / 原始返回 很长：默认折叠，点标题展开；展开状态在自动刷新时保留
+        const FOLD_KEYS = new Set(['input', 'raw', 'options']);
+        const block = (title, text, key) => {
+            if (!text) return '';
+            const str = String(text);
+            if (!FOLD_KEYS.has(key)) {
+                return `<div class="yzlog-block"><h4>${title}<button data-copy="${key}">复制</button></h4><pre>${esc(str)}</pre></div>`;
+            }
+            const open = openBlocks.has(`${e.id}:${key}`);
+            return `<div class="yzlog-block is-fold${open ? ' is-open' : ''}"><h4 data-fold="${key}"><span class="yzlog-fold-arrow">${open ? '▾' : '▸'}</span>${title}<em>${str.length} 字${open ? '' : ' · 点开查看'}</em><button data-copy="${key}">复制</button></h4>${open ? `<pre>${esc(str)}</pre>` : ''}</div>`;
+        };
         mask.innerHTML = `
             <div class="yzlog-head"><button data-act="back">返回</button><b>${esc(e.app || '小手机')}</b><button data-act="close">关闭</button></div>
             <div class="yzlog-detail">
@@ -419,10 +440,11 @@ export function openApiLogPanel(host = null) {
                     <div><span>类型</span>${esc(e.kind === 'ai' ? 'AI 调用（应用层）' : (e.kind === 'step' ? '步骤记录' : '网络请求'))}</div>
                     <div><span>时间</span>${fmtTime(e.ts)}</div>
                     ${e.kind !== 'step' ? `<div><span>耗时</span>${e.pending ? `进行中（已 ${fmtMs(Date.now() - e.ts)}）` : fmtMs(e.ms || 0)}</div>` : ''}
+                    ${e.kind === 'net' && parentEntry ? '<div><span>说明</span>列表里紧挨着的那条「AI 调用」实际发出的网络请求</div>' : ''}
                     ${e.kind !== 'step' ? `<div><span>结果</span>${e.pending ? '等待返回…' : (e.ok === false ? '失败' : '成功')}${e.status ? `（HTTP ${e.status}）` : ''}</div>` : ''}
-                    ${e.model ? `<div><span>模型</span>${esc(e.model)}</div>` : ''}
-                    ${e.appId ? `<div><span>应用 ID</span>${esc(e.appId)}</div>` : ''}
-                    ${e.url ? `<div><span>地址</span>${esc(e.method || '')} ${esc(e.url)}</div>` : ''}
+                    ${shownModel ? `<div><span>模型</span>${esc(shownModel)}</div>` : ''}
+                    ${shownAppId ? `<div><span>应用 ID</span>${esc(shownAppId)}</div>` : ''}
+                    ${shownUrl ? `<div><span>地址</span>${esc(shownMethod)} ${esc(shownUrl)}</div>` : ''}
                     ${e.kind === 'step' ? `<div><span>内容</span>${esc(e.label)}</div>` : ''}
                     ${children.length ? `<div><span>网络请求</span>${children.length} 次（列表里缩进显示）</div>` : (e.kind === 'ai' && !e.pending ? '<div><span>网络请求</span>没有抓到（可能走了酒馆当前预设，或请求没发出去）</div>' : '')}
                     ${e.restored ? '<div style="color:#999">这条是刷新前的记录，内容已截短</div>' : ''}
@@ -433,7 +455,17 @@ export function openApiLogPanel(host = null) {
                 ${e.raw && e.raw !== e.output ? block('原始返回', e.raw, 'raw') : ''}
                 ${e.options ? block('参数', e.options, 'options') : ''}
             </div>`;
-        mask.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => {
+        mask.querySelectorAll('[data-fold]').forEach(h => h.addEventListener('click', (ev) => {
+            if (ev.target.closest('[data-copy]')) return;
+            const k = `${e.id}:${h.dataset.fold}`;
+            if (openBlocks.has(k)) openBlocks.delete(k); else openBlocks.add(k);
+            const top = mask.querySelector('.yzlog-detail')?.scrollTop || 0;
+            detailView(id);
+            const d = mask.querySelector('.yzlog-detail');
+            if (d) d.scrollTop = top;
+        }));
+        mask.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             const text = String(e[b.dataset.copy] || '');
             try { navigator.clipboard?.writeText(text); b.textContent = '已复制'; } catch (err) { b.textContent = '复制失败'; }
         }));
