@@ -2,6 +2,7 @@ import { CALL_HANGUP_RULE, parseCallHangupReply } from '../../config/call-hangup
 import { WECHAT_REACTION_CATEGORIES, WECHAT_REACTION_QUICK_DEFAULT } from './emoji-catalog.js?v=20261016-fix4';
 import { WECHAT_SKINS, WECHAT_SKIN_PALETTE, WECHAT_MOMENTS_SKINS } from './skins.js?v=20261021-m16';
 import { WECHAT_BUBBLE_PRESETS, WECHAT_BUBBLE_CSS_TEMPLATE, getBubblePreset, compileBubbleCss, hashBubbleSource } from './bubble-styles.js?v=20261020-m2';
+import { renderThemeCardHtml, bindThemeCard, syncThemeMarkers } from './chat-themes.js?v=20261022-t1';
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
  *  作者 (Author): yuzuki
@@ -3018,7 +3019,7 @@ renderChatRoom(chat) {
 
                     <!-- 输入行 -->
                     <div class="chat-input-bar" style="display: flex; align-items: center; justify-content: space-between; ${inputBarStyle}">
-                        <div style="display: flex; align-items: center; gap: 0px;">
+                        <div class="yzt-btns-left" style="display: flex; align-items: center; gap: 0px;">
                             <button class="input-btn" id="quick-reply-btn" title="快捷回复">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
                                     <rect x="4" y="4" width="5.4" height="5.4" rx="1.15"/>
@@ -3031,11 +3032,12 @@ renderChatRoom(chat) {
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
                             </button>
                         </div>
+                        <div class="yzt-action-bar" style="display: contents;">
                         <div class="chat-input-wrapper" style="flex: 1; margin: 0;">
                             <input type="text" class="chat-input" id="chat-input"
                                    placeholder="${this._escapeAttr(this._getQuickReplyInputPlaceholder())}" value="${this._escapeAttr(this.inputText)}">
                         </div>
-                        <div style="display: flex; align-items: center; gap: 0px;">
+                        <div class="yzt-btns-right" style="display: flex; align-items: center; gap: 0px;">
                             <button class="input-btn" id="emoji-btn" title="表情">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
                             </button>
@@ -3045,6 +3047,7 @@ renderChatRoom(chat) {
                             <button class="input-btn wx-send-now" id="send-now-btn" data-mode="${isCurrentChatSending ? 'stop' : 'send'}" title="${isCurrentChatSending ? '停止' : '发送'}">
                                 ${this._renderChatSendButtonIcon(isCurrentChatSending ? 'stop' : 'send')}<span class="wx-send-label">${isCurrentChatSending ? '停止' : '发送'}</span>
                             </button>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -9312,6 +9315,8 @@ ${transLines.join('\n')}`);
             prev = el;
         });
         try { this._applyLineReadMeta(box); } catch (e) { /* 忽略 */ }
+        // 🎨 导入的聊天主题：连发位置 / 头像名字变量 / 气泡外翻译
+        try { syncThemeMarkers(box, this.app); } catch (e) { console.warn('⚠️ 聊天主题标记失败:', e); }
     }
 
     // ✓✓ LINE 风格：每条消息下面显示自己的时间（我的消息被回复后加已读勾，同一行不占新高度）
@@ -20628,52 +20633,13 @@ ${callTranscript}`;
         }).join('');
     }
 
+    // 🎨 界面风格卡片：内置 微信 / QQ / LINE + 导入的聊天主题（私聊、群聊都在这里设置）
     _renderSkinCardHtml() {
-        const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
-        return `
-            <section class="wechat-detail-card wsk-card" data-collapse-key="skin">
-                <div class="wechat-detail-heading">界面风格</div>
-                <div class="wsk-tiles">${this._renderSkinTilesHtml(state)}</div>
-                <div class="wsk-modes">
-                    <button type="button" data-wx-mode-pick="day" class="${state.mode !== 'night' ? 'active' : ''}"><i class="fa-solid fa-sun"></i> 日间</button>
-                    <button type="button" data-wx-mode-pick="night" class="${state.mode === 'night' ? 'active' : ''}"><i class="fa-solid fa-moon"></i> 夜间</button>
-                </div>
-                <div class="wsk-note">所有聊天通用，只改变样子，功能不变；聊天背景只铺在消息区域</div>
-            </section>`;
+        return renderThemeCardHtml(this.app, String(this.app.currentChat?.id || ''));
     }
 
     _bindSkinCard() {
-        const view = document.querySelector('.phone-view-current') || document;
-        const card = view.querySelector('.wsk-card');
-        if (!card || card.dataset.bound === '1') return;
-        card.dataset.bound = '1';
-        const refresh = () => {
-            const state = this.app.getWechatSkin?.() || { skin: 'wechat', mode: 'day' };
-            const tiles = card.querySelector('.wsk-tiles');
-            if (tiles) tiles.innerHTML = this._renderSkinTilesHtml(state);
-            card.querySelectorAll('[data-wx-mode-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxModePick === state.mode));
-            card.querySelectorAll('[data-wx-moments-pick]').forEach(b => b.classList.toggle('active', b.dataset.wxMomentsPick === (state.moments || 'auto')));
-        };
-        card.addEventListener('click', (e) => {
-            const tile = e.target.closest('[data-wx-skin-pick]');
-            if (tile) {
-                const res = this.app.setWechatSkin?.({ skin: tile.dataset.wxSkinPick });
-                refresh();
-                void res;
-                return;
-            }
-            const mm = e.target.closest('[data-wx-moments-pick]');
-            if (mm) {
-                this.app.setWechatSkin?.({ moments: mm.dataset.wxMomentsPick });
-                refresh();
-                return;
-            }
-            const mode = e.target.closest('[data-wx-mode-pick]');
-            if (mode) {
-                this.app.setWechatSkin?.({ mode: mode.dataset.wxModePick });
-                refresh();
-            }
-        });
+        bindThemeCard(this);
     }
 
     // ↕️ 聊天设置：除了最上面的资料卡，其余卡片长按可以拖动排序（私聊、群聊分开记）
@@ -20725,7 +20691,7 @@ ${callTranscript}`;
             try { this.app.wechatData.storage?.set?.('wechat_settings_order_v1', JSON.stringify(map), false); } catch (e) { /* 忽略 */ }
         };
 
-        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .yzrd, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
+        const INTERACTIVE = 'input, select, textarea, label, button:not(.wechat-detail-toggle), a, .yzac, .yzrd, .wce-ref, .wce-voices, .wbx-preview, .wbx-seg, .wsk-tiles, .wsk-modes, .yzt-row, .yzt-acts, .wbx-colors, .wbx-deco, .wbx-actions, .wechat-seg, .wechat-range-ctl, [contenteditable="true"]';
         let timer = null, dragging = null, startX = 0, startY = 0, lastY = 0, moved = false, suppressClick = false, rafId = 0;
         const cancelTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
         const autoScroll = () => {

@@ -10,7 +10,8 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261021-m18';
+import { ChatView } from './chat-view.js?v=20261022-t1';
+import { applyChatThemeForChat } from './chat-themes.js?v=20261022-t1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
 import { MomentsView } from './moments-view.js?v=20261021-m17';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
@@ -7156,6 +7157,8 @@ export class WechatApp {
             this.chatView?.resetTransientInputPanels?.();
         }
         this._applyCustomChatStyle('');
+        // 🎨 导入的聊天主题（只作用于聊天界面；没有就用内置的微信 / QQ / LINE 风格）
+        try { applyChatThemeForChat(this); } catch (e) { console.warn('⚠️ 聊天主题应用失败:', e); }
         const chatList = this.wechatData.getChatList();
 
         // 🔥 强制消红点：只要用户看到了这个聊天，立即清空未读
