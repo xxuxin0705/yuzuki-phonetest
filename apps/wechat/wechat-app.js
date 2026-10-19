@@ -10,16 +10,16 @@
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // 微信APP主程序
-import { ChatView } from './chat-view.js?v=20261023-t2';
+import { ChatView } from './chat-view.js?v=20261024-t3';
 import { applyChatThemeForChat, resetChatTheme } from './chat-themes.js?v=20261023-t2';
 import { clearChatFrames, FRAME_KEY } from './avatar-frames.js?v=20261023-f1';
 import { ContactsView } from './contacts-view.js?v=20261021-m4';
-import { MomentsView } from './moments-view.js?v=20261023-mt1';
+import { MomentsView } from './moments-view.js?v=20261024-mt2';
 import { MindNotes } from './mind-notes.js?v=20261016-fix15';
 import { WechatData } from './wechat-data.js?v=20261020-m2';
 import { installPhoneImageStore } from './image-store.js?v=20261020-m2';
 import { readWechatSkin, applyWechatSkinAttrs, WECHAT_SKIN_KEY } from './skins.js?v=20261021-m16';
-import '../settings/api-log.js?v=20261023-log2';
+import '../settings/api-log.js?v=20261024-log3';
 import { renderAliasChips, bindAliasChips, setAliasFixed, renderReadingPairs, bindReadingPairs } from './alias-chips.js?v=20261021-a3';
 import { getWalletAssetTotals, parseWalletAssetEvaluation } from './wallet-assets.js?v=20261011-wallet-credit-repayment';
 import { ImageCropper } from '../settings/image-cropper.js';

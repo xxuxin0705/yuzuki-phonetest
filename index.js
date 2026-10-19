@@ -39,10 +39,10 @@ import {
 
 const ST_PHONE_BASE_URL = new URL('./', import.meta.url).href;
 const ST_PHONE_VERSION = '1.6.2';
-const ST_PHONE_CSS_REVISION = '20261018-free-desktop-v4';
-const ST_PHONE_APP_SWIPE_REVISION = '20261002-wechat-chat-return';
+const ST_PHONE_CSS_REVISION = '20261024-phone-prewarm';
+const ST_PHONE_APP_SWIPE_REVISION = '20261024-api-log-tauri';
 const ST_PHONE_ALBUM_MODULE_REVISION = '20261006-story-image-outside-close';
-const ST_PHONE_WECHAT_MODULE_REVISION = '20261021-m18';
+const ST_PHONE_WECHAT_MODULE_REVISION = '20261024-m19';
 const ST_PHONE_WEIBO_MODULE_REVISION = '20261002-first-return-guard';
 const ST_PHONE_X_MODULE_REVISION = '20261010-publish-guard';
 const ST_PHONE_HONEY_ASSET_REVISION = '20261003-theme-media-recovery';
@@ -1471,7 +1471,7 @@ if (window.GGP_Loaded) {
         ] = await Promise.all([
             import('./config/apps.js?v=20261020-sv1'),
             import('./config/storage.js?v=20261006-story-upload-console-cleanup'),
-            import('./config/api-manager.js?v=20261009-unified-sse-parser'),
+            import('./config/api-manager.js?v=20261024-tauri-stream'),
             import('./config/time-manager.js'),    // 👈 取消懒加载
         import('./config/prompt-manager.js?v=20261002-x-follower-sync'),  // 👈 取消懒加载
             import('./config/tts-manager.js?v=20261021-tts-chan'),
@@ -1514,11 +1514,63 @@ if (window.GGP_Loaded) {
 
     // 🔥 UI 模块加载状态
     let uiModulesLoaded = false;
+    let homeScreenModuleRef = null;
+    let _phonePrewarmPromise = null;
+
+    // ⚡ 预热小手机：酒馆空闲时提前把 phone.css、手机外壳/主屏模块、桌面数据、微信模块都加载好。
+    // 这样第一次点开小手机时不用再现场下载/解析几 MB 的脚本，基本是秒开（不再长时间显示“启动中…”）。
+    function prewarmPhoneRuntime() {
+        if (_phonePrewarmPromise) return _phonePrewarmPromise;
+        _phonePrewarmPromise = (async () => {
+            const t0 = performance.now();
+            try {
+                await ensureGlobalPhoneCSS();
+                await loadUIModules();
+                await homeScreenModuleRef?.prewarmHomeScreen?.();
+                if (!window.VirtualPhone) window.VirtualPhone = {};
+                if (!window.VirtualPhone.imageManager && ImageUploadManager) {
+                    window.VirtualPhone.imageManager = new ImageUploadManager(storage);
+                }
+                console.log(`⚡ 小手机预热完成 (${Math.round(performance.now() - t0)}ms)`);
+            } catch (error) {
+                console.warn('⚠️ 小手机预热失败，打开时会按需重试:', error);
+                _phonePrewarmPromise = null;
+                return;
+            }
+            // 微信是最常用的 App，顺手在空闲时把模块也预加载（只加载代码，不创建实例）
+            const warmWechat = () => {
+                import(`./apps/wechat/wechat-app.js?v=${ST_PHONE_VERSION}&r=${ST_PHONE_WECHAT_MODULE_REVISION}`)
+                    .catch(error => console.warn('⚠️ 微信模块预加载失败，点击时将重试:', error));
+            };
+            if (typeof requestIdleCallback === 'function') requestIdleCallback(warmWechat, { timeout: 4000 });
+            else setTimeout(warmWechat, 1500);
+        })();
+        return _phonePrewarmPromise;
+    }
+
+    function schedulePhonePrewarm() {
+        const run = () => { void prewarmPhoneRuntime(); };
+        if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(run, { timeout: 1500 });
+        } else {
+            setTimeout(run, 500);
+        }
+    }
 
     // 🔥 按需加载 UI 模块（打开手机面板时才加载）
+    let _uiModulesLoadingPromise = null;
     async function loadUIModules() {
         if (uiModulesLoaded) return;
+        // 预热和点击可能同时触发：共用同一个加载过程，不重复解析
+        if (_uiModulesLoadingPromise) return _uiModulesLoadingPromise;
+        _uiModulesLoadingPromise = loadUIModulesOnce().catch(error => {
+            _uiModulesLoadingPromise = null;
+            throw error;
+        });
+        return _uiModulesLoadingPromise;
+    }
 
+    async function loadUIModulesOnce() {
         const startTime = performance.now();
 
         const [
@@ -1534,6 +1586,7 @@ if (window.GGP_Loaded) {
         PhoneShell = phoneShellModule.PhoneShell;
         HomeScreen = homeScreenModule.HomeScreen;
         ImageUploadManager = imageUploadModule.ImageUploadManager;
+        homeScreenModuleRef = homeScreenModule;
 
         uiModulesLoaded = true;
 
@@ -6209,11 +6262,14 @@ if (window.GGP_Loaded) {
         initColors();
 
         // 🔥 按需加载 UI 模块 + TimeManager + PromptManager（并行加载）
+        // 一般已经在后台预热好了，这里会立即返回
         await Promise.all([
             loadUIModules(),
             loadTimeManager(),
             loadPromptManager()
         ]);
+        // 桌面数据也提前读好，避免先闪一下「桌面加载中…」
+        await homeScreenModuleRef?.prewarmHomeScreen?.();
 
         container.innerHTML = '';
 
@@ -11103,6 +11159,7 @@ if (window.GGP_Loaded) {
                     createInlineReplyButton();
                     schedulePhoneUpdateNotices();
                     startWechatOnlineProactiveScheduler();
+                    schedulePhonePrewarm();
                     scheduleHoneyAppPreload();
                     scheduleGamesAppPreload();
 

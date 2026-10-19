@@ -457,6 +457,12 @@ const Store = {
     }
 };
 
+// ⚡ 预热：酒馆空闲时先把桌面数据（布局 / 主题 / 组件素材）从 IndexedDB 读进内存，
+// 第一次点开小手机时直接画桌面，不再显示「桌面加载中…」
+export function prewarmFreeDesktop() {
+    return Store.load().catch(e => console.warn('[自由桌面] 预热失败', e));
+}
+
 /* ------------------------------ iframe 消息路由 ------------------------------ */
 const FRAME_MAP = new Map();
 let _msgBound = false;

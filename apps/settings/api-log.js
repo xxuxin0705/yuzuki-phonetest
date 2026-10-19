@@ -166,9 +166,13 @@ class PhoneApiLog {
         let u;
         try { u = new URL(url, location.href); } catch (e) { return false; }
         if (u.protocol === 'data:' || u.protocol === 'blob:') return false;
-        // 酒馆 App（Tauri）自己的内部通信，不是 AI 请求
-        if (/^ipc\.localhost$|^tauri\.localhost$/i.test(u.hostname) || /^(ipc|tauri|asset):$/i.test(u.protocol) || /__TAURI/i.test(u.href)) return false;
-        if (u.origin === location.origin) {
+        const sameOrigin = u.origin === location.origin;
+        // 酒馆 App（Tauri）自己的内部通信，不是 AI 请求。
+        // 注意：TauriTavern 的页面本身就在 tauri.localhost 上，酒馆后端接口（/api/backends/...）也是这个域名，
+        // 不能整个域名都跳过，否则 Tauri 里所有 AI 请求都会显示“没有抓到”。
+        if (!sameOrigin && (/^ipc\.localhost$|^tauri\.localhost$/i.test(u.hostname) || /^(ipc|tauri|asset):$/i.test(u.protocol))) return false;
+        if (/__TAURI/i.test(u.href)) return false;
+        if (sameOrigin) {
             if (method === 'GET') return false;
             if (!SAME_ORIGIN_AI.some(p => u.pathname.startsWith(p))) return false;
             return !SAME_ORIGIN_SKIP.some(re => re.test(u.pathname));

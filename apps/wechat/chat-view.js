@@ -11810,16 +11810,10 @@ ${transLines.join('\n')}`);
                 if (!message) return;
                 e.stopImmediatePropagation();
                 const currentChat = this.app.currentChat;
-                const chatId = String(currentChat?.id || '');
-                const imgs = avatar.querySelectorAll('img');
-                const avatarSrc = imgs.length ? (imgs[imgs.length - 1].getAttribute('src') || '') : '';
 
-                // 👤 点自己的头像：我的头像框（还能去我的朋友圈）
+                // 👤 点自己的头像：直接进我的朋友圈（头像框 / 换头像在「聊天设置」里改）
                 if (message.classList.contains('message-right')) {
-                    openAvatarFrameSheet(this.app, {
-                        chatId, side: 'me', avatarSrc, title: '我的头像框',
-                        links: [{ label: '我的朋友圈', onClick: () => this._openMomentsFromChat('', true) }]
-                    });
+                    this._openMomentsFromChat('', true);
                     return;
                 }
 
@@ -11841,26 +11835,13 @@ ${transLines.join('\n')}`);
                     const c = currentChat?.contactId ? this.app.wechatData.getContact?.(currentChat.contactId) : null;
                     momentsName = c?.name || currentChat?.name || '';
                 }
-                const openProfile = () => {
-                    if (!senderContact?.id && currentChat?.type === 'group' && senderName) {
-                        this.app.contactsView?.showEditGroupMemberPage?.(currentChat.id, senderName);
-                        return;
-                    }
-                    const targetChat = senderContact?.id
-                        ? { ...currentChat, contactId: senderContact.id, name: senderContact.name }
-                        : currentChat;
-                    this.showAvatarSettings(targetChat);
-                };
 
-                // 👤 点对方头像：对方头像框（还能去 TA 的朋友圈 / 改资料头像）
-                const links = [];
-                if (momentsName) links.push({ label: 'TA 的朋友圈', onClick: () => this._openMomentsFromChat(momentsName, false) });
-                links.push({ label: '资料 / 换头像', onClick: openProfile });
-                openAvatarFrameSheet(this.app, {
-                    chatId, side: 'them', avatarSrc,
-                    title: currentChat?.type === 'group' ? '群成员头像框' : '对方头像框',
-                    links
-                });
+                // 👤 点对方头像：直接进 TA 的朋友圈，不再弹出头像框 / 换头像菜单
+                if (momentsName) {
+                    this._openMomentsFromChat(momentsName, false);
+                    return;
+                }
+                this.app.phoneShell?.showNotification?.('提示', '没找到这个人的朋友圈', '⚠️');
             });
         }
 

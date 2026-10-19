@@ -14,9 +14,20 @@ import { APPS, PHONE_CONFIG } from '../config/apps.js'; // 🔥🔥🔥 这一�
 // 自由桌面模块：每次打开酒馆都带时间戳加载，避免手机浏览器缓存旧版本（更新后不生效）
 const FREE_DESKTOP_FLAG_KEY = 'phone-home-free-desktop';
 let FreeDesktopClass = null;
+let freeDesktopModule = null;
 const freeDesktopReady = import(`./home-desktop.js?t=${Date.now()}`)
-    .then(m => { FreeDesktopClass = m.FreeDesktop; return FreeDesktopClass; })
+    .then(m => { freeDesktopModule = m; FreeDesktopClass = m.FreeDesktop; return FreeDesktopClass; })
     .catch(e => { console.error('[柚月小手机] 自由桌面加载失败', e); return null; });
+
+// ⚡ 预热：后台把自由桌面模块和桌面数据准备好，点开手机时可以直接显示
+export async function prewarmHomeScreen() {
+    try {
+        await freeDesktopReady;
+        if (isFreeDesktopEnabled()) await freeDesktopModule?.prewarmFreeDesktop?.();
+    } catch (e) {
+        console.warn('[柚月小手机] 桌面预热失败', e);
+    }
+}
 function isFreeDesktopEnabled() {
     const v = window.VirtualPhone?.storage?.get?.(FREE_DESKTOP_FLAG_KEY);
     return !(v === false || v === 'false' || v === 0 || v === '0');
