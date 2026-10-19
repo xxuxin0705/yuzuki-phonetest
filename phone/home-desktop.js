@@ -440,11 +440,7 @@ const Store = {
         if (this.loaded) return Promise.resolve();
         if (this.loading) return this.loading;
         this.loading = (async () => {
-            const [state, themes, library] = await Promise.all([idbGet('state'), idbGet('themes'), idbGet('library')]);
-            // 素材库可能很大：先显示桌面，图片在后台逐步载入，避免每次进入手机都等游标遍历完毕。
-            hydrateWidgetMedia().then(() => {
-                document.dispatchEvent(new CustomEvent('yuzuki-widget-media-ready'));
-            }).catch(() => {});
+            const [state, themes, library] = await Promise.all([idbGet('state'), idbGet('themes'), idbGet('library'), hydrateWidgetMedia()]);
             this.state = state && typeof state === 'object' ? state : null;
             this.themes = Array.isArray(themes) ? themes : [];
             this.library = Array.isArray(library) ? library : [];

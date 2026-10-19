@@ -835,7 +835,6 @@ function filterDecls(decls, item, ctx) {
         // 翻译块往上拽得太狠会压住正文，最多只往上收 2px
         if (prop === 'margin-top' && item.entry?.path?.[0] === '.wechat-trans-fold' && /^-/.test(String(d.value).trim())) d.value = '-2px';
         if (role === 'root') {
-            if (/^background/.test(prop)) continue; // 根节点不得覆盖柚月壁纸
             // 根节点只留颜色 / 背景 / 字体
             if (!/^(background|color|font|letter-spacing|line-height|text-|-webkit-font-smoothing|color-scheme|accent-color|caret-color)/.test(prop)) continue;
             out.push(d);
@@ -957,7 +956,10 @@ function buildVarConsumers(vars) {
     // 背景
     const content = `${ROOT} > .wechat-content`;
     rule(content, [
-        // 背景图片及底色均由柚月聊天壁纸管理；只映射布局，不接管背景。
+        ['background-color', V(vars, '--chat-bg-color')],
+        ['background-image', has('--chat-bg-image') ? 'var(--chat-bg-image)' : null],
+        ['background-size', has('--chat-bg-image') && !isNoneLike(vars['--chat-bg-image']) ? 'cover' : null],
+        ['background-position', has('--chat-bg-image') && !isNoneLike(vars['--chat-bg-image']) ? 'center' : null]
     ]);
     if (has('--chat-bg-overlay')) rule(`${ROOT} .chat-messages`, [['background-color', 'var(--chat-bg-overlay)']]);
     rule(`${ROOT} .chat-messages`, [['padding', V(vars, '--chat-messages-padding')]]);
@@ -1246,7 +1248,7 @@ export function convertNuojiChatCss(source = '') {
     const walk = (list, wrapPrelude = []) => {
         for (const node of list) {
             if (node.type === 'at-stmt') {
-                if (/^@import/i.test(node.text)) { /* 不导入可能影响全站的外部样式 */ report.imports++; }
+                if (/^@import/i.test(node.text)) { atTop.push(`${node.text};`); report.imports++; }
                 continue;
             }
             if (node.type === 'at-raw') {
@@ -1316,8 +1318,6 @@ export function convertNuojiChatCss(source = '') {
     out.push(...atTop);
     out.push('/* ── 变量接线 ── */');
     out.push(...buildVarConsumers(ctx.vars));
-    // 背景由柚月当前聊天单独管理，不从外部 CSS 强行替换。
-    // 保留柚月聊天背景，不能用 background-image:none 覆盖已有壁纸。
     // 按钮图标变量
     ICON_VARS.forEach(iv => {
         if (!ctx.vars[iv.v] || !/url\(/i.test(ctx.vars[iv.v])) return;
@@ -1355,7 +1355,7 @@ export function convertNuojiChatCss(source = '') {
             // 同一条规则里，不同目标元素允许的属性不同：按过滤结果分组输出
             const groups = new Map();
             for (const it of t.items) {
-                const decls = filterDecls(t.decls, it, ctx).filter(d => !(it.entry?.role === 'messages' && /^(background|background-image|background-color|background-size|background-position|background-repeat|background-attachment)$/.test(d.prop)) && !(it.entry?.role === 'content' && /^background/.test(d.prop)));  
+                const decls = filterDecls(t.decls, it, ctx);
                 if (!decls.length) continue;
                 const body = serializeDecls(decls);
                 if (!groups.has(body)) groups.set(body, new Set());
@@ -1368,22 +1368,6 @@ export function convertNuojiChatCss(source = '') {
         out.push(text);
     }
 
-    // 糯叽机 iMessage 大头像布局：柚月顶部原本使用 grid，不能只改子节点坐标。
-    // 仅在源主题明确使用顶部居中头像时启用，不影响普通导入主题。
-    if (/\.header-profile-section\s*\{|\.header-avatar-container\s*\{/.test(raw)
-        && /\.chat-header-title\s*\{/.test(raw)) {
-        out.push(`
-${ROOT} > .wechat-header { position: relative !important; min-height: 126px !important; height: auto !important; align-items: flex-start !important; overflow: visible !important; }
-${ROOT} > .wechat-header .wechat-header-title { position: absolute !important; left: 50% !important; top: 50px !important; transform: translateX(-50%) !important; display: flex !important; flex-direction: column !important; align-items: center !important; justify-content: flex-start !important; width: max-content !important; max-width: 60% !important; margin: 0 !important; gap: 5px !important; z-index: 2 !important; }
-${ROOT} > .wechat-header .wx-head-avatar { position: relative !important; display: flex !important; grid-row: auto !important; flex: 0 0 auto !important; overflow: hidden !important; width: 58px !important; height: 58px !important; }
-${ROOT} > .wechat-header .wechat-header-title-text { position: relative !important; grid-column: auto !important; max-width: 100% !important; white-space: nowrap !important; }
-${ROOT} > .wechat-header .wechat-header-left, ${ROOT} > .wechat-header .wechat-header-right { position: relative !important; z-index: 5 !important; flex-shrink: 0 !important; }
-${ROOT} > .wechat-header :is(.wechat-back-btn, .wechat-header-btn) { pointer-events: auto !important; visibility: visible !important; opacity: 1 !important; }
-${ROOT} .chat-messages { padding-top: 18px !important; }
-`);
-    }
-    // 输入区交互保护：主题可以换外观，但不能遮挡或禁用功能按钮。
-    out.push(`${ROOT} .chat-input-area :is(#send-btn,#emoji-btn,#send-now-btn,#quick-reply-btn,#regenerate-btn) { pointer-events:auto !important; visibility:visible !important; opacity:1 !important; min-width:28px !important; min-height:28px !important; }`);
     const preview = buildPreview(ctx.vars, translated);
     report.droppedSelectors = ctx.droppedList;
     return { css: out.join('\n'), report, preview, quoteMode };
