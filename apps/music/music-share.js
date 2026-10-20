@@ -239,3 +239,17 @@ export async function inviteListenInWechat(storage, target, snapshot) {
     refreshWechat(wechatData, chat.id);
     return chat;
 }
+
+/** 在音乐 App 里直接邀请（不往聊天里发卡片），对方加入后微信那边也知道你们在一起听 */
+export async function inviteListenInApp(storage, target, snapshot) {
+    if (!snapshot) throw new Error('当前没有正在播放的歌曲');
+    const wechatData = await getWechatData(storage);
+    if (!wechatData) throw new Error('微信数据未初始化');
+    const chat = ensureChat(wechatData, target);
+    if (!chat?.id) throw new Error('找不到这个好友');
+    const partner = { ...(target.contact || {}), name: target.name, avatar: target.avatar || target.contact?.avatar || '' };
+    const session = wechatData.startMusicListening?.(chat.id, partner, { ...snapshot, sourceMessageId: '' });
+    if (session) session.via = 'app';
+    await Promise.resolve(wechatData.saveData?.());
+    return chat;
+}

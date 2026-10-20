@@ -70,12 +70,14 @@ export class MusicApp {
         this.view?._closeOverlay?.();
         this.view?._stopQr?.();
         this.view?._hideThought?.();
+        this.view?._stopListenTimer?.();
         if (this.view) this.view.stack = ['music'];
     }
 
     deactivate() {
         this.view?._closeOverlay?.();
         this.view?._stopQr?.();
+        this.view?._stopListenTimer?.();
     }
 
     endWechatListening(reason = '') {

@@ -72,6 +72,47 @@ const stripWrappers = (value = '') => {
     return text;
 };
 
+
+// ---------- 播放打断侦测 ----------
+// iPhone 上同一页面里别的 <audio> 一开始播放，正在播的就会被系统暂停。
+// 这里记录“谁在什么时候播放/暂停了声音”，被打断时能指出是哪个插件。
+function stackSource() {
+    const lines = String(new Error().stack || '').split('\n').slice(3, 10);
+    const hit = lines.find(l => /\.js/.test(l) && !/music-data\.js/.test(l)) || '';
+    const m = hit.match(/\/([^/\s()]+\/[^/\s():]+\.js)/);
+    return m ? m[1] : hit.trim().slice(0, 80);
+}
+
+export function installMediaWatch() {
+    if (typeof window === 'undefined' || typeof HTMLMediaElement === 'undefined') return null;
+    if (window.__yzMediaWatch) return window.__yzMediaWatch;
+    const log = [];
+    const push = (item) => { log.push(item); if (log.length > 40) log.shift(); };
+    const proto = HTMLMediaElement.prototype;
+    const origPlay = proto.play;
+    const origPause = proto.pause;
+    proto.play = function (...args) {
+        try {
+            if (!this.__yzOwn) push({ type: 'play', at: Date.now(), from: stackSource(), src: String(this.currentSrc || this.src || '').slice(0, 90), muted: !!this.muted });
+        } catch (_e) { /* ignore */ }
+        return origPlay.apply(this, args);
+    };
+    proto.pause = function (...args) {
+        try {
+            if (this.__yzOwn && !this.__yzSelfPause) push({ type: 'pause-ours', at: Date.now(), from: stackSource() });
+        } catch (_e) { /* ignore */ }
+        return origPause.apply(this, args);
+    };
+    window.__yzMediaWatch = {
+        log,
+        recent(ms = 3000) {
+            const now = Date.now();
+            return log.filter(item => now - item.at <= ms);
+        }
+    };
+    return window.__yzMediaWatch;
+}
+
 const uid = (prefix = 'id') => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 export class MusicData {
@@ -79,8 +120,12 @@ export class MusicData {
         this.storage = storage;
         this.api = new MusicApi(() => this.getNcmConfig());
 
+        this._watch = installMediaWatch();
         this.audioPlayer = new Audio();
+        this.audioPlayer.__yzOwn = true;
         this.audioPlayer.preload = 'auto';
+        this.lastInterruption = null;
+        this._interrupts = [];
         this.syncVolume();
 
         this.queue = [];
@@ -624,7 +669,7 @@ export class MusicData {
         this.lastError = '';
         this.currentLyrics = [];
         this._lastTime = 0;
-        this.audioPlayer.pause();
+        this._pauseAudio();
         this._saveQueue();
         this._notify();
 
@@ -747,7 +792,7 @@ export class MusicData {
             return;
         }
         const wasPlaying = this.isPlaying || !this.audioPlayer.paused;
-        this.audioPlayer.pause();
+        this._pauseAudio();
         this.isPlaying = false;
         this._userPaused = true;
         this._flushListen();
@@ -777,7 +822,7 @@ export class MusicData {
     stop(reason = 'stop') {
         const wasPlaying = this.isPlaying || !this.audioPlayer.paused;
         this._gen++;
-        this.audioPlayer.pause();
+        this._pauseAudio();
         this.audioPlayer.removeAttribute('src');
         try { this.audioPlayer.load(); } catch (_e) { /* ignore */ }
         this.isPlaying = false;
@@ -973,9 +1018,7 @@ export class MusicData {
         });
         audio.addEventListener('pause', () => {
             if (this.isPlaying && !this.isLoading && audio.paused && !audio.ended) {
-                // 系统级暂停（耳机拔出等）
-                this.isPlaying = false;
-                this._notify();
+                this._handleInterruption();
             }
         });
         audio.addEventListener('play', () => {
@@ -984,6 +1027,49 @@ export class MusicData {
                 this._notify();
             }
         });
+    }
+
+
+    _pauseAudio() {
+        const a = this.audioPlayer;
+        a.__yzSelfPause = true;
+        try { a.pause(); } finally { a.__yzSelfPause = false; }
+    }
+
+    /** 不是我们自己暂停的：先自动续播，连续被打断再停下并说明原因 */
+    _handleInterruption() {
+        const audio = this.audioPlayer;
+        const now = Date.now();
+        this._interrupts = this._interrupts.filter(t => now - t < 20000);
+        this._interrupts.push(now);
+        const recent = this._watch?.recent?.(2500) || [];
+        const byPause = [...recent].reverse().find(x => x.type === 'pause-ours');
+        const byPlay = [...recent].reverse().find(x => x.type === 'play');
+        let who = '';
+        if (byPause) who = `「${byPause.from || '未知脚本'}」暂停了音乐`;
+        else if (byPlay) who = `「${byPlay.from || byPlay.src || '未知脚本'}」同时播放了声音${byPlay.muted ? '（静音）' : ''}`;
+        this.lastInterruption = { at: now, who, recent: recent.map(x => ({ ...x })), song: this.getCurrentSong()?.name || '' };
+        console.warn('🎵 [音乐] 播放被意外打断', who || '（未找到来源，可能是系统或其他标签页）', recent);
+
+        if (this._interrupts.length <= 3) {
+            setTimeout(() => {
+                if (!this.isPlaying || !audio.paused || audio.ended) return;
+                audio.play().catch(() => {
+                    this.isPlaying = false;
+                    this._notify();
+                });
+            }, 300);
+            return;
+        }
+        this.isPlaying = false;
+        this._interrupts = [];
+        this._notify();
+        this._notifyStopped('interrupted');
+        this._toast(who ? `音乐被打断：${who}` : '音乐反复被打断，可能有别的插件在放声音（比如后台保活）');
+    }
+
+    getInterruptionReport() {
+        return { last: this.lastInterruption, log: (this._watch?.log || []).slice(-15) };
     }
 
     _flushListen() {

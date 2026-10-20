@@ -11,6 +11,17 @@
  * ======================================================== */
 /* ========== 🎵 音乐 APP（网易云风格） ========== */
 
+/* 弹层和悬浮窗挂在 .mz-app 外面，变量要单独给一份 */
+.mz-app, .mz-overlay, .mz-float {
+    --mz-bg: #f3f4f8;
+    --mz-card: #ffffff;
+    --mz-text: #1b1c21;
+    --mz-sub: #8b8f9c;
+    --mz-line: rgba(20, 22, 30, 0.07);
+    --mz-red: #fc3d49;
+    --mz-red-soft: #ffe9eb;
+}
+
 .mz-app {
     --mz-bg: #f3f4f8;
     --mz-card: #ffffff;
@@ -728,3 +739,29 @@
     .mz-disc, .mz-vinyl, .mz-mini-disc, .mz-float-disc { animation: none !important; }
     .mz-sheet, .mz-overlay, .mz-thought { transition: none !important; }
 }
+
+/* ---------- 一起听：邀请 / 分享 ---------- */
+.mz-mode-switch { display: flex; gap: 10px; margin-top: 12px; }
+.mz-mode-switch button {
+    flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 12px; text-align: left;
+    border-radius: 12px; background: #f3f4f8; color: #4a4d58; border: 1.5px solid transparent;
+}
+.mz-mode-switch button.on { background: var(--mz-red-soft); border-color: var(--mz-red); color: var(--mz-red); }
+.mz-mode-switch span { display: flex; flex-direction: column; min-width: 0; }
+.mz-mode-switch b { font-size: 15px; }
+.mz-mode-switch small { font-size: 11px; color: var(--mz-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mz-seg[hidden], .mz-input[hidden] { display: none !important; }
+.mz-share-send .mz-btn { flex: 1 1 auto; }
+.mz-share-send .mz-input:not([hidden]) + .mz-btn { flex: 0 0 76px; }
+.mz-btn:disabled { opacity: 0.5; }
+.mz-together { font-weight: 600; color: var(--mz-red); font-variant-numeric: tabular-nums; }
+.mz-listen-hint { font-size: 11px; color: #b8a3a5; margin-top: -8px; }
+
+/* ---------- 播放诊断 ---------- */
+.mz-diag { font-size: 13px; line-height: 1.6; color: #3b3d46; }
+.mz-diag p { margin: 0 0 10px; }
+.mz-diag h5 { margin: 6px 0; font-size: 13px; color: var(--mz-sub); font-weight: 500; }
+.mz-diag-row { display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--mz-line); }
+.mz-diag-row time { flex: 0 0 auto; color: var(--mz-sub); font-variant-numeric: tabular-nums; }
+.mz-diag-row span { min-width: 0; word-break: break-all; }
+.mz-diag-row small { display: block; color: var(--mz-sub); font-size: 11px; }

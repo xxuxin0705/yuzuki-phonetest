@@ -19,10 +19,19 @@
 
 import { PLAY_MODES } from './music-data.js';
 import { MUSIC_TOPLISTS, MUSIC_HOT_KEYWORDS, MusicApi } from './music-api.js';
-import { listShareTargets, shareSongToWechat, inviteListenInWechat, normalizeAvatarPath } from './music-share.js';
+import { listShareTargets, shareSongToWechat, inviteListenInWechat, inviteListenInApp, normalizeAvatarPath } from './music-share.js';
 
-const CSS_VERSION = '2.0.0';
+const CSS_VERSION = '2.1.0';
 const FLOAT_POS_KEY = 'global_music_floating_position';
+const JOIN_DELAY = 2600;
+
+const fmtTogether = (ms) => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    return `${h}小时${String(m).padStart(2, '0')}分${String(sec).padStart(2, '0')}秒`;
+};
 
 const P = {
     menu: '<path d="M4 7h16M4 12h10M4 17h16"/>',
@@ -116,7 +125,6 @@ export class MusicView {
         this.homeDaily = null;
         this.listenFace = 'disc';
         this._listen = null;
-        this._listenJoinAt = 0;
         this._thoughtIdx = 0;
         this._thoughtTimer = null;
         this.localFiles = [];
@@ -193,7 +201,7 @@ export class MusicView {
         }
         const leaving = this.stack[this.stack.length - 1];
         if (leaving === 'music-login') this._stopQr();
-        if (leaving === 'music-listen') this._hideThought();
+        if (leaving === 'music-listen') { this._hideThought(); this._stopListenTimer(); }
         if (this.stack.length > 1) {
             this.stack.pop();
             const target = this.stack[this.stack.length - 1];
@@ -1067,6 +1075,7 @@ export class MusicView {
                             <span>音量</span>
                             <input class="mz-range" type="range" min="0" max="100" step="1" value="${Math.round(this.data.getVolume() * 100)}" data-input="volume">
                         </div>
+                        <button type="button" class="mz-cell" data-act="diagnose"><span>播放诊断<small>音乐播一下就停？看看是谁打断的</small></span><small>${this.data.lastInterruption ? '有记录' : ''}</small></button>
                         <button type="button" class="mz-cell" data-act="cycle-mode"><span>播放模式</span><small class="mz-mode-label">${esc(PLAY_MODES.find(m => m.id === this.data.getPlayMode())?.label || '')}</small></button>
                     </section>
                     <section class="mz-group">
@@ -1459,11 +1468,13 @@ export class MusicView {
 
         let partnerHtml;
         let status;
+        this._stopListenTimer();
         if (!session) {
             partnerHtml = `<button type="button" class="mz-listen-avatar empty" data-act="l-invite" aria-label="邀请好友">${ic('plus', 30)}</button>`;
             status = '<button type="button" class="mz-listen-status link" data-act="l-invite">邀请好友一起听</button>';
         } else {
-            const waiting = Date.now() < this._listenJoinAt;
+            const joinAt = Number(session.startedAt || Date.now()) + JOIN_DELAY;
+            const waiting = Date.now() < joinAt;
             const pAvatar = normalizeAvatarPath(session.contactAvatar)
                 || normalizeAvatarPath(wd?.getContactAutoAvatar?.(session.contactId || session.contactName)) || '';
             partnerHtml = `
@@ -1472,13 +1483,18 @@ export class MusicView {
                     ${waiting ? '<i class="mz-wait-dots"><b></b><b></b><b></b></i>' : ''}
                     <span class="mz-thought" hidden></span>
                 </button>`;
-            const minutes = Math.max(1, Math.round((Date.now() - Number(session.startedAt || Date.now())) / 60000));
-            status = waiting
-                ? `<span class="mz-listen-status">等待 ${esc(session.contactName)} 加入中…</span>`
-                : `<span class="mz-listen-status">和 ${esc(session.contactName)} 一起听了 ${minutes} 分钟 · 点头像戳一下</span>`;
             if (waiting) {
+                status = `<span class="mz-listen-status">等待 ${esc(session.contactName)} 加入中…</span>`;
                 clearTimeout(this._joinTimer);
-                this._joinTimer = setTimeout(() => this._paintListen(), Math.max(200, this._listenJoinAt - Date.now() + 50));
+                this._joinTimer = setTimeout(() => this._paintListen(), Math.max(200, joinAt - Date.now() + 50));
+            } else {
+                status = `<span class="mz-listen-status">和 ${esc(session.contactName)} 已一起听 <b class="mz-together" data-since="${joinAt}">${fmtTogether(Date.now() - joinAt)}</b></span>
+                    <span class="mz-listen-hint">点 TA 的头像戳一下</span>`;
+                this._listenTimer = setInterval(() => {
+                    const el = this._layer('music-listen')?.querySelector('.mz-together');
+                    if (!el) { this._stopListenTimer(); return; }
+                    el.textContent = fmtTogether(Date.now() - Number(el.dataset.since));
+                }, 1000);
             }
         }
         box.innerHTML = `
@@ -1498,6 +1514,132 @@ export class MusicView {
         this._listen = null;
         if (ended !== false) this.toast('已结束一起听');
         this._paintListen();
+    }
+
+
+    _stopListenTimer() {
+        clearInterval(this._listenTimer);
+        this._listenTimer = null;
+    }
+
+    /** 一起听：邀请（在音乐 App 里直接加入）/ 分享（发一张一起听卡片到私聊或群聊） */
+    async _listenSheet() {
+        const song = this.data.getCurrentSong();
+        const snapshot = this.data.getListeningSnapshot();
+        if (!song || !snapshot) {
+            this.toast('先播放一首歌，再邀请一起听');
+            return;
+        }
+        const overlay = this._openOverlay(`
+            <div class="mz-sheet-title">一起听</div>
+            ${this._sheetHeadHtml(song)}
+            <div class="mz-mode-switch">
+                <button type="button" class="on" data-lmode="invite">${ic('listen', 18)}<span><b>邀请</b><small>直接在这里一起听</small></span></button>
+                <button type="button" data-lmode="share">${ic('share', 18)}<span><b>分享</b><small>发卡片到私聊或群聊</small></span></button>
+            </div>
+            <div class="mz-seg in-sheet" data-lseg hidden>
+                <button type="button" class="on" data-ltab="singles">私聊</button>
+                <button type="button" data-ltab="groups">群聊</button>
+            </div>
+            <div class="mz-share-list mz-scroll"><div class="mz-loading"><i></i><i></i><i></i></div></div>
+            <div class="mz-share-send" hidden>
+                <input class="mz-input" data-ltext placeholder="说点什么（可选）" autocomplete="off" hidden>
+                <button type="button" class="mz-btn primary" data-lgo>邀请</button>
+            </div>`, { cls: 'tall' });
+        if (!overlay) return;
+
+        let targets;
+        try { targets = await listShareTargets(this.app.storage); } catch (_e) { targets = { singles: [], groups: [] }; }
+        if (!overlay.isConnected) return;
+
+        let mode = 'invite';
+        let tab = 'singles';
+        let picked = null;
+        const listEl = overlay.querySelector('.mz-share-list');
+        const sendBar = overlay.querySelector('.mz-share-send');
+        const textEl = overlay.querySelector('[data-ltext]');
+        const goBtn = overlay.querySelector('[data-lgo]');
+        const segEl = overlay.querySelector('[data-lseg]');
+        const paint = () => {
+            const items = mode === 'invite' ? targets.singles : (targets[tab] || []);
+            segEl.hidden = mode === 'invite';
+            textEl.hidden = mode === 'invite';
+            goBtn.textContent = mode === 'invite' ? `邀请${picked ? ` ${picked.name}` : ''}` : '发送';
+            sendBar.hidden = !picked;
+            listEl.innerHTML = items.length
+                ? items.map((t, i) => `
+                    <button type="button" class="mz-share-row ${picked === t ? 'on' : ''}" data-lidx="${i}">
+                        <span class="mz-share-avatar">${t.avatar ? `<img src="${esc(t.avatar)}" alt="">` : esc(Array.from(t.name || '?')[0])}</span>
+                        <span class="mz-share-name">${esc(t.name)}${t.kind === 'group' && t.memberCount ? `<small>${t.memberCount} 人</small>` : ''}</span>
+                        <i>${ic('check', 18)}</i>
+                    </button>`).join('')
+                : `<div class="mz-empty">${tab === 'groups' && mode === 'share' ? '微信里还没有群聊' : '微信里还没有好友'}</div>`;
+        };
+        paint();
+
+        overlay.addEventListener('click', async (e) => {
+            const modeBtn = e.target.closest('[data-lmode]');
+            if (modeBtn) {
+                mode = modeBtn.dataset.lmode;
+                overlay.querySelectorAll('[data-lmode]').forEach(b => b.classList.toggle('on', b === modeBtn));
+                picked = null;
+                paint();
+                return;
+            }
+            const tabBtn = e.target.closest('[data-ltab]');
+            if (tabBtn) {
+                tab = tabBtn.dataset.ltab;
+                overlay.querySelectorAll('[data-ltab]').forEach(b => b.classList.toggle('on', b === tabBtn));
+                picked = null;
+                paint();
+                return;
+            }
+            const row = e.target.closest('[data-lidx]');
+            if (row) {
+                const items = mode === 'invite' ? targets.singles : (targets[tab] || []);
+                picked = items[Number(row.dataset.lidx)] || null;
+                paint();
+                return;
+            }
+            if (!e.target.closest('[data-lgo]') || !picked) return;
+            goBtn.disabled = true;
+            try {
+                const snap = this.data.getListeningSnapshot();
+                if (mode === 'invite') {
+                    await inviteListenInApp(this.app.storage, picked, snap);
+                    this.toast(`已邀请 ${picked.name}，等待加入`);
+                } else {
+                    await inviteListenInWechat(this.app.storage, picked, snap);
+                    const text = textEl.value.trim();
+                    if (text) await shareSongToWechatTextOnly(this.app.storage, picked, text);
+                    this.toast(`一起听卡片已发给 ${picked.name}`);
+                }
+                this._closeOverlay();
+                await this._loadListenSession();
+                this._paintListen();
+            } catch (err) {
+                goBtn.disabled = false;
+                this.toast(err?.message || '操作失败');
+            }
+        });
+    }
+
+    _diagnoseSheet() {
+        const report = this.data.getInterruptionReport();
+        const last = report.last;
+        const time = (t) => new Date(t).toLocaleTimeString();
+        this._openOverlay(`
+            <div class="mz-sheet-title">播放诊断</div>
+            <div class="mz-diag mz-scroll">
+                ${last ? `<p><b>最近一次打断</b>（${time(last.at)}，${esc(last.song)}）<br>${esc(last.who || '没找到来源：可能是系统、来电或其他 App 抢了声音')}</p>`
+                    : '<p>还没有记录到播放被打断。</p>'}
+                <h5>最近的声音记录</h5>
+                ${report.log.length ? report.log.slice().reverse().map(x => `
+                    <div class="mz-diag-row"><time>${time(x.at)}</time>
+                    <span>${x.type === 'play' ? '播放' : '暂停音乐'} · ${esc(x.from || '未知')}${x.src ? `<small>${esc(x.src)}</small>` : ''}</span></div>`).join('')
+                    : '<p>暂无</p>'}
+                <p class="mz-help">如果“播放”记录里总出现同一个插件文件（比如后台保活、防休眠、背景音乐类插件），说明是它在 iPhone 上抢走了声音。可以先关掉它再试。</p>
+            </div>`, { cls: 'tall' });
     }
 
     // 戳一戳：只用本地已有信息拼出“心声”，不额外调用 API
@@ -1862,7 +2004,6 @@ export class MusicView {
                     if (mode === 'listen') {
                         await inviteListenInWechat(this.app.storage, picked, this.data.getListeningSnapshot());
                         if (text) await shareSongToWechatTextOnly(this.app.storage, picked, text);
-                        this._listenJoinAt = Date.now() + 2600;
                         this.toast(`已邀请 ${picked.name} 一起听`);
                         await this._loadListenSession();
                         this._paintListen();
@@ -2249,7 +2390,8 @@ export class MusicView {
             case 'p-share': this._shareSheet({ song: d.getCurrentSong(), mode: 'share' }); break;
             case 'p-listen': this.openListen(); break;
             case 'edit-cover': this._coverSheet(); break;
-            case 'l-invite': this._shareSheet({ song: d.getCurrentSong(), mode: 'listen' }); break;
+            case 'diagnose': this._diagnoseSheet(); break;
+            case 'l-invite': this._listenSheet(); break;
             case 'l-poke': this._poke(); break;
             case 'l-face': {
                 this.listenFace = el.dataset.v;
