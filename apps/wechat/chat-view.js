@@ -26,7 +26,6 @@ import {
     parseImagePromptDescriptionPair,
     readBalancedImagePromptGroup
 } from '../../config/image-prompt-format.js';
-import { CatboxData } from '../games/catbox/catbox-data.js';
 import { parseWangxiangTaskTags, tokenizeWangxiangTaskTags } from '../wangxiang/wangxiang-task-parser.js';
 import {
     parseWechatInnerThoughtContent,
@@ -4240,6 +4239,32 @@ renderChatRoom(chat) {
                 break;
             }
 
+            case 'music_share': {
+                const share = msg.musicShare || {};
+                const coverUrl = this._escapeHtml(share.cover || this._getDefaultMusicCover());
+                const fallbackCover = this._escapeHtml(this._getDefaultMusicCover());
+                const excerpt = Array.isArray(share.excerpt) ? share.excerpt.filter(line => line && line.txt).slice(0, 4) : [];
+                messageBody = `
+                    <div class="message-music-share" data-msg-id="${this._escapeAttr(msg.id || '')}" style="width:220px;max-width:100%;overflow:hidden;border-radius:10px;background:#fff;border:1px solid #ececec;cursor:pointer;">
+                        ${excerpt.length ? `<div style="padding:10px 12px 0;font-family:'Songti SC','Noto Serif SC',serif;font-size:13px;line-height:1.6;color:#2b2b2b;border-left:3px solid #fc3d49;margin:10px 10px 0;padding:2px 8px;">${excerpt.map(line => `<div>${this._escapeHtml(line.txt)}</div>`).join('')}</div>` : ''}
+                        ${share.note ? `<div style="margin:8px 12px 0;font-size:12px;color:#666;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${this._escapeHtml(share.note)}</div>` : ''}
+                        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
+                            <img src="${coverUrl}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${fallbackCover}'" style="width:44px;height:44px;border-radius:6px;object-fit:cover;flex:0 0 44px;">
+                            <div style="min-width:0;flex:1;">
+                                <div style="font-size:14px;font-weight:600;color:#1b1c21;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this._escapeHtml(share.songName || '未知歌曲')}</div>
+                                <div style="font-size:12px;color:#8b8f9c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this._escapeHtml(share.artist || '')}</div>
+                            </div>
+                            <span style="width:26px;height:26px;border-radius:50%;background:#fc3d49;display:flex;align-items:center;justify-content:center;flex:0 0 26px;"><svg viewBox="0 0 24 24" width="12" height="12"><path d="M8 5.5v13l10.5-6.5z" fill="#fff"/></svg></span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:5px;padding:5px 12px;border-top:1px solid #f0f0f0;background:#fafafa;">
+                            <span style="width:14px;height:14px;border-radius:50%;background:#fc3d49;"></span>
+                            <span style="font-size:11px;color:#999;">${excerpt.length ? '歌词摘录' : '音乐分享'}</span>
+                        </div>
+                    </div>
+                `;
+                break;
+            }
+
             case 'music_invite': {
                 const activeSession = this.app.wechatData.getMusicListening?.(this.app.currentChat?.id);
                 const invite = msg.musicInvite || {};
@@ -7265,6 +7290,16 @@ ${titleLines || '-（暂无其他成员）'}
         if (msg.type === 'music_listen') {
             return this._formatMusicListenMessageForPrompt(msg, targetChat);
         }
+        if (msg.type === 'music_share') {
+            const share = msg.musicShare || {};
+            const songText = share.artist ? `《${share.songName || '未知歌曲'}》 - ${share.artist}` : `《${share.songName || '未知歌曲'}》`;
+            const lines = Array.isArray(share.excerpt) ? share.excerpt.map(line => String(line?.txt || '').trim()).filter(Boolean) : [];
+            const who = msg.from === 'me' ? '用户' : (msg.from || '对方');
+            let text = `[分享音乐] ${who}分享了歌曲${songText}`;
+            if (lines.length) text += `，并摘录了歌词：「${lines.join(' / ')}」`;
+            if (share.note) text += `，附言：${String(share.note).trim()}`;
+            return text;
+        }
         if (msg.type === 'music_invite') {
             const invite = msg.musicInvite || {};
             const songName = String(invite.songName || msg.songName || '').trim() || '未知歌曲';
@@ -10028,8 +10063,9 @@ ${titleLines || '-（暂无其他成员）'}
     }
     _getCatboxData() {
         if (window.VirtualPhone?.gamesApp?.catboxData) return window.VirtualPhone.gamesApp.catboxData;
+        // 游戏（猫盒）已移除：返回空实现，旧聊天记录里的卡片仍可正常显示
         if (!this._catboxData) {
-            this._catboxData = new CatboxData(this.app?.storage || window.VirtualPhone?.storage);
+            this._catboxData = { getState: () => ({}), acceptCoAdopt() {}, rejectCoAdopt() {}, applyFriendItemUse: () => ({ success: false }), getCoAdoptContextForChat: () => '' };
         }
         return this._catboxData;
     }
@@ -10202,6 +10238,20 @@ ${titleLines || '-（暂无其他成员）'}
                 }
                 const messageId = e.currentTarget.dataset.msgId;
                 if (messageId) this.openUndercoverCard(messageId);
+            });
+        });
+        currentView.querySelectorAll('.message-music-share').forEach(card => {
+            card.addEventListener('click', async (e) => {
+                if (this._isMessageSelectionActiveForCurrentChat()) return;
+                const messageId = e.currentTarget.dataset.msgId;
+                const chatId = this.app.currentChat?.id || '';
+                const message = (this.app.wechatData.getMessages(chatId) || []).find(item => String(item?.id || '') === String(messageId));
+                const share = message?.musicShare;
+                if (!share?.songName) return;
+                const musicApp = await this._ensureMusicAppForInvite();
+                const song = { id: share.songId || '', name: share.songName, artist: share.artist || '', album: share.album || '', pic: share.cover || '' };
+                await musicApp?.musicData?.playSong?.(song);
+                this.app.phoneShell?.showNotification?.('音乐', `正在播放《${share.songName}》`, '🎵');
             });
         });
         currentView.querySelectorAll('.message-music-listen-cancel').forEach(btn => {
@@ -12226,7 +12276,7 @@ ${titleLines || '-（暂无其他成员）'}
         const currentView = this.getCurrentWechatView();
         const messagesDiv = currentView?.querySelector('#chat-messages');
         if (!messagesDiv) return;
-        const longPressBubbleSelector = '.message-text, .message-voice, .message-image-box, .message-redpacket, .message-transfer, .message-location, .message-call-record, .message-call-text, .message-sticker-box, .message-weibo-card, .message-x-card, .message-wangxiang-task-card, .message-poker-card, .message-werewolf-card, .message-undercover-card, .message-music-card, .message-music-listen-card';
+        const longPressBubbleSelector = '.message-text, .message-voice, .message-image-box, .message-redpacket, .message-transfer, .message-location, .message-call-record, .message-call-text, .message-sticker-box, .message-weibo-card, .message-x-card, .message-wangxiang-task-card, .message-poker-card, .message-werewolf-card, .message-undercover-card, .message-music-card, .message-music-listen-card, .message-music-share';
         const resolveMessageIndexFromElement = (msgElement) => {
             const messages = this.app?.wechatData?.getMessages?.(this.app?.currentChat?.id) || [];
             const domIndex = Number.parseInt(msgElement?.dataset?.messageIndex || '', 10);
@@ -15353,7 +15403,9 @@ ${titleLines || '-（暂无其他成员）'}
 
         const lines = [
             '【一起听歌状态】',
-            `${userName} 已邀请微信好友“${otherName}”一起听歌，双方当前仍处于一起听歌状态。`,
+            targetChat.type === 'group'
+                ? `${userName} 在群聊“${targetChat.name || otherName}”里发起了一起听歌，群成员当前可以一起听。`
+                : `${userName} 已邀请微信好友“${otherName}”一起听歌，双方当前仍处于一起听歌状态。`,
             `当前实时播放歌曲：《${songName}》`,
             `歌手/演唱者：${artist}`,
             `当前播放位置：${currentTime}${duration ? ` / ${duration}` : ''}`
@@ -16494,7 +16546,7 @@ ${titleLines || '-（暂无其他成员）'}
         if (!contentEl) return;
 
         // 找到气泡元素（包括图片）
-        const bubbleEl = contentEl.querySelector('.message-text, .message-voice, .message-redpacket, .message-image-box, .message-transfer, .message-location, .message-call-record, .message-call-text, .message-sticker-box, .message-weibo-card, .message-x-card, .message-wangxiang-task-card, .message-poker-card, .message-werewolf-card, .message-undercover-card, .message-music-card, .message-music-listen-card');
+        const bubbleEl = contentEl.querySelector('.message-text, .message-voice, .message-redpacket, .message-image-box, .message-transfer, .message-location, .message-call-record, .message-call-text, .message-sticker-box, .message-weibo-card, .message-x-card, .message-wangxiang-task-card, .message-poker-card, .message-werewolf-card, .message-undercover-card, .message-music-card, .message-music-listen-card, .message-music-share');
         if (!bubbleEl) return;
 
         const isTextMessage = message.type === 'text' || !message.type;

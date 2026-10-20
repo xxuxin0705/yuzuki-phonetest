@@ -1,705 +1,921 @@
 /* ========================================================
  *  柚月小手机 (Yuzuki's Little Phone)
  *  作者 (Author): yuzuki
- * 
+ *
  * ⚠️ 版权声明 (Copyright Notice):
  * 1. 禁止商业化：本项目仅供交流学习，严禁任何形式的倒卖、盈利等商业行为。
  * 2. 禁止二改发布：严禁未经授权修改代码后作为独立项目二次发布或分发。
  * 3. 禁止抄袭：严禁盗用本项目的核心逻辑、UI设计与相关原代码。
- * 
+ *
  * Copyright (c) yuzuki. All rights reserved.
  * ======================================================== */
 // ========================================
-// 🎵 音乐APP - 数据层
+// 🎵 音乐APP - 数据层（播放引擎 + 曲库）
+// ----------------------------------------
+// global_music_*  跨会话共享（喜欢、歌单、笔记、登录态…）
+// music_*         当前聊天专属（TA 推荐的歌、音乐状态卡片、悬浮窗开关）
 // ========================================
 
-const MUSIC_EXTERNAL_SOURCE_URL = 'https://drive.baibai.cv/f/ZKEBuW/Music.js';
-const MUSIC_EXTERNAL_SOURCE_ID = 'st-phone-baibai-music-source';
-const MUSIC_VOLUME_STORAGE_KEY = 'global_music_volume';
+import { MusicApi } from './music-api.js';
+
+export const PLAY_MODES = [
+    { id: 'loop', label: '列表循环' },
+    { id: 'order', label: '顺序播放' },
+    { id: 'shuffle', label: '随机播放' },
+    { id: 'single', label: '单曲循环' }
+];
+
+const KEYS = {
+    liked: 'global_music_liked',
+    legacyFavorites: 'global_music_favorites',
+    playlists: 'global_music_playlists',
+    collected: 'global_music_collected',
+    history: 'global_music_history',
+    notes: 'global_music_notes',
+    profile: 'global_music_profile',
+    ncm: 'global_music_ncm',
+    mode: 'global_music_play_mode',
+    volume: 'global_music_volume',
+    listenSeconds: 'global_music_listen_seconds',
+    searchHistory: 'global_music_search_history',
+    recentLists: 'global_music_recent_lists',
+    queue: 'global_music_queue',
+    covers: 'global_music_covers',
+    // 当前聊天专属
+    recs: 'music_playlist',
+    card: 'music_card_data',
+    autoPlay: 'music_auto_play'
+};
+
+const cleanText = (value = '') => String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/｜/g, '|')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const stripWrappers = (value = '') => {
+    let text = cleanText(value)
+        .replace(/^\s*(?:-|--|—|–)?\s*by\s+/i, '')
+        .replace(/\s*(?:-|--|—|–)?\s*by\s*$/i, '')
+        .trim();
+    const pairs = [['【', '】'], ['《', '》'], ['〈', '〉'], ['「', '」'], ['『', '』'], ['[', ']'], ['(', ')'], ['（', '）'], ['"', '"'], ["'", "'"]];
+    let changed = true;
+    while (changed && text.length > 1) {
+        changed = false;
+        for (const [l, r] of pairs) {
+            if (text.startsWith(l) && text.endsWith(r)) {
+                text = text.slice(l.length, -r.length).trim();
+                changed = true;
+            }
+        }
+    }
+    return text;
+};
+
+const uid = (prefix = 'id') => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 export class MusicData {
     constructor(storage) {
         this.storage = storage;
+        this.api = new MusicApi(() => this.getNcmConfig());
+
         this.audioPlayer = new Audio();
+        this.audioPlayer.preload = 'auto';
         this.syncVolume();
-        this.audioPlayer.loop = this.getPlaybackMode() === 'repeat-one';
-        this._playlist = null;     // lazy load，存储键 music_playlist
-        this._favorites = null;    // 收藏夹列表
-        this._favoritesGlobalKey = 'global_music_favorites'; // 全局共享（跨会话）
-        this._favoritesLegacyChatKey = 'music_favorites';    // 旧版：按会话存储
-        this.activeListType = 'playlist'; // 当前激活的播放列表 ('playlist' 待播清单 或 'favorites' 收藏夹)
+
+        this.queue = [];
         this.currentIndex = -1;
         this.isPlaying = false;
-        this._cardData = null;     // 最新一楼的 <Music> 解析数据
-        this.onStateChange = null; // UI更新回调
-        this._failedSongs = new Map(); // 获取失败的歌曲，短时间内防止无限重试
-        this._playLock = false;    // 防止并发播放请求
-        this._playGeneration = 0;  // 播放请求代次，用于取消过期请求
-        this._userPaused = false;  // 记录用户是否手动按了暂停
-        this._prefetching = new Set(); // 预取中的歌曲，避免重复请求
-        this._lyricCache = new Map(); // 歌词缓存，避免同一首歌重复请求
-        this._externalMusicSourcePromise = null; // 备用音乐源懒加载任务
-        this._autoRetryingSongs = new WeakSet(); // 自动修复中的歌曲，仅保留在内存
-        this._lastAutoRetryAt = new WeakMap(); // 最近一次失败修复时间，防止快速循环
-        this._recoveryRequestedGeneration = -1; // 同一播放代次只触发一次自动修复
+        this.isLoading = false;
+        this.lastError = '';
+        this.currentLyrics = [];
+        this.onStateChange = null;
         this.onPlaybackStopped = null;
+        this.onTimeUpdate = null;
+        this.onToast = null;
 
-        // 音频事件绑定
-        this.audioPlayer.addEventListener('ended', () => this._onTrackEnded());
-        this.audioPlayer.addEventListener('error', (e) => {
-            console.warn('🎵 [音乐] 播放出错:', e);
-            const playWasPending = this._playLock;
-            this.isPlaying = false;
-            this._playLock = false;
+        this._gen = 0;
+        this._userPaused = false;
+        this._shuffleBag = [];
+        this._shuffleHistory = [];
+        this._consecutiveFailures = 0;
+        this._lastTime = 0;
+        this._pendingListen = 0;
+        this._cache = {};
+        this._cardData = null;
 
-            const song = this.getCurrentSong();
-            if (song && this.currentIndex >= 0 && !this._userPaused) {
-                if (playWasPending) {
-                    this._notifyStateChange();
-                    return;
-                }
-                console.log(`🎵 [音乐] 检测到链接不可播放，尝试自动修复: ${song.name}`);
-                this._requestPlaybackRecovery(
-                    song,
-                    this.currentIndex,
-                    this.activeListType,
-                    this._playGeneration
-                );
-            } else {
-                this._notifyStateChange();
-            }
-        });
+        this._restoreQueue();
+        this._bindAudio();
     }
 
-    // ========== 歌单管理 ==========
+    // ================= 存储工具 =================
+
+    _read(key, fallback) {
+        if (Object.prototype.hasOwnProperty.call(this._cache, key)) return this._cache[key];
+        let value = this.storage?.get?.(key, null);
+        if (typeof value === 'string' && value) {
+            try { value = JSON.parse(value); } catch (_e) { /* 保留原字符串 */ }
+        }
+        if (value === null || value === undefined || value === '') value = fallback;
+        this._cache[key] = value;
+        return value;
+    }
+
+    _write(key, value) {
+        this._cache[key] = value;
+        this.storage?.set?.(key, JSON.stringify(value));
+    }
+
+    _isChatKey(key) {
+        return /^music_/.test(key);
+    }
+
+    // ================= 歌曲工具 =================
+
+    normalizeSong(raw = {}) {
+        const song = {
+            id: raw.id ? String(raw.id) : '',
+            name: stripWrappers(raw.name || raw.songName || ''),
+            artist: stripWrappers(raw.artist || '') || '未知歌手',
+            album: cleanText(raw.album || ''),
+            pic: String(raw.pic || raw.cover || '').trim(),
+            duration: Number(raw.duration || 0) || 0
+        };
+        if (raw.localUrl) {
+            song.localUrl = raw.localUrl;
+            song.local = true;
+        }
+        return song;
+    }
+
+    songKey(song) {
+        if (!song) return '';
+        if (song.id) return `id:${song.id}`;
+        const norm = (v) => stripWrappers(v).toLowerCase().replace(/[\s【】《》〈〉「」『』[\]（）()"'“”‘’]/g, '');
+        return `n:${norm(song.name)}|${norm(song.artist)}`;
+    }
+
+    sameSong(a, b) {
+        if (!a || !b) return false;
+        if (a.id && b.id) return String(a.id) === String(b.id);
+        const ka = this.songKey({ name: a.name, artist: a.artist });
+        const kb = this.songKey({ name: b.name, artist: b.artist });
+        return ka === kb;
+    }
+
+    _storable(song) {
+        const { localUrl, ...rest } = this.normalizeSong(song);
+        return rest;
+    }
+
+    // ================= 网易云配置 =================
+
+    getNcmConfig() {
+        const cfg = this._read(KEYS.ncm, {}) || {};
+        return typeof cfg === 'object' ? cfg : {};
+    }
+
+    setNcmConfig(patch = {}) {
+        const next = { ...this.getNcmConfig(), ...patch };
+        this._write(KEYS.ncm, next);
+        this._notify();
+        return next;
+    }
+
+    isLoggedIn() {
+        return this.api.isLoggedIn() && !!this.getNcmConfig().profile;
+    }
+
+    async refreshAccount() {
+        if (!this.api.isLoggedIn()) return null;
+        const profile = await this.api.loginStatus();
+        if (!profile) {
+            this.setNcmConfig({ cookie: '', profile: null, stats: null, cloudPlaylists: [] });
+            return null;
+        }
+        let stats = null;
+        let cloudPlaylists = [];
+        let likeIds = [];
+        try { stats = await this.api.userDetail(profile.userId); } catch (_e) { /* 可选 */ }
+        try { cloudPlaylists = await this.api.userPlaylists(profile.userId); } catch (_e) { /* 可选 */ }
+        try {
+            const json = await this.api.ncm('/likelist', { uid: profile.userId });
+            likeIds = (json?.ids || []).map(String);
+        } catch (_e) { /* 可选 */ }
+        this.setNcmConfig({ profile, stats, cloudPlaylists, likeIds, syncedAt: Date.now() });
+        return profile;
+    }
+
+    async logout() {
+        await this.api.logout();
+        this.setNcmConfig({ cookie: '', profile: null, stats: null, cloudPlaylists: [], likeIds: [] });
+    }
+
+    // ================= 资料 =================
+
+    getProfile() {
+        const saved = this._read(KEYS.profile, {}) || {};
+        return typeof saved === 'object' ? saved : {};
+    }
+
+    setProfile(patch = {}) {
+        this._write(KEYS.profile, { ...this.getProfile(), ...patch });
+        this._notify();
+    }
+
+    getListenHours() {
+        const seconds = Number(this._read(KEYS.listenSeconds, 0)) || 0;
+        return Math.floor((seconds + this._pendingListen) / 3600);
+    }
+
+    // ================= 喜欢 =================
+
+    getLiked() {
+        let liked = this._read(KEYS.liked, null);
+        if (!Array.isArray(liked)) {
+            // 迁移旧版收藏
+            const legacy = this._read(KEYS.legacyFavorites, []);
+            liked = Array.isArray(legacy) ? legacy.map(s => this._storable(s)).filter(s => s.name).reverse() : [];
+            this._write(KEYS.liked, liked);
+        }
+        return liked;
+    }
+
+    isLiked(song) {
+        if (!song) return false;
+        const ids = this.getNcmConfig().likeIds;
+        if (song.id && Array.isArray(ids) && ids.includes(String(song.id))) return true;
+        return this.getLiked().some(s => this.sameSong(s, song));
+    }
+
+    toggleLike(song) {
+        if (!song?.name) return false;
+        const liked = this.getLiked().slice();
+        const index = liked.findIndex(s => this.sameSong(s, song));
+        const nextLiked = index < 0;
+        if (index >= 0) liked.splice(index, 1);
+        else liked.unshift(this._storable(song));
+        this._write(KEYS.liked, liked);
+
+        if (song.id && this.api.isLoggedIn()) {
+            const cfg = this.getNcmConfig();
+            const ids = new Set((cfg.likeIds || []).map(String));
+            if (nextLiked) ids.add(String(song.id)); else ids.delete(String(song.id));
+            this.setNcmConfig({ likeIds: [...ids] });
+            this.api.likeSong(song.id, nextLiked);
+        }
+        this._notify();
+        return nextLiked;
+    }
+
+    // 旧接口兼容（微信一起听会读取）
+    getFavorites() {
+        return this.getLiked();
+    }
+
+    // ================= 自建歌单 =================
+
+    getUserPlaylists() {
+        const list = this._read(KEYS.playlists, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    getUserPlaylist(id) {
+        return this.getUserPlaylists().find(p => p.id === id) || null;
+    }
+
+    createPlaylist(name) {
+        const title = cleanText(name).slice(0, 40);
+        if (!title) return null;
+        const list = this.getUserPlaylists().slice();
+        const playlist = { id: uid('pl'), name: title, songs: [], createdAt: Date.now() };
+        list.unshift(playlist);
+        this._write(KEYS.playlists, list);
+        this._notify();
+        return playlist;
+    }
+
+    renamePlaylist(id, name) {
+        const title = cleanText(name).slice(0, 40);
+        if (!title) return;
+        const list = this.getUserPlaylists().map(p => (p.id === id ? { ...p, name: title } : p));
+        this._write(KEYS.playlists, list);
+        this._notify();
+    }
+
+    deletePlaylist(id) {
+        this._write(KEYS.playlists, this.getUserPlaylists().filter(p => p.id !== id));
+        this._notify();
+    }
+
+    addToPlaylist(id, song) {
+        let added = false;
+        const list = this.getUserPlaylists().map(p => {
+            if (p.id !== id) return p;
+            if ((p.songs || []).some(s => this.sameSong(s, song))) return p;
+            added = true;
+            return { ...p, songs: [this._storable(song), ...(p.songs || [])] };
+        });
+        this._write(KEYS.playlists, list);
+        this._notify();
+        return added;
+    }
+
+    removeFromPlaylist(id, song) {
+        const list = this.getUserPlaylists().map(p => (
+            p.id === id ? { ...p, songs: (p.songs || []).filter(s => !this.sameSong(s, song)) } : p
+        ));
+        this._write(KEYS.playlists, list);
+        this._notify();
+    }
+
+    // ================= 自定义歌单封面 =================
+
+    getCover(key) {
+        const map = this._read(KEYS.covers, {}) || {};
+        return typeof map === 'object' ? String(map[key] || '') : '';
+    }
+
+    setCover(key, url) {
+        const map = { ...(this._read(KEYS.covers, {}) || {}) };
+        if (url) map[key] = String(url);
+        else delete map[key];
+        this._write(KEYS.covers, map);
+        this._notify();
+    }
+
+    // ================= 收藏的网易云歌单 =================
+
+    getCollected() {
+        const list = this._read(KEYS.collected, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    isCollected(id) {
+        return this.getCollected().some(p => String(p.id) === String(id));
+    }
+
+    toggleCollect(info) {
+        if (!info?.id) return false;
+        const list = this.getCollected().slice();
+        const index = list.findIndex(p => String(p.id) === String(info.id));
+        if (index >= 0) {
+            list.splice(index, 1);
+            this.api.subscribePlaylist(info.id, false);
+        } else {
+            list.unshift({
+                id: String(info.id), name: info.name || '歌单', cover: info.cover || '',
+                count: info.count || 0, creator: info.creator || '', collectedAt: Date.now()
+            });
+            this.api.subscribePlaylist(info.id, true);
+        }
+        this._write(KEYS.collected, list);
+        this._notify();
+        return index < 0;
+    }
+
+    touchRecentList(ref) {
+        if (!ref?.key) return;
+        const list = (this._read(KEYS.recentLists, []) || []).filter(item => item.key !== ref.key);
+        list.unshift({ ...ref, at: Date.now() });
+        this._write(KEYS.recentLists, list.slice(0, 12));
+    }
+
+    getRecentLists() {
+        const list = this._read(KEYS.recentLists, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    // ================= 历史 / 搜索记录 =================
+
+    getHistory() {
+        const list = this._read(KEYS.history, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    _addHistory(song) {
+        if (!song?.name || song.local) return;
+        const list = this.getHistory().filter(s => !this.sameSong(s, song));
+        list.unshift({ ...this._storable(song), playedAt: Date.now() });
+        this._write(KEYS.history, list.slice(0, 100));
+    }
+
+    clearHistory() {
+        this._write(KEYS.history, []);
+        this._notify();
+    }
+
+    getSearchHistory() {
+        const list = this._read(KEYS.searchHistory, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    addSearchHistory(word) {
+        const value = cleanText(word);
+        if (!value) return;
+        const list = this.getSearchHistory().filter(item => item !== value);
+        list.unshift(value);
+        this._write(KEYS.searchHistory, list.slice(0, 12));
+    }
+
+    clearSearchHistory() {
+        this._write(KEYS.searchHistory, []);
+    }
+
+    // ================= 笔记（歌词摘录） =================
+
+    getNotes() {
+        const list = this._read(KEYS.notes, []);
+        return Array.isArray(list) ? list : [];
+    }
+
+    addNote({ song, lines = [], note = '', position = 0 }) {
+        if (!song?.name) return null;
+        const item = {
+            id: uid('note'),
+            song: this._storable(song),
+            lines: lines.map(line => ({ txt: cleanText(line.txt), tr: cleanText(line.tr || ''), t: Number(line.t) || 0 })).filter(l => l.txt).slice(0, 12),
+            note: String(note || '').trim().slice(0, 500),
+            position: Number(position) || 0,
+            createdAt: Date.now()
+        };
+        const list = this.getNotes().slice();
+        list.unshift(item);
+        this._write(KEYS.notes, list.slice(0, 300));
+        this._notify();
+        return item;
+    }
+
+    deleteNote(id) {
+        this._write(KEYS.notes, this.getNotes().filter(n => n.id !== id));
+        this._notify();
+    }
+
+    // ================= TA 的推荐（当前聊天专属，兼容旧接口） =================
 
     getPlaylist() {
-        if (this._playlist === null) {
-            const saved = this.storage.get('music_playlist', null);
-            if (saved) {
-                try {
-                    this._playlist = typeof saved === 'string' ? JSON.parse(saved) : saved;
-                } catch (e) {
-                    this._playlist = [];
-                }
-            } else {
-                this._playlist = [];
-            }
-        }
-        return this._playlist;
+        const list = this._read(KEYS.recs, []);
+        return Array.isArray(list) ? list : [];
     }
 
     savePlaylist() {
-        this.storage.set('music_playlist', JSON.stringify(this._playlist || []));
-    }
-
-    // ========== 收藏夹管理 ==========
-    getFavorites() {
-        if (this._favorites === null) {
-            // 1) 优先读取全局收藏（跨会话共享）
-            let saved = this.storage.get(this._favoritesGlobalKey, null);
-
-            // 2) 兼容旧版：若全局为空，回退读取旧会话收藏并迁移到全局
-            if (!saved) {
-                saved = this.storage.get(this._favoritesLegacyChatKey, null);
-                if (saved) {
-                    this.storage.set(this._favoritesGlobalKey, saved);
-                }
-            }
-
-            if (saved) {
-                try { this._favorites = typeof saved === 'string' ? JSON.parse(saved) : saved; }
-                catch (e) { this._favorites = []; }
-            } else {
-                this._favorites = [];
-            }
-        }
-        return this._favorites;
-    }
-
-    saveFavorites() {
-        this.storage.set(this._favoritesGlobalKey, JSON.stringify(this._favorites || []));
-    }
-
-    toggleFavorite(song) {
-        const favs = this.getFavorites();
-        const targetKey = this._getSongDedupKey(song?.name, song?.artist);
-        const index = favs.findIndex(s => this._getSongDedupKey(s?.name, s?.artist) === targetKey);
-        if (index > -1) {
-            favs.splice(index, 1);
-        } else {
-            const normalized = this._normalizeSongRecord(song?.name, song?.artist, song || {});
-            if (normalized.name) favs.push({ ...song, ...normalized });
-        }
-        this.saveFavorites();
-        this._notifyStateChange();
-    }
-
-    isFavorite(song) {
-        const targetKey = this._getSongDedupKey(song?.name, song?.artist);
-        return this.getFavorites().some(s => this._getSongDedupKey(s?.name, s?.artist) === targetKey);
-    }
-
-    getActiveList() {
-        return this.activeListType === 'favorites' ? this.getFavorites() : this.getPlaylist();
-    }
-
-    _cleanSongText(value = '') {
-        let text = String(value || '')
-            .replace(/[\u200B-\u200D\uFEFF]/g, '')
-            .replace(/｜/g, '|')
-            .replace(/\s+/g, ' ')
-            .trim();
-        text = text
-            .replace(/^\s*(?:-|--|—|–)?\s*by\s+/i, '')
-            .replace(/\s*(?:-|--|—|–)?\s*by\s*$/i, '')
-            .trim();
-        let changed = true;
-        while (changed && text.length > 1) {
-            changed = false;
-            const pairs = [
-                ['【', '】'],
-                ['《', '》'],
-                ['〈', '〉'],
-                ['「', '」'],
-                ['『', '』'],
-                ['[', ']'],
-                ['(', ')'],
-                ['（', '）'],
-                ['"', '"'],
-                ["'", "'"]
-            ];
-            for (const [left, right] of pairs) {
-                if (text.startsWith(left) && text.endsWith(right)) {
-                    text = text.slice(left.length, -right.length).trim();
-                    changed = true;
-                }
-            }
-        }
-        return text;
-    }
-
-    _normalizeSongDedupPart(value = '') {
-        return this._cleanSongText(value)
-            .toLowerCase()
-            .replace(/[【】《》〈〉「」『』\[\]（）()"'“”‘’]/g, '')
-            .replace(/\s+/g, '')
-            .trim();
-    }
-
-    _getSongDedupKey(name = '', artist = '') {
-        const songName = this._normalizeSongDedupPart(name);
-        const artistName = this._normalizeSongDedupPart(artist);
-        return `${songName}|${artistName}`;
-    }
-
-    _normalizeSongRecord(name, artist, meta = {}) {
-        return {
-            name: this._cleanSongText(name),
-            artist: this._cleanSongText(artist || '未知') || '未知',
-            id: meta.id || null,
-            url: meta.url || null,
-            pic: meta.pic || null,
-            lrc: Array.isArray(meta.lrc) ? meta.lrc : null
-        };
-    }
-
-    addSong(name, artist, meta = {}) {
-        const playlist = this.getPlaylist();
-        const record = this._normalizeSongRecord(name, artist, meta);
-        if (!record.name) return false;
-
-        // 去重
-        const nextKey = this._getSongDedupKey(record.name, record.artist);
-        const exists = playlist.some(s => this._getSongDedupKey(s?.name, s?.artist) === nextKey);
-        if (exists) return false;
-
-        playlist.push(record);
-        this.savePlaylist();
-
-        // 🔥 修复核心：新歌加入时，绝不允许打断当前正在播放的歌曲！
-        // 只有当：目前完全没在播放、没在加载、开启了连播、悬浮窗在、且用户没有主动按过暂停，才自动播放新歌
-        const isFloatingEnabled = this.storage.get('music_show_floating', false);
-        
-        // 只有当前什么声音都没有的时候，才允许触发自动播放
-        if (!this.isPlaying && !this._playLock && this.getAutoPlay() && isFloatingEnabled && !this._userPaused) {
-            // 如果连播是开的，自动播放最新添加的一首
-            this.play(playlist.length - 1);
-        } else {
-            // 如果没满足自动播放条件（例如关闭了连播，或者正在播放中），仅仅通知 UI 刷新，绝不触碰音频状态
-            this._notifyStateChange();
-        }
-        return true;
-    }
-
-    async playSongByName(name, artist, meta = {}) {
-        const safeName = this._cleanSongText(name);
-        const safeArtist = this._cleanSongText(artist);
-        if (!safeName) return false;
-
-        this.activeListType = 'playlist';
-        const playlist = this.getPlaylist();
-        const targetKey = this._getSongDedupKey(safeName, safeArtist || '未知');
-        let index = playlist.findIndex(song => this._getSongDedupKey(song?.name, song?.artist || '未知') === targetKey);
-
-        if (index < 0) {
-            playlist.push(this._normalizeSongRecord(safeName, safeArtist || '未知', meta));
-            index = playlist.length - 1;
-            this.savePlaylist();
-        }
-
-        await this.play(index, 'playlist');
-        return this.getPlaylist()[index] || null;
-    }
-
-    removeSong(index) {
-        const playlist = this.getPlaylist();
-        if (index < 0 || index >= playlist.length) return;
-
-        const wasPlaying = this.isPlaying && this.currentIndex === index;
-        playlist.splice(index, 1);
-
-        if (wasPlaying) {
-            this.audioPlayer.pause();
-            this.isPlaying = false;
-            // 尝试播放下一首
-            if (playlist.length > 0) {
-                this.currentIndex = Math.min(index, playlist.length - 1);
-                this.play(this.currentIndex);
-            } else {
-                this.currentIndex = -1;
-            }
-        } else if (this.currentIndex > index) {
-            this.currentIndex--;
-        } else if (this.currentIndex >= playlist.length) {
-            this.currentIndex = playlist.length - 1;
-        }
-
-        this.savePlaylist();
-        this._notifyStateChange();
+        this._write(KEYS.recs, this.getPlaylist());
     }
 
     clearPlaylist() {
-        const wasPlaying = this.activeListType === 'playlist' && (this.isPlaying || !this.audioPlayer.paused);
-        this._playlist = [];
-        // 仅当当前激活列表就是歌单时，才重置播放状态
-        if (this.activeListType === 'playlist') {
-            this.currentIndex = -1;
-            this.audioPlayer.pause();
-            this.audioPlayer.src = '';
-            this.isPlaying = false;
-            this._userPaused = false; // 🔥 新增：重置标记
-        }
-        this.savePlaylist();
-        this._notifyStateChange();
-        if (wasPlaying) this._notifyPlaybackStopped('clear_playlist');
+        this._write(KEYS.recs, []);
+        this._notify();
     }
 
-    clearFavorites() {
-        const wasPlaying = this.activeListType === 'favorites' && (this.isPlaying || !this.audioPlayer.paused);
-        this._favorites = [];
-        // 仅当当前激活列表就是收藏时，才重置播放状态
-        if (this.activeListType === 'favorites') {
-            this.currentIndex = -1;
-            this.audioPlayer.pause();
-            this.audioPlayer.src = '';
-            this.isPlaying = false;
-            this._userPaused = false;
+    /** AI 推荐歌曲入列（index.js 调用）。返回是否为新歌 */
+    addSong(name, artist, meta = {}) {
+        const song = this.normalizeSong({ ...meta, name, artist });
+        if (!song.name) return false;
+        const list = this.getPlaylist().slice();
+        if (list.some(s => this.sameSong(s, song))) return false;
+        list.push(song);
+        this._write(KEYS.recs, list.slice(-60));
+
+        const floating = this.storage?.get?.('music_show_floating', false);
+        if (!this.isPlaying && !this.isLoading && this.getAutoPlay() && floating && !this._userPaused) {
+            this.playSong(song, { auto: true });
+        } else {
+            this._notify();
         }
-        this.saveFavorites();
-        this._notifyStateChange();
-        if (wasPlaying) this._notifyPlaybackStopped('clear_favorites');
-    }
-
-    async searchSongs(query, options = {}) {
-        if (!query || query.trim() === '') {
-            return [];
-        }
-        try {
-            const searchQuery = encodeURIComponent(query);
-            const limit = Math.max(1, Math.min(80, Number.parseInt(options.limit, 10) || 50));
-            const pageSize = Math.max(1, Math.min(20, Number.parseInt(options.pageSize, 10) || 20));
-            const maxPages = Math.max(1, Math.ceil(limit / pageSize));
-            const seen = new Set();
-            const songs = [];
-
-            for (let page = 1; page <= maxPages && songs.length < limit; page++) {
-                const response = await fetch(`https://api.vkeys.cn/v2/music/netease?word=${searchQuery}&page=${page}&num=${pageSize}`);
-                const json = await response.json();
-                const items = Array.isArray(json?.data) ? json.data : [];
-                if (items.length === 0) break;
-
-                let addedInPage = 0;
-                items.forEach(item => {
-                    const song = this._cleanSongText(item.song || item.name || '');
-                    const singer = this._cleanSongText(item.singer || item.artist || '未知') || '未知';
-                    if (!song) return null;
-                    const key = this._getSongDedupKey(song, singer);
-                    if (!key || seen.has(key)) return null;
-                    seen.add(key);
-                    songs.push({
-                        id: item.id,
-                        name: song,
-                        artist: singer,
-                        pic: item.cover || item.pic || null
-                    });
-                    addedInPage++;
-                });
-
-                if (items.length < pageSize || addedInPage === 0) break;
-            }
-
-            return songs.slice(0, limit);
-        } catch (e) {
-            console.error('🎵 [音乐] 歌曲搜索失败:', e);
-            return []; // 出错时返回空数组
-        }
-    }
-
-    // ========== 播放控制 ==========
-
-    async play(index, listType = this.activeListType) {
-        this.activeListType = listType;
-        const playlist = this.getActiveList();
-        if (index < 0 || index >= playlist.length) return false;
-
-        // 递增代次号，使之前的 play() 调用自动失效
-        const generation = ++this._playGeneration;
-        this._playLock = true;
-        this._userPaused = false;
-        this.currentIndex = index;
-        // 先停旧歌并清空旧 src，避免新歌加载失败时继续播放上一首。
-        this.audioPlayer.pause();
-        this.audioPlayer.removeAttribute('src');
-        this.audioPlayer.load();
-        this.isPlaying = false;
-        this._notifyStateChange();
-
-        const song = playlist[index];
-
-        try {
-            // 如果没有URL，先获取
-            if (!song.url) {
-                const songKey = `${song.name}|${song.artist}`;
-                if (this._isSongFetchTemporarilyFailed(songKey)) {
-                    console.warn(`🎵 [音乐] 跳过已失败的歌曲: ${song.name}`);
-                    this.isPlaying = false;
-                    this._playLock = false;
-                    this._notifyStateChange();
-                    return false;
-                }
-
-                const result = await this._fetchSongUrl(song.name, song.artist);
-
-                if (generation !== this._playGeneration) return false;
-
-                if (result && result.url) {
-                    song.url = result.url;
-                    song.name = result.name || song.name;
-                    song.artist = result.artist || song.artist || '未知';
-                    song.pic = result.pic;
-                    song.id = result.id || song.id || null;
-                    song.urlSource = result.urlSource || song.urlSource || null;
-                    song.lrc = result.lrc;
-                    if (listType === 'favorites') this.saveFavorites();
-                    else this.savePlaylist();
-                } else {
-                    this._markSongFetchFailed(songKey);
-                    this._playLock = false;
-                    this._requestPlaybackRecovery(song, index, listType, generation);
-                    return false;
-                }
-            }
-
-            if (generation !== this._playGeneration) return false;
-
-            await this._preferMetingSource(song, listType);
-            if (generation !== this._playGeneration) return false;
-
-            this.audioPlayer.loop = this.getPlaybackMode() === 'repeat-one';
-            this.audioPlayer.src = song.url;
-            await this.audioPlayer.play();
-            this.isPlaying = true;
-            this._playLock = false;
-            this._lastAutoRetryAt.delete(song);
-            this._notifyStateChange();
-            this._ensureLyrics(song, listType, generation);
-            this._prefetchNeighbors(index, listType);
-            return true;
-        } catch (e) {
-            if (generation === this._playGeneration) {
-                console.warn(`🎵 [音乐] 播放失败: ${song?.name || ''}`, e);
-                this.isPlaying = false;
-                this._playLock = false;
-                this._notifyStateChange();
-                if (song && !this._userPaused && e?.name !== 'NotAllowedError') {
-                    this._requestPlaybackRecovery(song, index, listType, generation);
-                }
-            }
-            return false;
-        }
-    }
-
-    _invalidateSongUrl(song, listType = this.activeListType) {
-        if (!song) return;
-        song.url = null;
-        song.urlSource = null;
-        delete song._metingRefreshTried;
-        if (listType === 'favorites') this.saveFavorites();
-        else this.savePlaylist();
-    }
-
-    _requestPlaybackRecovery(song, songIndex, listType, generation) {
-        if (!song || generation !== this._playGeneration) return false;
-        if (this._recoveryRequestedGeneration === generation) return false;
-
-        this._recoveryRequestedGeneration = generation;
-        this._invalidateSongUrl(song, listType);
-        if (this._autoRetryingSongs.has(song)) return false;
-
-        this._recoverAndPlay(songIndex, listType).catch(e => {
-            console.error('🎵 [音乐] 自动修复发生未处理异常:', this._formatErrorForLog(e));
-        });
         return true;
     }
 
-    async _recoverAndPlay(songIndex, listType = this.activeListType) {
-        const playlist = listType === 'favorites' ? this.getFavorites() : this.getPlaylist();
-        if (songIndex < 0 || songIndex >= playlist.length) return false;
+    getAutoPlay() {
+        const val = this.storage?.get?.(KEYS.autoPlay, true);
+        return val === true || val === 'true';
+    }
 
-        const song = playlist[songIndex];
-        const now = Date.now();
-        const lastAutoRetryAt = this._lastAutoRetryAt.get(song) || 0;
-        if (this._autoRetryingSongs.has(song) || (lastAutoRetryAt && now - lastAutoRetryAt < 60000)) {
-            console.warn(`🎵 [音乐] 歌曲 "${song.name}" 正在修复或刚修复失败，暂时跳过。`);
-            this._notifyStateChange();
+    setAutoPlay(enabled) {
+        this.storage?.set?.(KEYS.autoPlay, !!enabled);
+    }
+
+    // ================= 音乐状态卡片（AI <Music> 标签） =================
+
+    setCardData(parsed) {
+        this._cardData = parsed || null;
+        this.storage?.set?.(KEYS.card, parsed ? JSON.stringify(parsed) : '');
+    }
+
+    getCardData() {
+        if (this._cardData) return this._cardData;
+        const saved = this.storage?.get?.(KEYS.card, '');
+        if (saved) {
+            try { this._cardData = typeof saved === 'string' ? JSON.parse(saved) : saved; } catch (_e) { this._cardData = null; }
+        }
+        return this._cardData;
+    }
+
+    // ================= 播放队列 =================
+
+    getCurrentSong() {
+        return this.currentIndex >= 0 ? this.queue[this.currentIndex] || null : null;
+    }
+
+    getQueue() {
+        return this.queue;
+    }
+
+    _saveQueue() {
+        clearTimeout(this._queueSaveTimer);
+        this._queueSaveTimer = setTimeout(() => {
+            this._write(KEYS.queue, {
+                songs: this.queue.filter(s => !s.local).slice(0, 500).map(s => this._storable(s)),
+                index: this.currentIndex
+            });
+        }, 400);
+    }
+
+    _restoreQueue() {
+        const saved = this._read(KEYS.queue, null);
+        if (saved && Array.isArray(saved.songs)) {
+            this.queue = saved.songs.map(s => this.normalizeSong(s)).filter(s => s.name);
+            this.currentIndex = Math.min(Number(saved.index ?? -1), this.queue.length - 1);
+        }
+    }
+
+    /** 用一组歌替换队列并播放 */
+    playList(songs = [], startIndex = 0, { shuffle = false } = {}) {
+        const list = songs.map(s => this.normalizeSong(s)).filter(s => s.name);
+        if (!list.length) return false;
+        this.queue = list;
+        this._shuffleBag = [];
+        this._shuffleHistory = [];
+        let index = Math.max(0, Math.min(startIndex, list.length - 1));
+        if (shuffle) {
+            this.setPlayMode('shuffle');
+            index = Math.floor(Math.random() * list.length);
+        }
+        this._saveQueue();
+        this.playAt(index);
+        return true;
+    }
+
+    /** 播放单曲：已在队列则跳转，否则插到当前歌后面 */
+    playSong(raw, { auto = false } = {}) {
+        const song = this.normalizeSong(raw);
+        if (!song.name) return Promise.resolve(false);
+        let index = this.queue.findIndex(s => this.sameSong(s, song));
+        if (index < 0) {
+            index = this.currentIndex >= 0 ? this.currentIndex + 1 : this.queue.length;
+            this.queue.splice(index, 0, song);
+            this._saveQueue();
+        }
+        return this.playAt(index, { auto });
+    }
+
+    playNext(raw) {
+        const song = this.normalizeSong(raw);
+        if (!song.name) return;
+        const existing = this.queue.findIndex(s => this.sameSong(s, song));
+        if (existing >= 0 && existing !== this.currentIndex) {
+            this.queue.splice(existing, 1);
+            if (existing < this.currentIndex) this.currentIndex--;
+        } else if (existing === this.currentIndex) {
+            return;
+        }
+        this.queue.splice(this.currentIndex + 1, 0, song);
+        this._shuffleBag = [];
+        this._saveQueue();
+        this._notify();
+    }
+
+    removeFromQueue(index) {
+        if (index < 0 || index >= this.queue.length) return;
+        const wasCurrent = index === this.currentIndex;
+        this.queue.splice(index, 1);
+        this._shuffleBag = [];
+        if (index < this.currentIndex) this.currentIndex--;
+        if (wasCurrent) {
+            if (this.queue.length === 0) {
+                this.stop('clear');
+                this.currentIndex = -1;
+            } else {
+                this.playAt(Math.min(index, this.queue.length - 1));
+            }
+        }
+        this._saveQueue();
+        this._notify();
+    }
+
+    clearQueue() {
+        this.stop('clear_playlist');
+        this.queue = [];
+        this.currentIndex = -1;
+        this._shuffleBag = [];
+        this._saveQueue();
+        this._notify();
+    }
+
+    // ================= 播放控制 =================
+
+    async playAt(index, { auto = false } = {}) {
+        if (index < 0 || index >= this.queue.length) return false;
+        const gen = ++this._gen;
+        const song = this.queue[index];
+        this.currentIndex = index;
+        this._userPaused = false;
+        this.isLoading = true;
+        this.isPlaying = false;
+        this.lastError = '';
+        this.currentLyrics = [];
+        this._lastTime = 0;
+        this.audioPlayer.pause();
+        this._saveQueue();
+        this._notify();
+
+        let chosen = null;
+        let trialFallback = null;
+        try {
+            for await (const candidate of this.api.urlCandidates(song)) {
+                if (gen !== this._gen) return false;
+                if (candidate.trial) {
+                    trialFallback = trialFallback || candidate;
+                    continue;
+                }
+                const result = await this._probe(candidate.url, song, gen);
+                if (gen !== this._gen) return false;
+                if (result === 'ok') { chosen = candidate; break; }
+                if (result === 'trial' && !trialFallback) trialFallback = candidate;
+            }
+            if (!chosen && trialFallback && gen === this._gen) {
+                const result = await this._probe(trialFallback.url, song, gen, { acceptTrial: true });
+                if (result === 'ok') {
+                    chosen = trialFallback;
+                    this._toast('这首歌只能试听片段');
+                }
+            }
+        } catch (e) {
+            console.warn('🎵 [音乐] 取链失败:', e);
+        }
+
+        if (gen !== this._gen) return false;
+
+        if (!chosen) {
+            this.isLoading = false;
+            this.lastError = '暂时无法播放';
+            this._consecutiveFailures++;
+            this._notify();
+            if (this._consecutiveFailures < Math.min(5, this.queue.length)) {
+                this._toast(`《${song.name}》暂时无法播放，已跳过`);
+                setTimeout(() => { if (gen === this._gen) this.next({ auto: true, skipFailed: true }); }, 600);
+            } else {
+                this._toast(`《${song.name}》暂时无法播放`);
+                this._consecutiveFailures = 0;
+            }
             return false;
         }
 
-        this._autoRetryingSongs.add(song);
-        this._lastAutoRetryAt.set(song, now);
-        console.log(`🎵 [音乐] 正在为 "${song.name}" 自动搜索新链接...`);
-
-        const applyRecoveredSong = async (result, label = '备用音乐源') => {
-            if (!result?.url) return false;
-
-            const previous = {
-                id: song.id,
-                url: song.url,
-                urlSource: song.urlSource,
-                name: song.name,
-                artist: song.artist,
-                pic: song.pic,
-                lrc: song.lrc
-            };
-
-            song.id = result.id || song.id || null;
-            song.url = result.url;
-            song.urlSource = result.urlSource;
-            song.pic = result.pic || song.pic || null;
-            song.lrc = Array.isArray(result.lrc) ? result.lrc : [];
-
-            const played = await this.play(songIndex, listType);
-            if (!played) {
-                Object.assign(song, previous, { url: null, urlSource: null });
-                if (listType === 'favorites') this.saveFavorites();
-                else this.savePlaylist();
-                return false;
-            }
-
-            song.name = result.name || song.name;
-            song.artist = result.artist || song.artist || '未知';
-            this._lastAutoRetryAt.delete(song);
-            if (listType === 'favorites') this.saveFavorites();
-            else this.savePlaylist();
-            console.log(`✅ [音乐] 自动修复成功！已切换到${label}: "${song.name}"`);
-            return true;
-        };
-
         try {
-            try {
-                const searchQuery = encodeURIComponent(`${song.name} ${song.artist}`);
-                let searchJson = null;
-                try {
-                    const searchRes = await fetch(`https://api.vkeys.cn/v2/music/netease?word=${searchQuery}`);
-                    searchJson = await searchRes.json();
-                } catch (e) {
-                    console.warn('🎵 [音乐] 自动修复搜索失败，准备尝试备用源:', this._formatErrorForLog(e));
-                }
-
-                if (Array.isArray(searchJson?.data) && searchJson.data.length > 0) {
-                    for (const candidate of searchJson.data.slice(0, 15)) {
-                        try {
-                            const urlRes = await fetch(`https://api.qijieya.cn/meting/?server=netease&type=song&id=${candidate.id}`);
-                            const urlData = await urlRes.json();
-
-                            if (urlData?.[0]?.url && !urlData[0].url.includes('music.163.com/404')) {
-                                const newUrl = urlData[0].url.replace('http://', 'https://');
-                                const isFull = await this._checkPlayableSongUrl(newUrl);
-                                if (!isFull) {
-                                    console.warn('🎵 [音乐] 修复找到的新版本不可播放或仍是30秒试听，继续寻找下一个...');
-                                    continue;
-                                }
-
-                                const recovered = await applyRecoveredSong({
-                                    id: candidate.id,
-                                    url: newUrl,
-                                    urlSource: 'meting',
-                                    pic: urlData[0].pic || song.pic,
-                                    lrc: await this._fetchLyrics(candidate.id),
-                                    name: candidate.song || candidate.name || song.name,
-                                    artist: candidate.singer || candidate.artist || song.artist || '未知'
-                                }, 'Meting 源');
-                                if (recovered) return true;
-                            }
-                        } catch (_e) {
-                            continue;
-                        }
-                    }
-                } else {
-                    console.warn(`🎵 [音乐] 自动修复主源未搜索到结果: ${song.name} ${song.artist}`);
-                }
-            } catch (e) {
-                console.warn('🎵 [音乐] 主源自动修复异常，继续尝试备用源:', this._formatErrorForLog(e));
+            this.audioPlayer.loop = this.getPlayMode() === 'single';
+            await this.audioPlayer.play();
+            if (gen !== this._gen) return false;
+            this.isPlaying = true;
+            this._consecutiveFailures = 0;
+        } catch (e) {
+            this.isPlaying = false;
+            if (e?.name === 'NotAllowedError') {
+                this.lastError = '点击播放按钮开始';
             }
-
-            try {
-                const externalResult = await this._fetchExternalMusicSourceSong(song.name, song.artist);
-                if (await applyRecoveredSong(externalResult, '备用音乐源')) return true;
-                console.warn('🎵 [音乐] 自动修复失败：所有替代版本及备用源均不可用。');
-            } catch (e) {
-                console.error('🎵 [音乐] 备用音乐源自动修复失败:', this._formatErrorForLog(e));
-            }
-        } finally {
-            this._autoRetryingSongs.delete(song);
         }
+        this.isLoading = false;
+        this._addHistory(song);
+        this._saveQueue();
+        this._notify();
+        this._loadLyrics(song, gen);
+        return true;
+    }
 
-        return false;
+    /** 加载链接并检查是否为 30 秒试听 */
+    _probe(url, song, gen, { acceptTrial = false } = {}) {
+        return new Promise(resolve => {
+            const audio = this.audioPlayer;
+            let done = false;
+            const finish = (value) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                audio.removeEventListener('loadedmetadata', onMeta);
+                audio.removeEventListener('error', onError);
+                resolve(value);
+            };
+            const onMeta = () => {
+                if (gen !== this._gen) return finish('stale');
+                const d = Number(audio.duration);
+                const expected = Number(song.duration || 0);
+                const looksTrial = Number.isFinite(d) && d > 0 && d <= 45 && (expected === 0 || expected > 60);
+                if (looksTrial && !acceptTrial && !song.local) return finish('trial');
+                if (!song.duration && Number.isFinite(d) && d > 0) song.duration = Math.round(d);
+                finish('ok');
+            };
+            const onError = () => finish('error');
+            const timer = setTimeout(() => finish('error'), 10000);
+            audio.addEventListener('loadedmetadata', onMeta);
+            audio.addEventListener('error', onError);
+            audio.src = url;
+            audio.load();
+        });
+    }
+
+    async _loadLyrics(song, gen) {
+        try {
+            const lyrics = await this.api.getLyrics(song);
+            if (gen !== this._gen) return;
+            this.currentLyrics = Array.isArray(lyrics) ? lyrics : [];
+            song.lrc = this.currentLyrics;
+            this._notify();
+        } catch (_e) {
+            this.currentLyrics = [];
+        }
+    }
+
+    togglePlay() {
+        if (this.isLoading) return;
+        if (this.isPlaying) this.pause();
+        else this.resume();
     }
 
     pause() {
         if (typeof window !== 'undefined'
             && window._musicSuppressNavigationPauseUntil
             && Date.now() < window._musicSuppressNavigationPauseUntil) {
-            this._notifyStateChange();
+            this._notify();
             return;
         }
         const wasPlaying = this.isPlaying || !this.audioPlayer.paused;
         this.audioPlayer.pause();
         this.isPlaying = false;
         this._userPaused = true;
-        this._notifyStateChange();
-        if (wasPlaying) this._notifyPlaybackStopped('pause');
+        this._flushListen();
+        this._notify();
+        if (wasPlaying) this._notifyStopped('pause');
     }
 
     resume() {
-        if (this.audioPlayer.src) {
-            this.syncVolume();
-            this.audioPlayer.loop = this.getPlaybackMode() === 'repeat-one';
-            this.audioPlayer.play().then(() => {
-                this.isPlaying = true;
-                this._userPaused = false; // 🔥 新增：用户主动恢复播放，解除暂停标记
-                this._notifyStateChange();
-            }).catch(e => {
-                console.warn('🎵 [音乐] 恢复播放失败:', e);
-            });
+        const song = this.getCurrentSong();
+        if (!song) {
+            if (this.queue.length) this.playAt(0);
+            return;
         }
+        if (!this.audioPlayer.src || this.audioPlayer.error || this.lastError) {
+            this.playAt(this.currentIndex);
+            return;
+        }
+        this.syncVolume();
+        this.audioPlayer.loop = this.getPlayMode() === 'single';
+        this.audioPlayer.play().then(() => {
+            this.isPlaying = true;
+            this._userPaused = false;
+            this._notify();
+        }).catch(() => this.playAt(this.currentIndex));
     }
 
-    next() {
-        const playlist = this.getActiveList();
-        if (playlist.length === 0) return;
-        const nextIndex = (this.currentIndex + 1) % playlist.length;
-        this.play(nextIndex, this.activeListType);
+    stop(reason = 'stop') {
+        const wasPlaying = this.isPlaying || !this.audioPlayer.paused;
+        this._gen++;
+        this.audioPlayer.pause();
+        this.audioPlayer.removeAttribute('src');
+        try { this.audioPlayer.load(); } catch (_e) { /* ignore */ }
+        this.isPlaying = false;
+        this.isLoading = false;
+        this._flushListen();
+        if (wasPlaying) this._notifyStopped(reason);
+    }
+
+    seek(seconds) {
+        const d = Number(this.audioPlayer.duration);
+        if (!Number.isFinite(d) || d <= 0) return;
+        this.audioPlayer.currentTime = Math.max(0, Math.min(d - 0.2, Number(seconds) || 0));
+        this._lastTime = this.audioPlayer.currentTime;
+    }
+
+    next({ auto = false, skipFailed = false } = {}) {
+        const n = this.queue.length;
+        if (!n) return;
+        if (!skipFailed) this._consecutiveFailures = 0;
+        const mode = this.getPlayMode();
+        if (mode === 'shuffle' && n > 1) {
+            this._shuffleHistory.push(this.currentIndex);
+            this.playAt(this._nextShuffleIndex(), { auto });
+            return;
+        }
+        let index = this.currentIndex + 1;
+        if (index >= n) {
+            if (mode === 'order' && auto) {
+                this.isPlaying = false;
+                this._notify();
+                this._notifyStopped('ended');
+                return;
+            }
+            index = 0;
+        }
+        this.playAt(index, { auto });
     }
 
     prev() {
-        const playlist = this.getActiveList();
-        if (playlist.length === 0) return;
-        const prevIndex = (this.currentIndex - 1 + playlist.length) % playlist.length;
-        this.play(prevIndex, this.activeListType);
+        const n = this.queue.length;
+        if (!n) return;
+        this._consecutiveFailures = 0;
+        if (this.audioPlayer.currentTime > 5 && this.isPlaying) {
+            this.seek(0);
+            return;
+        }
+        if (this.getPlayMode() === 'shuffle' && this._shuffleHistory.length) {
+            const index = this._shuffleHistory.pop();
+            if (index >= 0 && index < n) { this.playAt(index); return; }
+        }
+        this.playAt((this.currentIndex - 1 + n) % n);
     }
 
-    _prefetchNeighbors(index, listType = this.activeListType) {
-        const playlist = (listType === 'favorites') ? this.getFavorites() : this.getPlaylist();
-        if (!Array.isArray(playlist) || playlist.length <= 1) return;
-
-        const nextIndex = (index + 1) % playlist.length;
-        const prevIndex = (index - 1 + playlist.length) % playlist.length;
-        this._prefetchSongAt(nextIndex, listType);
-        this._prefetchSongAt(prevIndex, listType);
-    }
-
-    async _prefetchSongAt(index, listType = this.activeListType) {
-        const playlist = (listType === 'favorites') ? this.getFavorites() : this.getPlaylist();
-        const song = playlist[index];
-        if (!song || song.url) return;
-
-        const songKey = `${listType}:${song.name}|${song.artist}`;
-        if (this._prefetching.has(songKey) || this._isSongFetchTemporarilyFailed(`${song.name}|${song.artist}`)) return;
-
-        this._prefetching.add(songKey);
-        try {
-            const result = await this._fetchSongUrl(song.name, song.artist);
-            if (result && result.url) {
-                song.url = result.url;
-                song.pic = result.pic;
-                song.id = result.id || song.id || null;
-                song.urlSource = result.urlSource || song.urlSource || null;
-                song.lrc = result.lrc;
-                if (listType === 'favorites') this.saveFavorites();
-                else this.savePlaylist();
+    _nextShuffleIndex() {
+        const n = this.queue.length;
+        if (!this._shuffleBag.length) {
+            const bag = [];
+            for (let i = 0; i < n; i++) if (i !== this.currentIndex) bag.push(i);
+            for (let i = bag.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [bag[i], bag[j]] = [bag[j], bag[i]];
             }
-        } catch (e) {
-            // 预取失败不打断主流程
-        } finally {
-            this._prefetching.delete(songKey);
+            this._shuffleBag = bag;
         }
+        const index = this._shuffleBag.shift();
+        return index === undefined ? 0 : Math.min(index, n - 1);
     }
 
-    getCurrentSong() {
-        const playlist = this.getActiveList();
-        if (this.currentIndex >= 0 && this.currentIndex < playlist.length) {
-            return playlist[this.currentIndex];
+    getPlayMode() {
+        const mode = String(this._read(KEYS.mode, 'loop') || 'loop');
+        return PLAY_MODES.some(m => m.id === mode) ? mode : 'loop';
+    }
+
+    setPlayMode(mode) {
+        const next = PLAY_MODES.some(m => m.id === mode) ? mode : 'loop';
+        this._write(KEYS.mode, next);
+        this.audioPlayer.loop = next === 'single';
+        this._shuffleBag = [];
+        this._notify();
+        return next;
+    }
+
+    cyclePlayMode() {
+        const ids = PLAY_MODES.map(m => m.id);
+        const next = ids[(ids.indexOf(this.getPlayMode()) + 1) % ids.length];
+        return this.setPlayMode(next);
+    }
+
+    // 旧接口兼容
+    getPlaybackMode() {
+        const mode = this.getPlayMode();
+        return mode === 'single' ? 'repeat-one' : (mode === 'order' ? 'once' : 'repeat-all');
+    }
+
+    getVolume() {
+        const v = Number(this.storage?.get?.(KEYS.volume, 0.6));
+        return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.6;
+    }
+
+    setVolume(value) {
+        const v = Math.min(1, Math.max(0, Number(value) || 0));
+        this.storage?.set?.(KEYS.volume, v);
+        this.audioPlayer.volume = v;
+        return v;
+    }
+
+    syncVolume() {
+        this.audioPlayer.volume = this.getVolume();
+    }
+
+    // ================= 微信接口兼容 =================
+
+    /** 微信接受“一起听”邀请时调用 */
+    async playSongByName(name, artist, meta = {}) {
+        const song = this.normalizeSong({ ...meta, name, artist });
+        if (!song.name) return null;
+        if (!song.id) {
+            const found = await this.api.resolveSongId(song.name, song.artist).catch(() => null);
+            if (found) Object.assign(song, { ...found, pic: song.pic || found.pic });
         }
-        return null;
+        await this.playSong(song);
+        return this.getCurrentSong() || song;
     }
 
     getListeningSnapshot() {
         const song = this.getCurrentSong();
         if (!song) return null;
-
         const currentTime = Number.isFinite(this.audioPlayer.currentTime) ? this.audioPlayer.currentTime : 0;
-        const duration = Number.isFinite(this.audioPlayer.duration) ? this.audioPlayer.duration : 0;
-        const lyrics = Array.isArray(song.lrc) ? song.lrc : [];
-        let lyricIndex = -1;
-        if (lyrics.length > 0) {
-            const nextIndex = lyrics.findIndex(line => Number(line?.t || 0) > currentTime);
-            lyricIndex = nextIndex === -1 ? lyrics.length - 1 : Math.max(0, nextIndex - 1);
-        }
-        const lyricLine = lyricIndex >= 0 ? lyrics[lyricIndex] : null;
-        const aroundLyrics = lyricIndex >= 0
-            ? lyrics.slice(Math.max(0, lyricIndex - 1), Math.min(lyrics.length, lyricIndex + 2))
-                .map(line => String(line?.txt || '').trim())
-                .filter(Boolean)
-            : [];
-        const lyricWindow = lyrics.length > 0
-            ? lyrics
-                .filter(line => {
-                    const lineTime = Number(line?.t);
-                    return Number.isFinite(lineTime) && lineTime >= currentTime + 40 && lineTime <= currentTime + 80;
-                })
-                .slice(0, 18)
-                .map(line => {
-                    const text = String(line?.txt || '').trim();
-                    const trans = String(line?.tr || '').trim();
-                    if (!text) return '';
-                    return trans ? `${this._formatListenTime(line.t)} ${text}（${trans}）` : `${this._formatListenTime(line.t)} ${text}`;
-                })
-                .filter(Boolean)
-            : [];
-        const playlistSongs = this._formatSongListForPrompt(this.getPlaylist());
-        const favoriteSongs = this._formatSongListForPrompt(this.getFavorites());
+        const duration = Number.isFinite(this.audioPlayer.duration) ? this.audioPlayer.duration : (song.duration || 0);
+        const lyrics = this.currentLyrics || [];
+        const index = this.getLyricIndex(currentTime);
+        const line = index >= 0 ? lyrics[index] : null;
+        const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+        const lyricWindow = lyrics
+            .filter(l => l.t >= currentTime + 40 && l.t <= currentTime + 80)
+            .slice(0, 18)
+            .map(l => (l.tr ? `${fmt(l.t)} ${l.txt}（${l.tr}）` : `${fmt(l.t)} ${l.txt}`));
+        const list = (arr) => arr.map(s => (s.artist ? `${s.name} - ${s.artist}` : s.name)).filter(Boolean).slice(0, 40);
 
         return {
             songId: song.id || '',
@@ -709,655 +925,94 @@ export class MusicData {
             currentTime,
             duration,
             isPlaying: !!this.isPlaying,
-            lyric: lyricLine ? String(lyricLine.txt || '').trim() : '',
-            lyricTranslation: lyricLine ? String(lyricLine.tr || '').trim() : '',
-            lyricAround: aroundLyrics,
+            lyric: line ? line.txt : '',
+            lyricTranslation: line ? (line.tr || '') : '',
+            lyricAround: index >= 0 ? lyrics.slice(Math.max(0, index - 1), index + 2).map(l => l.txt) : [],
             lyricWindow,
-            playlistSongs,
-            favoriteSongs,
-            activeListType: this.activeListType
+            playlistSongs: list(this.queue),
+            favoriteSongs: list(this.getLiked()),
+            activeListType: 'queue'
         };
     }
 
-    _formatListenTime(seconds = 0) {
-        const value = Math.max(0, Number(seconds || 0));
-        const m = Math.floor(value / 60);
-        const s = Math.floor(value % 60);
-        return `${m}:${String(s).padStart(2, '0')}`;
-    }
-
-    _formatSongListForPrompt(list = []) {
-        return (Array.isArray(list) ? list : [])
-            .map(song => {
-                const name = String(song?.name || '').trim();
-                const artist = String(song?.artist || '').trim();
-                if (!name && !artist) return '';
-                return artist ? `${name} - ${artist}` : name;
-            })
-            .filter(Boolean)
-            .slice(0, 40);
-    }
-
-    // ========== 自动连播 ==========
-
-    _onTrackEnded() {
-        const playbackMode = this.getPlaybackMode();
-        if (playbackMode === 'repeat-one') {
-            this.audioPlayer.currentTime = 0;
-            this.audioPlayer.play().then(() => {
-                this.isPlaying = true;
-                this._userPaused = false;
-                this._notifyStateChange();
-            }).catch((e) => {
-                console.warn('🎵 [音乐] 单曲循环重播失败:', e);
-                this.isPlaying = false;
-                this._notifyStateChange();
-                this._notifyPlaybackStopped('ended');
-            });
-            return;
+    getLyricIndex(time = this.audioPlayer.currentTime) {
+        const lyrics = this.currentLyrics || [];
+        if (!lyrics.length) return -1;
+        let lo = 0;
+        let hi = lyrics.length - 1;
+        let ans = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (lyrics[mid].t <= time + 0.15) { ans = mid; lo = mid + 1; } else hi = mid - 1;
         }
+        return ans;
+    }
 
-        if (playbackMode === 'repeat-all') {
-            this.next();
-        } else {
+    // ================= 事件 =================
+
+    _bindAudio() {
+        const audio = this.audioPlayer;
+        audio.addEventListener('ended', () => {
+            if (this.getPlayMode() === 'single') {
+                audio.currentTime = 0;
+                audio.play().catch(() => {});
+                return;
+            }
             this.isPlaying = false;
-            this._notifyStateChange();
-            this._notifyPlaybackStopped('ended');
-        }
-    }
-
-    getAutoPlay() {
-        const val = this.storage.get('music_auto_play', true);
-        return val === true || val === 'true';
-    }
-
-    setAutoPlay(enabled) {
-        this.storage.set('music_auto_play', enabled);
-    }
-
-    getVolume() {
-        const savedVolume = Number(this.storage.get(MUSIC_VOLUME_STORAGE_KEY, 0.5));
-        if (!Number.isFinite(savedVolume)) return 0.5;
-        return Math.min(1, Math.max(0, savedVolume));
-    }
-
-    setVolume(value) {
-        const numericValue = Number(value);
-        const volume = Number.isFinite(numericValue)
-            ? Math.min(1, Math.max(0, numericValue))
-            : 0.5;
-        this.storage.set(MUSIC_VOLUME_STORAGE_KEY, volume);
-        this.audioPlayer.volume = volume;
-        this._notifyStateChange();
-        return volume;
-    }
-
-    syncVolume() {
-        const volume = this.getVolume();
-        this.audioPlayer.volume = volume;
-        return volume;
-    }
-
-    getPlaybackMode() {
-        const savedMode = String(this.storage.get('music_playback_mode', '') || '').trim();
-        if (['once', 'repeat-one', 'repeat-all'].includes(savedMode)) return savedMode;
-
-        const legacyRepeatOne = this.storage.get('music_repeat_one', null);
-        if (legacyRepeatOne === true || legacyRepeatOne === 'true') return 'repeat-one';
-
-        const legacyAutoPlay = this.storage.get('music_auto_play', null);
-        if (legacyAutoPlay === true || legacyAutoPlay === 'true') return 'repeat-all';
-        return 'once';
-    }
-
-    setPlaybackMode(mode) {
-        const nextMode = ['once', 'repeat-one', 'repeat-all'].includes(mode) ? mode : 'once';
-        this.storage.set('music_playback_mode', nextMode);
-        this.storage.set('music_repeat_one', nextMode === 'repeat-one');
-        this.audioPlayer.loop = nextMode === 'repeat-one';
-        this._notifyStateChange();
-        return nextMode;
-    }
-
-    cyclePlaybackMode() {
-        const currentMode = this.getPlaybackMode();
-        const nextMode = currentMode === 'once'
-            ? 'repeat-one'
-            : currentMode === 'repeat-one' ? 'repeat-all' : 'once';
-        return this.setPlaybackMode(nextMode);
-    }
-
-    getRepeatOne() {
-        return this.getPlaybackMode() === 'repeat-one';
-    }
-
-    setRepeatOne(enabled) {
-        return this.setPlaybackMode(enabled === true || enabled === 'true' ? 'repeat-one' : 'repeat-all');
-    }
-
-    // ========== Music API ==========
-
-    async _fetchSongUrl(name, artist) {
-        try {
-            const searchQuery = encodeURIComponent(name + ' ' + artist);
-
-            // 1. 使用 vkeys API 搜索（支持CORS）
-            let searchData = null;
-            try {
-                const vkeysRes = await fetch(`https://api.vkeys.cn/v2/music/netease?word=${searchQuery}`);
-                const vkeysJson = await vkeysRes.json();
-                if (vkeysJson?.data && Array.isArray(vkeysJson.data) && vkeysJson.data.length > 0) {
-                    searchData = vkeysJson.data;
-                }
-            } catch (e) {
-                console.warn('🎵 [音乐] vkeys搜索失败:', e.message);
-            }
-
-            if (!searchData || searchData.length === 0) {
-                console.warn(`🎵 [音乐] 搜索无结果: ${name} ${artist}`);
-                return await this._fetchExternalMusicSourceSong(name, artist);
-            }
-
-            // 2. 遍历搜索结果，尝试获取可用的播放URL
-            for (const candidate of searchData.slice(0, 15)) {
-                const songId = candidate.id;
-                if (!songId) continue;
-
-                let url = null;
-                let urlSource = null;
-                let pic = candidate.cover || candidate.pic || null;
-
-                // 方案A：Meting 获取播放链接。歌词也来自同一 ID，优先保持音频和歌词版本一致。
-                try {
-                    const metingRes = await fetch(`https://api.qijieya.cn/meting/?server=netease&type=song&id=${songId}`);
-                    const metingData = await metingRes.json();
-                    if (metingData?.[0]?.url && !metingData[0].url.includes('music.163.com/404')) {
-                        url = metingData[0].url;
-                        urlSource = 'meting';
-                        if (!pic) pic = metingData[0].pic || null;
-                    }
-                } catch (e) {
-                    console.warn(`🎵 [音乐] meting获取URL失败(id:${songId}):`, e.message);
-                }
-
-                // 方案B：vkeys 兜底
-                if (!url) {
-                    try {
-                        const urlRes = await fetch(`https://api.vkeys.cn/v2/music/netease?id=${songId}`);
-                        const urlJson = await urlRes.json();
-                        if (urlJson?.data?.url) {
-                            url = urlJson.data.url;
-                            urlSource = 'vkeys';
-                        }
-                    } catch (e) {
-                        console.warn(`🎵 [音乐] vkeys获取URL失败(id:${songId}):`, e.message);
-                    }
-                }
-
-                if (url) {
-                    // 强制HTTPS
-                    if (url.startsWith('http://')) {
-                        url = url.replace('http://', 'https://');
-                    }
-                    
-                    // 🔥 新增：快速验毒，如果是30秒试听版，直接抛弃并搜寻下一个！
-                    const isFull = await this._checkPlayableSongUrl(url);
-                    if (!isFull) {
-                        console.warn(`🎵 [音乐] 发现30秒试听VIP片段，自动跳过此版本: ${name} (ID: ${songId})`);
-                        continue; // 直接进入下一轮循环，尝试下一个 candidate
-                    }
-
-                    return {
-                        url,
-                        pic,
-                        id: songId,
-                        urlSource,
-                        lrc: null,
-                        name: candidate.song || candidate.name || name,
-                        artist: candidate.singer || candidate.artist || artist || ''
-                    };
-                }
-            }
-
-            return await this._fetchExternalMusicSourceSong(name, artist);
-        } catch (e) {
-            console.error('🎵 [音乐] API请求失败:', e);
-            return await this._fetchExternalMusicSourceSong(name, artist);
-        }
-    }
-
-    async _preferMetingSource(song, listType = this.activeListType) {
-        if (!song || song.urlSource === 'meting' || song.urlSource === 'baibai-music' || song._metingRefreshTried) return;
-
-        song._metingRefreshTried = true;
-        try {
-            if (!song.id) {
-                const resolved = await this._findSongMeta(song.name, song.artist);
-                if (resolved?.id) {
-                    song.id = resolved.id;
-                    if (!song.pic && resolved.pic) song.pic = resolved.pic;
-                }
-            }
-
-            if (!song.id) return;
-
-            const metingRes = await fetch(`https://api.qijieya.cn/meting/?server=netease&type=song&id=${encodeURIComponent(song.id)}`);
-            const metingData = await metingRes.json();
-            let metingUrl = metingData?.[0]?.url || '';
-            if (!metingUrl || metingUrl.includes('music.163.com/404')) return;
-
-            if (metingUrl.startsWith('http://')) {
-                metingUrl = metingUrl.replace('http://', 'https://');
-            }
-
-            const isPlayable = await this._checkPlayableSongUrl(metingUrl);
-            if (!isPlayable) return;
-
-            song.url = metingUrl;
-            song.urlSource = 'meting';
-            song.pic = metingData[0].pic || song.pic;
-            if (listType === 'favorites') this.saveFavorites();
-            else this.savePlaylist();
-        } catch (e) {
-            console.warn(`🎵 [音乐] 切换同源歌词音频失败: ${song.name}`, e);
-        }
-    }
-
-    async _ensureExternalMusicSource() {
-        if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-
-        const existingApi = window.Music || globalThis.Music;
-        if (typeof existingApi?.SearchMusic === 'function') return existingApi;
-
-        if (this._externalMusicSourcePromise) return this._externalMusicSourcePromise;
-
-        this._externalMusicSourcePromise = new Promise(resolve => {
-            let settled = false;
-            const finish = (api = null) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                resolve(api);
-            };
-            const timer = setTimeout(() => {
-                console.warn('🎵 [音乐] 备用音乐源加载超时');
-                finish(null);
-            }, 10000);
-
-            const script = document.getElementById(MUSIC_EXTERNAL_SOURCE_ID)
-                || document.querySelector(`script[src="${MUSIC_EXTERNAL_SOURCE_URL}"]`);
-
-            const onReady = () => {
-                const api = window.Music || globalThis.Music;
-                if (typeof api?.SearchMusic === 'function') finish(api);
-                else finish(null);
-            };
-
-            if (script) {
-                script.addEventListener('load', onReady, { once: true });
-                script.addEventListener('error', () => finish(null), { once: true });
-                return;
-            }
-
-            const node = document.createElement('script');
-            node.id = MUSIC_EXTERNAL_SOURCE_ID;
-            node.src = MUSIC_EXTERNAL_SOURCE_URL;
-            node.async = true;
-            node.onload = onReady;
-            node.onerror = () => {
-                console.warn('🎵 [音乐] 备用音乐源脚本加载失败');
-                finish(null);
-            };
-            document.head.appendChild(node);
-        }).finally(() => {
-            this._externalMusicSourcePromise = null;
+            this.next({ auto: true });
         });
-
-        return this._externalMusicSourcePromise;
-    }
-
-    async _fetchExternalMusicSourceSong(name, artist) {
-        const safeName = this._cleanSongText(name);
-        const safeArtist = this._cleanSongText(artist);
-        if (!safeName) return null;
-
-        try {
-            const api = await this._ensureExternalMusicSource();
-            if (typeof api?.SearchMusic !== 'function') return null;
-
-            const queries = [
-                `${safeName} ${safeArtist}`.trim(),
-                safeName
-            ].filter((value, index, arr) => value && arr.indexOf(value) === index);
-
-            for (const query of queries) {
-                let raw = null;
-                try {
-                    raw = await Promise.resolve(api.SearchMusic(query));
-                } catch (error) {
-                    console.warn(`🎵 [音乐] 备用音乐源搜索失败: ${query}`, error?.message || error);
-                    continue;
-                }
-                const normalized = this._normalizeExternalMusicResult(raw, safeName, safeArtist);
-                if (!normalized?.url) continue;
-
-                const isPlayable = await this._checkAudioAvailability(normalized.url);
-                if (!isPlayable) {
-                    console.warn(`🎵 [音乐] 备用音乐源返回不可播放链接，已跳过: ${normalized.name}`);
-                    continue;
-                }
-
-                return normalized;
+        audio.addEventListener('timeupdate', () => {
+            const t = audio.currentTime;
+            const delta = t - this._lastTime;
+            if (this.isPlaying && delta > 0 && delta < 2) {
+                this._pendingListen += delta;
+                if (this._pendingListen > 20) this._flushListen();
             }
-        } catch (e) {
-            console.warn(`🎵 [音乐] 备用音乐源不可用: ${safeName}`, e);
-        }
-
-        return null;
-    }
-
-    _formatErrorForLog(error) {
-        if (!error) return '';
-        if (typeof error === 'string') return error;
-        const message = String(error.message || '').trim();
-        const name = String(error.name || '').trim();
-        const stack = String(error.stack || '').trim();
-        if (message || name) return `${name ? `${name}: ` : ''}${message || stack || String(error)}`;
-        try {
-            return JSON.stringify(error);
-        } catch (_e) {
-            return String(error);
-        }
-    }
-
-    _normalizeExternalMusicResult(raw, fallbackName, fallbackArtist) {
-        if (!raw) return null;
-        const source = Array.isArray(raw) ? raw[0] : raw;
-        if (!source || typeof source !== 'object') return null;
-
-        let url = String(source.Url || source.url || source.URL || source.data?.Url || source.data?.url || '').trim();
-        if (!url) return null;
-        if (url.startsWith('http://')) {
-            url = url.replace('http://', 'https://');
-        }
-
-        const lyricText = String(source.Lyric || source.lyric || source.Lrc || source.lrc || '').trim();
-        const parsedLyrics = lyricText ? this._parseLrc(lyricText).map(line => ({ ...line, tr: '' })) : [];
-        const name = this._cleanSongText(source.Name || source.name || source.Song || source.song || fallbackName);
-        const artist = this._cleanSongText(source.Singer || source.singer || source.Artist || source.artist || fallbackArtist || '未知') || '未知';
-
-        return {
-            url,
-            pic: source.Pic || source.pic || source.Cover || source.cover || null,
-            id: source.Id || source.id || `baibai:${this._getSongDedupKey(name, artist)}`,
-            urlSource: 'baibai-music',
-            lrc: parsedLyrics,
-            name,
-            artist
-        };
-    }
-
-    _checkAudioAvailability(url) {
-        return new Promise(resolve => {
-            const safeUrl = String(url || '').trim();
-            if (!safeUrl) {
-                resolve(false);
-                return;
+            this._lastTime = t;
+            if (typeof this.onTimeUpdate === 'function') this.onTimeUpdate(t, audio.duration);
+        });
+        audio.addEventListener('pause', () => {
+            if (this.isPlaying && !this.isLoading && audio.paused && !audio.ended) {
+                // 系统级暂停（耳机拔出等）
+                this.isPlaying = false;
+                this._notify();
             }
-            const audio = new Audio();
-            let timer = null;
-            const cleanup = () => {
-                audio.removeEventListener('loadedmetadata', onReady);
-                audio.removeEventListener('canplay', onReady);
-                audio.removeEventListener('error', onError);
-                clearTimeout(timer);
-                audio.removeAttribute('src');
-                audio.load();
-            };
-            const onReady = () => {
-                cleanup();
-                resolve(true);
-            };
-            const onError = () => {
-                cleanup();
-                resolve(false);
-            };
-            audio.preload = 'metadata';
-            audio.muted = true;
-            timer = setTimeout(onError, 3000);
-            audio.addEventListener('loadedmetadata', onReady);
-            audio.addEventListener('canplay', onReady);
-            audio.addEventListener('error', onError);
-            audio.src = safeUrl;
+        });
+        audio.addEventListener('play', () => {
+            if (!this.isPlaying && !this.isLoading) {
+                this.isPlaying = true;
+                this._notify();
+            }
         });
     }
 
-    _checkPlayableSongUrl(url) {
-        return new Promise(resolve => {
-            const safeUrl = String(url || '').trim();
-            if (!safeUrl) {
-                resolve(false);
-                return;
-            }
-            const audio = new Audio();
-            audio.preload = 'metadata';
-            audio.muted = true;
-            const cleanup = () => {
-                clearTimeout(timer);
-                audio.onloadedmetadata = null;
-                audio.onerror = null;
-                audio.removeAttribute('src');
-                audio.load();
-            };
-            const timer = setTimeout(() => {
-                cleanup();
-                resolve(false);
-            }, 5000);
-            audio.onloadedmetadata = () => {
-                const duration = Number(audio.duration);
-                cleanup();
-                resolve(duration === Infinity || (Number.isFinite(duration) && duration > 45));
-            };
-            audio.onerror = () => {
-                cleanup();
-                resolve(false);
-            };
-            audio.src = safeUrl;
-        });
+    _flushListen() {
+        if (this._pendingListen <= 0) return;
+        const total = (Number(this._read(KEYS.listenSeconds, 0)) || 0) + this._pendingListen;
+        this._pendingListen = 0;
+        this._write(KEYS.listenSeconds, Math.round(total));
     }
 
-    async _ensureLyrics(song, listType = this.activeListType, generation = this._playGeneration) {
-        if (!song || Array.isArray(song.lrc) || song._lrcLoading) return;
-
-        song._lrcLoading = true;
-        this._notifyStateChange();
-
-        try {
-            if (!song.id) {
-                const resolved = await this._findSongMeta(song.name, song.artist);
-                if (resolved?.id) {
-                    song.id = resolved.id;
-                    if (!song.pic && resolved.pic) song.pic = resolved.pic;
-                }
-            }
-            song.lrc = await this._fetchLyrics(song.id);
-        } catch (e) {
-            song.lrc = [];
-        } finally {
-            delete song._lrcLoading;
-        }
-
-        if (listType === 'favorites') this.saveFavorites();
-        else this.savePlaylist();
-
-        if (generation === this._playGeneration || this.getCurrentSong() === song) {
-            this._notifyStateChange();
-        }
+    _notify() {
+        if (typeof this.onStateChange === 'function') this.onStateChange();
     }
 
-    async _findSongMeta(name, artist) {
-        if (!name) return null;
-
-        try {
-            const searchQuery = encodeURIComponent(`${name} ${artist || ''}`.trim());
-            const response = await fetch(`https://api.vkeys.cn/v2/music/netease?word=${searchQuery}`);
-            const json = await response.json();
-            const candidate = Array.isArray(json?.data) ? json.data.find(item => item?.id) : null;
-            if (!candidate) return null;
-
-            return {
-                id: candidate.id,
-                pic: candidate.cover || candidate.pic || null,
-                name: candidate.song || candidate.name || name,
-                artist: candidate.singer || candidate.artist || artist || ''
-            };
-        } catch (e) {
-            console.warn(`🎵 [音乐] 歌词补查歌曲ID失败: ${name}`, e);
-            return null;
-        }
+    _notifyStopped(reason = '') {
+        if (typeof this.onPlaybackStopped === 'function') this.onPlaybackStopped(reason);
     }
 
-    async _fetchLyrics(songId) {
-        if (!songId) return [];
-        const cacheKey = String(songId);
-        if (this._lyricCache.has(cacheKey)) {
-            return this._lyricCache.get(cacheKey);
-        }
-
-        try {
-            const lrcText = await fetch(`https://api.qijieya.cn/meting/?server=netease&type=lrc&id=${encodeURIComponent(songId)}`).then(r => r.text());
-            if (!lrcText || lrcText.includes('[00:00.00]暂无歌词') || lrcText.includes('暂无歌词')) {
-                this._lyricCache.set(cacheKey, []);
-                return [];
-            }
-
-            const mainLines = this._parseLrc(lrcText);
-            if (mainLines.length === 0) {
-                this._lyricCache.set(cacheKey, []);
-                return [];
-            }
-
-            const transText = await fetch(`https://api.qijieya.cn/meting/?server=netease&type=lrc&id=${encodeURIComponent(songId)}&type=tlrc`)
-                .then(r => r.text())
-                .catch(() => '');
-            const transLines = transText ? this._parseLrc(transText) : [];
-
-            const lyrics = mainLines.map(line => {
-                const trans = transLines.find(item => Math.abs(item.t - line.t) < 1);
-                return {
-                    t: line.t,
-                    txt: line.txt,
-                    tr: trans ? trans.txt : ''
-                };
-            });
-
-            this._lyricCache.set(cacheKey, lyrics);
-            return lyrics;
-        } catch (e) {
-            console.warn(`🎵 [音乐] 歌词获取失败(id:${songId}):`, e);
-            this._lyricCache.set(cacheKey, []);
-            return [];
-        }
+    _toast(message) {
+        if (typeof this.onToast === 'function') this.onToast(message);
     }
 
-    _parseLrc(text) {
-        const lines = [];
-        const timeRegex = /\[(\d+):(\d+)(\.\d+)?\]/g;
-
-        String(text || '').split(/\r?\n/).forEach(rawLine => {
-            const line = rawLine.trim();
-            if (!line) return;
-
-            const matches = [...line.matchAll(timeRegex)];
-            if (matches.length === 0) return;
-
-            const lyricText = line.replace(timeRegex, '').trim();
-            if (!lyricText) return;
-
-            matches.forEach(match => {
-                const minutes = parseInt(match[1], 10);
-                const seconds = parseInt(match[2], 10);
-                const fraction = match[3] ? parseFloat(`0${match[3]}`) : 0;
-                lines.push({
-                    t: minutes * 60 + seconds + fraction,
-                    txt: lyricText
-                });
-            });
-        });
-
-        return lines.sort((a, b) => a.t - b.t);
-    }
-
-    // ========== 卡片数据 ==========
-
-    setCardData(parsed) {
-        this._cardData = parsed;
-        // 持久化到 storage，以便切换聊天后恢复
-        if (parsed) {
-            this.storage.set('music_card_data', JSON.stringify(parsed));
-        } else {
-            this.storage.set('music_card_data', '');
-        }
-    }
-
-    getCardData() {
-        if (this._cardData) return this._cardData;
-        // 从 storage 恢复
-        const saved = this.storage.get('music_card_data', '');
-        if (saved) {
-            try {
-                this._cardData = typeof saved === 'string' ? JSON.parse(saved) : saved;
-            } catch (e) {
-                this._cardData = null;
-            }
-        }
-        return this._cardData;
-    }
-
-    // ========== 工具 ==========
-
-    _notifyStateChange() {
-        if (typeof this.onStateChange === 'function') {
-            this.onStateChange();
-        }
-    }
-
-    _notifyPlaybackStopped(reason = '') {
-        if (typeof this.onPlaybackStopped === 'function') {
-            this.onPlaybackStopped(reason);
-        }
-    }
-
-    _isSongFetchTemporarilyFailed(songKey) {
-        const failedAt = Number(this._failedSongs.get(songKey) || 0);
-        if (!failedAt) return false;
-        if (Date.now() - failedAt > 60000) {
-            this._failedSongs.delete(songKey);
-            return false;
-        }
-        return true;
-    }
-
-    _markSongFetchFailed(songKey) {
-        this._failedSongs.set(songKey, Date.now());
-    }
-
+    /** 切换酒馆聊天：停播 + 丢掉当前聊天专属缓存 */
     clearCache() {
-        const wasPlaying = this.isPlaying || !this.audioPlayer.paused;
-        this._playlist = null;
-        this.currentIndex = -1;
-        this.audioPlayer.pause();
-        this.audioPlayer.src = '';
-        this.isPlaying = false;
-        this._userPaused = false; // 🔥 新增：重置标记
+        this.stop('clear');
         this._cardData = null;
-        this._failedSongs.clear();
-        this._autoRetryingSongs = new WeakSet();
-        this._lastAutoRetryAt = new WeakMap();
-        this._recoveryRequestedGeneration = -1;
-        this._playLock = false;
-        this._playGeneration++;
-        this._lyricCache.clear();
-        if (wasPlaying) this._notifyPlaybackStopped('clear');
+        Object.keys(this._cache).forEach(key => {
+            if (this._isChatKey(key)) delete this._cache[key];
+        });
+        this._userPaused = false;
+        this._consecutiveFailures = 0;
     }
 }

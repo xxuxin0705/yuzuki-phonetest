@@ -22,7 +22,6 @@ export const DEFAULT_APP_ICONS = Object.freeze({
     music: new URL('../phone/音乐.png', import.meta.url).href,
     album: new URL('../phone/相册.png', import.meta.url).href,
     calendar: new URL('../phone/日历.png', import.meta.url).href,
-    games: new URL('../phone/游戏.png', import.meta.url).href,
     settings: new URL('../phone/设置.png', import.meta.url).href,
     storyvoice: "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20120%20120%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%23ff9a8b%27/%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%23a18cd1%27/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width%3D%27120%27%20height%3D%27120%27%20rx%3D%2728%27%20fill%3D%27url%28%23g%29%27/%3E%3Cpath%20d%3D%27M34%2050h14l18-15v50L48%2070H34z%27%20fill%3D%27%23fff%27/%3E%3Cpath%20d%3D%27M76%2046c6%206%206%2022%200%2028M84%2038c11%2011%2011%2033%200%2044%27%20stroke%3D%27%23fff%27%20stroke-width%3D%276%27%20fill%3D%27none%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E"
 });
@@ -147,16 +146,6 @@ export const APPS = [
         color: '#5d83a8',
         data: {
             memos: []
-        }
-    },
-    {
-        id: 'games',
-        name: '游戏',
-        icon: '🎮',
-        defaultIcon: DEFAULT_APP_ICONS.games,
-        color: '#722ed1',
-        data: {
-            installed: ['2048', '贪吃蛇', '俄罗斯方块']
         }
     },
     // 第三行

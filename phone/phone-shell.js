@@ -307,7 +307,7 @@ export class PhoneShell {
                 '.contact-list', '.chat-list', '.diary-toc-list', '.diary-page-body', '.diary-photo-back',
                 '.wangxiang-progress-popup', '.wangxiang-info-dialog-body', '.wangxiang-form-dialog-body',
                 '.diary-settings-body', '.diary-edit-body',
-                '.music-settings-body',
+                '.music-settings-body', '.mz-app', '.mz-overlay',
                 '.honey-gift-picker','.honey-live-gifts-list',
                 '.honey-scene-desc', '#honey-ui-scene',
                 '.honey-recommend-wrap', '.honey-content', '#honey-custom-video-list',

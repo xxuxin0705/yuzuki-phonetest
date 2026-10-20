@@ -51,8 +51,6 @@ const ST_PHONE_REGULAR_FONT_URL = new URL('./assets/vendor/fontawesome/fa-regula
 const ST_PHONE_HONEY_MODULE_URL = new URL(`./apps/honey/honey-app.js?v=${ST_PHONE_VERSION}&r=${ST_PHONE_HONEY_ASSET_REVISION}`, import.meta.url).href;
 const ST_PHONE_HONEY_CSS_URL = new URL(`./apps/honey/honey.css?v=${ST_PHONE_VERSION}&r=${ST_PHONE_HONEY_ASSET_REVISION}`, import.meta.url).href;
 const ST_PHONE_HONEY_THEME_URL = new URL('./apps/honey/honeyzt.png', import.meta.url).href;
-const ST_PHONE_GAMES_MODULE_URL = new URL(`./apps/games/games-app.js?v=${ST_PHONE_VERSION}&r=${ST_PHONE_APP_SWIPE_REVISION}`, import.meta.url).href;
-const ST_PHONE_GAMES_CSS_URL = new URL('./apps/games/poker/poker.css?v=1.0.2', import.meta.url).href;
 const ST_PHONE_UPDATE_MANIFEST_URLS = [
     'https://raw.githubusercontent.com/gaigai315/yuzuki-phone/main/manifest.json',
     'https://raw.githubusercontent.com/gaigai315/yuzuki-phone/master/manifest.json'
@@ -253,8 +251,6 @@ if (window.GGP_Loaded) {
     let _honeyModulePromise = null;
     let _honeyCssPromise = null;
     let _honeyThemePromise = null;
-    let _gamesModulePromise = null;
-    let _gamesCssPromise = null;
     let _pendingWechatOnlineToOfflineHint = null;
     const PHONE_PANEL_DESKTOP_SIDE_KEY = 'phone-panel-desktop-side';
     const PHONE_PANEL_DESKTOP_POSITION_KEY = 'phone-panel-desktop-position';
@@ -415,67 +411,6 @@ if (window.GGP_Loaded) {
         `, 'honey-main');
     }
 
-    function ensureGamesCSSPreloaded() {
-        if (_gamesCssPromise) return _gamesCssPromise;
-        _gamesCssPromise = new Promise(resolve => {
-            const existing = document.getElementById('games-css');
-            if (existing) {
-                if (existing.dataset.loaded === 'true' || existing.sheet) resolve();
-                else {
-                    existing.addEventListener('load', resolve, { once: true });
-                    existing.addEventListener('error', resolve, { once: true });
-                }
-                return;
-            }
-
-            const link = document.createElement('link');
-            link.id = 'games-css';
-            link.rel = 'stylesheet';
-            link.href = ST_PHONE_GAMES_CSS_URL;
-            link.addEventListener('load', () => {
-                link.dataset.loaded = 'true';
-                resolve();
-            }, { once: true });
-            link.addEventListener('error', resolve, { once: true });
-            document.head.appendChild(link);
-        });
-        return _gamesCssPromise;
-    }
-
-    function loadGamesModule() {
-        if (!_gamesModulePromise) {
-            _gamesModulePromise = import(ST_PHONE_GAMES_MODULE_URL).catch(error => {
-                _gamesModulePromise = null;
-                throw error;
-            });
-        }
-        return _gamesModulePromise;
-    }
-
-    function preloadGamesAppAssets() {
-        try {
-            if (!document.getElementById('games-module-preload')) {
-                const link = document.createElement('link');
-                link.id = 'games-module-preload';
-                link.rel = 'modulepreload';
-                link.href = ST_PHONE_GAMES_MODULE_URL;
-                document.head.appendChild(link);
-            }
-            ensureGamesCSSPreloaded();
-            loadGamesModule().catch(error => console.warn('⚠️ 游戏模块预加载失败，点击时将重试:', error));
-        } catch (error) {
-            console.warn('⚠️ 游戏资源预加载失败:', error);
-        }
-    }
-
-    function scheduleGamesAppPreload() {
-        const run = () => preloadGamesAppAssets();
-        if (typeof requestIdleCallback === 'function') {
-            requestIdleCallback(run, { timeout: 2000 });
-        } else {
-            setTimeout(run, 800);
-        }
-    }
 
     function _makeForcedReplayKey(floor, chatId = null) {
         const safeFloor = Number.parseInt(floor, 10);
@@ -11174,7 +11109,6 @@ if (window.GGP_Loaded) {
                     startWechatOnlineProactiveScheduler();
                     schedulePhonePrewarm();
                     scheduleHoneyAppPreload();
-                    scheduleGamesAppPreload();
 
                     // 🎵 悬浮窗初始化：若开启了全局悬浮窗，懒加载音乐模块并创建
                     try {
@@ -11616,31 +11550,7 @@ if (window.GGP_Loaded) {
                             phoneShell?.showNotification('错误', '万象模块加载失败', '❌');
                         });
                 } else if (appId === 'games') {
-                    const gamesCssReady = ensureGamesCSSPreloaded();
-                    if (!window.VirtualPhone.gamesApp) {
-                        phoneShell?.setContent?.(`
-                            <div class="games-app games-loading" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:radial-gradient(circle at 50% 34%, #286b5a 0%, #123f39 52%, #081f25 100%);color:#f7f3e8;font-size:13px;">
-                                <i class="fa-solid fa-spinner fa-spin" style="font-size:22px;"></i>
-                                <div>游戏加载中...</div>
-                            </div>
-                        `, 'games-loading');
-                    }
-                    Promise.all([gamesCssReady, loadGamesModule()])
-                        .then(([, module]) => {
-                            try {
-                                if (!window.VirtualPhone.gamesApp) {
-                                    window.VirtualPhone.gamesApp = new module.GamesApp(phoneShell, storage);
-                                }
-                                window.VirtualPhone.gamesApp.render();
-                            } catch (initError) {
-                                console.error('❌ 游戏APP初始化失败:', initError);
-                                phoneShell?.showNotification('错误', '游戏加载失败', '❌');
-                            }
-                        })
-                        .catch(importError => {
-                            console.error('❌ 导入 games-app.js 失败:', importError);
-                            phoneShell?.showNotification('错误', '游戏模块加载失败', '❌');
-                        });
+                    phoneShell?.showNotification('游戏', '游戏已移除', 'ℹ️');
                 } else if (appId === 'album') {
                     import(`./apps/album/album-app.js?v=${ST_PHONE_VERSION}&r=${ST_PHONE_ALBUM_MODULE_REVISION}`)
                         .then(module => {
